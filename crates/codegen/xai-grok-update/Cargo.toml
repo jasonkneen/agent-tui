@@ -12,6 +12,7 @@ reqwest = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true, features = ["serde"] }
 tokio = { workspace = true, features = ["fs", "process", "io-util", "macros", "time"] }
@@ -24,7 +25,6 @@ xai-grok-version = { workspace = true }
 semver = { workspace = true }
 serde_json = { workspace = true }
 serial_test = { workspace = true }
-tempfile = { workspace = true }
 time = { workspace = true, features = ["serde"] }
 tokio = { workspace = true, features = ["fs", "macros", "rt-multi-thread", "test-util"] }
 wiremock = { workspace = true }
