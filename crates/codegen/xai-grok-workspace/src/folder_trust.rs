@@ -115,57 +115,18 @@ pub fn decide_inputs_with_interactive(
     }
 }
 
-/// Whether the whole folder-trust system is inert (auto-trusts everything) for
-/// this binary — true on a local/dev build (no `GROK_VERSION` release stamp).
-///
-/// THE single security short-circuit: every explicit trust auto-grant site calls
-/// this (greppable via `folder_trust_inert`). When true a self-built grok never
-/// prompts, never gates repo-local `.envrc`/`.claude`/hooks/plugins/MCP/LSP, and
-/// does NO `trusted_folders.toml` I/O. Release-stamped builds are unaffected.
-pub fn folder_trust_inert() -> bool {
-    is_local_build()
-}
-
-/// Whether this binary was built without a release version stamp
-/// (`GROK_VERSION` unset at compile time) — i.e. a local/dev build.
-///
-/// Kept local (not in `xai-grok-version`) on purpose: adding a symbol to that
-/// near-universal crate widens the rebuild/test fan-out for unrelated targets.
-/// `option_env!` resolves the same in any crate, so the
-/// location is behavior-neutral. Cross-crate callers use [`folder_trust_inert`].
-fn is_local_build() -> bool {
-    // Runtime escape hatch: a pinned GROK_TEST_VERSION simulates a release build,
-    // so tests/CI (which run unstamped, i.e. local-looking) can exercise the gate.
-    if std::env::var(xai_grok_version::TEST_VERSION_ENV).is_ok() {
-        return false;
-    }
-    option_env!("GROK_VERSION").is_none()
-}
-
 /// Resolve whether the folder-trust gate is enabled.
 ///
-/// On a local/dev build (no `GROK_VERSION` release stamp) the feature is OFF
-/// regardless of env/config/remote — a self-built grok auto-trusts (never
-/// prompts, never gates repo-local MCP/LSP). Folder-trust applies only to
-/// shipped, release-stamped binaries.
+/// The gate uses the same precedence in source-built and release-stamped
+/// binaries. A missing release stamp must never weaken the trust boundary: the
+/// README-supported `cargo run` path can open arbitrary third-party workspaces.
 ///
-/// On a release-stamped build, normal precedence (via `BoolFlag`):
+/// Normal precedence (via `BoolFlag`):
 /// env `GROK_FOLDER_TRUST` > `[folder_trust] enabled` (user) > managed >
 /// remote `folder_trust_enabled` > default **true** (on by default; the remote
 /// `folder_trust_enabled` kill-switch or a `[folder_trust] enabled = false`
 /// opt-out turns it back off).
 pub fn feature_enabled(remote: Option<&RemoteSettings>) -> bool {
-    feature_enabled_for_build(remote, is_local_build())
-}
-
-/// `feature_enabled` with the local-build flag fed in so both arms are unit-testable.
-fn feature_enabled_for_build(remote: Option<&RemoteSettings>, is_local_build: bool) -> bool {
-    // Local/dev builds never gate (auto-trust): folder-trust applies only to
-    // shipped, release-stamped binaries. Even an explicit GROK_FOLDER_TRUST/config
-    // opt-in is ignored here so a self-built grok never prompts.
-    if is_local_build {
-        return false;
-    }
     fn from_toml(v: Option<&TomlValue>) -> Option<bool> {
         v?.get("folder_trust")?.get("enabled")?.as_bool()
     }
@@ -186,11 +147,6 @@ fn feature_enabled_for_build(remote: Option<&RemoteSettings>, is_local_build: bo
 /// same `~/.grok/trusted_folders.toml`. Best-effort; a write failure is logged,
 /// not fatal.
 pub fn grant_folder_trust(cwd: &Path) {
-    // Local/dev builds never gate, so there is nothing to grant: `--trust` is a
-    // no-op and the store is left untouched (the whole feature is inert).
-    if folder_trust_inert() {
-        return;
-    }
     persist_trust(&mut TrustStore::load(), &workspace_key(cwd));
 }
 
@@ -203,10 +159,6 @@ pub fn grant_folder_trust(cwd: &Path) {
 /// child DENY that poisons a future ancestor `set_trusted` cascade — so that
 /// write stays gated. Symmetric with [`grant_folder_trust`].
 pub fn revoke_folder_trust_store(cwd: &Path) -> bool {
-    // Local/dev builds never wrote the store, so there is nothing to revoke.
-    if folder_trust_inert() {
-        return false;
-    }
     let key = workspace_key(cwd);
     let mut store = TrustStore::load();
     let was_trusted = store.is_trusted(&key);
@@ -731,18 +683,17 @@ mod tests {
     // aliased here so the existing `EnvVarGuard::set/unset` call sites are unchanged.
     use crate::TestEnvGuard as EnvVarGuard;
 
-    /// Simulate a release-stamped build so store I/O runs (a local/dev build makes
-    /// grant/revoke no-ops). Hold the returned guard for the test body.
+    /// Preserve the existing release-stamp test seam for tests that isolate
+    /// version-dependent behavior elsewhere. Folder trust itself no longer
+    /// changes behavior based on this stamp.
     fn simulate_release_build() -> EnvVarGuard {
         EnvVarGuard::set(xai_grok_version::TEST_VERSION_ENV, Path::new("0.0.0-sim"))
     }
 
     #[test]
-    fn local_build_ignores_remote_rollout() {
-        // A local/dev build never gates (auto-trust): even a remote rollout enable
-        // is ignored, so the feature stays off and resolves Trusted with repo
-        // configs present + interactive. (Env/config isolated to unset so the
-        // remote flag is unambiguously the only enable being dropped here.)
+    fn source_build_honors_remote_rollout() {
+        // Source builds use the same trust inputs as release builds. This test
+        // runs unstamped in normal development and must keep the gate enabled.
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
         let _home = EnvVarGuard::set("GROK_HOME", home.path());
@@ -752,19 +703,18 @@ mod tests {
             folder_trust_enabled: Some(true),
             ..Default::default()
         };
-        let feature = feature_enabled_for_build(Some(&remote), true);
-        assert!(!feature);
+        let feature = feature_enabled(Some(&remote));
+        assert!(feature);
         let i = DecideInputs {
             is_interactive: true,
             ..inputs()
         };
-        assert_eq!(decide(feature, &i), TrustOutcome::Trusted);
+        assert_eq!(decide(feature, &i), TrustOutcome::Prompt);
     }
 
     #[test]
-    fn release_build_keeps_gate_when_enabled() {
-        // A release-stamped build (is_local_build=false) honors the remote enable,
-        // keeping today's gate. Isolate config so neither on-disk user/managed
+    fn gate_stays_enabled_when_remote_enables_it() {
+        // Isolate config so neither on-disk user/managed
         // config nor an ambient env flag can override it: empty GROK_HOME (no
         // config.toml/managed_config.toml) + GROK_FOLDER_TRUST unset. nextest's
         // process-per-test makes grok_home()'s OnceLock pick up the temp dir.
@@ -777,7 +727,7 @@ mod tests {
             folder_trust_enabled: Some(true),
             ..Default::default()
         };
-        let feature = feature_enabled_for_build(Some(&remote), false);
+        let feature = feature_enabled(Some(&remote));
         assert!(feature);
         let i = DecideInputs {
             is_interactive: true,
@@ -787,93 +737,51 @@ mod tests {
     }
 
     #[test]
-    fn local_build_ignores_explicit_env_optin() {
-        // Auto-trust is absolute on a local build: even an explicit
-        // GROK_FOLDER_TRUST=1 does NOT enable the feature (so a self-built grok
-        // never prompts). GROK_HOME isolated so on-disk config can't influence it.
+    fn source_build_honors_explicit_env_optin() {
+        // GROK_HOME is isolated so on-disk config cannot influence the result.
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
         let _home = EnvVarGuard::set("GROK_HOME", home.path());
         let _flag = EnvVarGuard::set("GROK_FOLDER_TRUST", Path::new("1"));
 
-        assert!(!feature_enabled_for_build(None, true));
+        assert!(feature_enabled(None));
     }
 
     #[test]
-    fn release_build_defaults_on() {
-        // A release-stamped build with no env/config/managed/remote signal defaults
-        // the feature ON. Empty GROK_HOME (no config.toml/managed config) +
+    fn every_build_defaults_on() {
+        // A build with no env/config/managed/remote signal defaults the feature
+        // ON. Empty GROK_HOME (no config.toml/managed config) +
         // GROK_FOLDER_TRUST unset so only the default applies.
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
         let _home = EnvVarGuard::set("GROK_HOME", home.path());
         let _flag = EnvVarGuard::unset("GROK_FOLDER_TRUST");
 
-        assert!(feature_enabled_for_build(None, false));
+        assert!(feature_enabled(None));
     }
 
     #[test]
-    fn is_local_build_honors_test_version_override() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // A pinned GROK_TEST_VERSION simulates a release build => not a local build.
-        {
-            let _sim = EnvVarGuard::set(xai_grok_version::TEST_VERSION_ENV, Path::new("0.0.0-sim"));
-            assert!(!is_local_build());
-        }
-        // With it unset, an unstamped build (no GROK_VERSION) is a local build.
-        // Guard to the unstamped case so a release-stamped test binary (CI release)
-        // doesn't spuriously fail this arm.
-        let _unset = EnvVarGuard::unset(xai_grok_version::TEST_VERSION_ENV);
-        if option_env!("GROK_VERSION").is_none() {
-            assert!(is_local_build());
-        }
-    }
-
-    #[test]
-    fn store_io_is_noop_on_local_build() {
-        // On a local/dev build the whole feature is inert. Both halves pin a guard
-        // via a UNIQUE per-repo key (never store-file existence) so they hold under
-        // single-process `cargo test` too. Assert ONLY when compiled unstamped
-        // (mirrors `is_local_build_honors_test_version_override`); GROK_HOME-isolated
-        // and ENV_LOCK-serialized so toggling GROK_TEST_VERSION is race-safe.
+    fn store_io_works_on_source_build() {
+        // The default development test binary is unstamped. Grants and revokes
+        // must nevertheless use the durable store exactly like a release build.
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
         let _home = EnvVarGuard::set("GROK_HOME", home.path());
-        let _unset = EnvVarGuard::unset(xai_grok_version::TEST_VERSION_ENV);
-        if option_env!("GROK_VERSION").is_some() {
-            return; // a release-stamped test binary is not a local build
-        }
         let tmp = repo_tmp();
         let key = workspace_key(tmp.path());
 
-        // grant is a no-op: a local-build grant never trusts the fresh key.
         grant_folder_trust(tmp.path());
         assert!(
-            !TrustStore::load().is_trusted(&key),
-            "local build: grant_folder_trust must not trust the folder"
-        );
-
-        // Seed a genuinely-trusted folder under a simulated release build (so the
-        // store actually records the grant); the guard drops at block end => local.
-        {
-            let _sim = simulate_release_build();
-            let mut store = TrustStore::load();
-            store.set_trusted(&key).unwrap();
-            assert!(
-                TrustStore::load().is_trusted(&key),
-                "release build: seeding must record the trust grant"
-            );
-        }
-
-        // revoke is a no-op: a local-build revoke returns false AND leaves the grant
-        // intact (without the guard it would `set_untrusted` and return true).
-        assert!(
-            !revoke_folder_trust_store(tmp.path()),
-            "local build: revoke_folder_trust_store must return false"
-        );
-        assert!(
             TrustStore::load().is_trusted(&key),
-            "local build: revoke_folder_trust_store must not untrust the folder"
+            "source build: grant_folder_trust must trust the folder"
+        );
+        assert!(
+            revoke_folder_trust_store(tmp.path()),
+            "source build: revoke_folder_trust_store must report the grant"
+        );
+        assert!(
+            !TrustStore::load().is_trusted(&key),
+            "source build: revoke_folder_trust_store must persist untrust"
         );
     }
 

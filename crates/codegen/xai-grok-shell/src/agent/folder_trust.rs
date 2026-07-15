@@ -42,8 +42,7 @@ use xai_grok_workspace::trust::{TrustStore, is_unsafe_trust_root, workspace_key}
 pub use xai_grok_workspace::folder_trust::grant_folder_trust;
 use xai_grok_workspace::folder_trust::{
     DecideInputs, TrustOutcome, claude_project_mcp_names, decide, decide_inputs,
-    decide_inputs_with_interactive, feature_enabled, folder_trust_inert, persist_trust,
-    prompt_for_trust,
+    decide_inputs_with_interactive, feature_enabled, persist_trust, prompt_for_trust,
 };
 
 use crate::session::managed_mcp::mcp_server_name;
@@ -75,11 +74,6 @@ static DECISIONS: LazyLock<Mutex<HashMap<PathBuf, bool>>> =
 /// (grant, store, prompt) could ever lift. Returns whether the folder had been
 /// trusted. Symmetric with [`grant_folder_trust`].
 pub fn revoke_folder_trust(cwd: &Path) -> bool {
-    // Local/dev builds are fully inert: nothing was trusted-via-gate to revoke,
-    // and recording `false` here would make `project_scope_allowed` wrongly gate.
-    if folder_trust_inert() {
-        return false;
-    }
     let key = workspace_key(cwd);
     // Mirror the store's over-broad-root refusal: an unrecordable key resolves
     // Trusted by rule and can never be store-granted, so a cache deny here would
@@ -109,13 +103,12 @@ pub fn revoke_folder_trust(cwd: &Path) -> bool {
 /// resolve is honored (it records the upgrade and allows); an **unrecorded** key
 /// re-resolves via [`resolve_and_record`] — deny ONLY the dangerous case (feature
 /// on AND repo-local code-exec configs present AND untrusted); allow no-configs /
-/// unrecordable-key ($HOME / fs-root) / store-trusted / feature-off / inert. So
+/// unrecordable-key ($HOME / fs-root) / store-trusted / feature-off. So
 /// this never over-denies the common no-configs case, whose Trusted verdict is
 /// provisional and therefore never cached.
 ///
 /// The cache is consulted BEFORE delegating so a recorded `Some(false)` is
-/// reconciled even on an inert build, where [`resolve_and_record`] would short-
-/// circuit to allow before reaching the cache. `remote = None`: durable
+/// reconciled against a later durable grant. `remote = None`: durable
 /// feature-off / kill-switch verdicts are already cached by the launch/session
 /// resolve that ran with the real RemoteSettings.
 ///
@@ -138,8 +131,8 @@ pub fn project_scope_allowed(cwd: &Path) -> bool {
                 false
             }
         }
-        // Unrecorded: re-resolve fail-closed (no-configs / trusted / feature-off /
-        // inert allow; untrusted + configs deny).
+        // Unrecorded: re-resolve fail-closed (no-configs / trusted / feature-off
+        // allow; untrusted + configs deny).
         None => resolve_and_record(cwd, None, false),
     }
 }
@@ -230,11 +223,6 @@ pub(crate) fn record_for_test(cwd: &Path, allowed: bool) {
 /// an unresolved interactive-but-untrusted workspace resolves **fail-closed**
 /// (untrusted, no prompt) — only the launch dir is ever prompted for.
 pub fn resolve_and_record(cwd: &Path, remote: Option<&RemoteSettings>, allow_prompt: bool) -> bool {
-    // Local/dev builds are fully inert: project scope is always allowed, so skip
-    // the `trusted_folders.toml` read entirely.
-    if folder_trust_inert() {
-        return true;
-    }
     let key = workspace_key(cwd);
     resolve_and_record_inner(
         &key,
@@ -264,11 +252,6 @@ pub fn resolve_and_record(cwd: &Path, remote: Option<&RemoteSettings>, allow_pro
 /// caught). The init-time dedup belongs to the one-shot caller (a `OnceCell` on
 /// `MvpAgent`), NOT to any new shared-cache entry.
 pub fn resolve_launch_dir_trust(cwd: &Path, remote: Option<&RemoteSettings>) -> bool {
-    // Local/dev builds are fully inert: project scope is always allowed, skipping
-    // the store read + repo scan entirely.
-    if folder_trust_inert() {
-        return true;
-    }
     let key = workspace_key(cwd);
     let feature = feature_enabled(remote);
     let inputs = decide_inputs(cwd, &key);
@@ -513,9 +496,8 @@ mod tests {
         tmp
     }
 
-    /// Simulate a release-stamped build so the folder-trust gate engages: an
-    /// unstamped local/dev build auto-trusts and never gates/persists. Hold the
-    /// returned guard for the test body (drop restores the prior value).
+    /// Preserve the existing version-stamp test seam. Folder trust now behaves
+    /// identically in source and release builds.
     fn simulate_release_build() -> EnvGuard {
         EnvGuard::set(xai_grok_version::TEST_VERSION_ENV, "0.0.0-sim")
     }
@@ -530,7 +512,7 @@ mod tests {
         let tmp = repo_tmp();
         let key = tmp.path().to_path_buf();
         // A fresh, never-recorded key re-resolves fail-closed and is allowed here
-        // (inert local build / no repo configs — never a durable default-open).
+        // (no repo configs — never a durable default-open).
         assert!(project_scope_allowed(&key));
         record(&workspace_key(&key), false);
         assert!(!project_scope_allowed(&key));
@@ -932,22 +914,16 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn project_scope_allowed_allows_inert_local_build() {
-        // On a local/dev build the whole feature is inert (auto-trust): a folder
-        // with repo-local configs and an empty store is still ALLOWED. Assert only
-        // when compiled unstamped (mirrors the inert tests elsewhere), with
-        // GROK_TEST_VERSION unset so `is_local_build()` is genuinely true.
-        let _unset_ver = EnvGuard::unset(xai_grok_version::TEST_VERSION_ENV);
-        if option_env!("GROK_VERSION").is_some() {
-            return; // a release-stamped test binary is not a local build
-        }
+    fn project_scope_allowed_denies_untrusted_source_build() {
+        // Normal tests compile an unstamped source build. Repo-local executable
+        // configuration must still be denied when the store is empty.
         let home = tempfile::tempdir().unwrap();
         let _env = EnvGuard::set("GROK_HOME", home.path());
         let tmp = repo_tmp();
         std::fs::create_dir_all(tmp.path().join(".grok").join("hooks")).unwrap();
         assert!(
-            project_scope_allowed(tmp.path()),
-            "inert local/dev build must allow project scope even with configs"
+            !project_scope_allowed(tmp.path()),
+            "source build must deny untrusted project scope with executable configs"
         );
     }
 
@@ -1426,8 +1402,8 @@ mod tests {
         // the feature on via env (highest precedence) so the test does not depend
         // on the host's folder-trust config.
         unsafe { std::env::set_var("GROK_FOLDER_TRUST", "1") };
-        // Simulate a release-stamped build: an unstamped local/dev build (as in CI,
-        // no GROK_VERSION) auto-trusts, so the gate would never engage without this.
+        // Retain the version override used by adjacent trust tests; it no longer
+        // changes whether the gate engages.
         unsafe { std::env::set_var(xai_grok_version::TEST_VERSION_ENV, "0.0.0-sim") };
         let tmp = repo_tmp();
 
@@ -1497,46 +1473,26 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn local_build_is_inert_launch_trust_auto_trusts() {
-        // On a local/dev build the whole folder-trust system is inert: an
-        // untrusted repo that HAS repo-local configs (here an `.envrc`) with an
-        // EMPTY store still resolves trusted, `resolve_launch_dir_trust` returns
-        // true, and the `.envrc` loads without any grant. Assert the local branch
-        // ONLY when compiled unstamped (mirrors the workspace
-        // `is_local_build_honors_test_version_override`), with GROK_TEST_VERSION
-        // unset so `is_local_build()` is genuinely true. GROK_HOME-isolated so the
-        // real store is never touched.
-        let _sim = EnvGuard::unset(xai_grok_version::TEST_VERSION_ENV);
-        if option_env!("GROK_VERSION").is_some() {
-            return; // a release-stamped test binary is not a local build
-        }
+    fn source_build_gates_launch_dir_configs() {
+        // An unstamped source build must deny an untrusted repo containing an
+        // `.envrc`, exactly like a release-stamped binary.
         let home = tempfile::tempdir().unwrap();
         let _env = EnvGuard::set("GROK_HOME", home.path());
         let tmp = repo_tmp();
         std::fs::write(tmp.path().join(".envrc"), "export LOCAL_BUILD_ENVRC=1\n").unwrap();
 
-        // The `.envrc` makes this a gating-eligible repo: on a release build it
-        // would resolve untrusted with an empty store. On a local build it does not.
+        // The `.envrc` makes this a gating-eligible repo.
         assert!(
             repo_configs_present(tmp.path()),
             "the `.envrc` must make this a gating-eligible repo"
         );
         assert!(
-            project_scope_allowed(tmp.path()),
-            "local build: inert gate must auto-trust an untrusted repo that has configs"
+            !project_scope_allowed(tmp.path()),
+            "source build must gate an untrusted repo that has configs"
         );
         assert!(
-            resolve_launch_dir_trust(tmp.path(), None),
-            "local build: launch-dir verdict must be trusted"
-        );
-
-        // The gated `.envrc` load (the call-site contract) runs because the gate
-        // is inert/trusted, so the var is present with no store grant.
-        let env = xai_grok_workspace::envrc::load_envrc_or_empty(tmp.path());
-        assert_eq!(
-            env.get("LOCAL_BUILD_ENVRC"),
-            Some(&"1".to_string()),
-            "local build: `.envrc` must load without any store grant"
+            !resolve_launch_dir_trust(tmp.path(), None),
+            "source build launch-dir verdict must be untrusted"
         );
     }
 
@@ -1567,9 +1523,8 @@ mod tests {
     #[serial_test::serial]
     fn prompt_warranted_false_when_feature_disabled() {
         // The remote kill-switch (folder_trust_enabled = Some(false)) disables the
-        // feature even on a release-stamped build, so no prompt is warranted even
-        // with repo configs present. Simulate a release build so the inert
-        // local-build path is not what's under test; GROK_HOME-isolated and
+        // feature, so no prompt is warranted even with repo configs present.
+        // GROK_HOME-isolated and
         // GROK_FOLDER_TRUST unset so the kill-switch is the only signal.
         let home = tempfile::tempdir().unwrap();
         let _env = EnvGuard::set("GROK_HOME", home.path());
