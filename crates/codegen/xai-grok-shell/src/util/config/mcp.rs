@@ -547,10 +547,19 @@ pub async fn delete_mcp_server_config_at(
     tokio::fs::rename(&tmp, &path).await?;
 
     // Clean up OAuth credentials for the deleted server.
-    if let Ok(mut cred_store) = xai_grok_mcp::credentials::McpCredentialStore::load_default() {
-        let removed = cred_store.remove_by_server_name(server_name);
-        if removed > 0 {
-            let _ = cred_store.save_default();
+    let credential_server_name = server_name.to_owned();
+    match tokio::task::spawn_blocking(move || {
+        let mut cred_store = xai_grok_mcp::credentials::McpCredentialStore::default();
+        cred_store.remove_all_by_server_name_and_save(&credential_server_name)
+    })
+    .await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(server_name, %error, "failed to remove MCP OAuth credentials");
+        }
+        Err(error) => {
+            tracing::warn!(server_name, %error, "MCP OAuth credential cleanup task failed");
         }
     }
 

@@ -74,121 +74,121 @@ impl McpCredentialStore {
         Ok(store)
     }
 
-    /// Save the credential store to the default path.
-    pub fn save_default(&self) -> Result<()> {
-        let path = Self::default_path().ok_or_else(|| {
-            McpCredentialError::Other("no user grok home (set $GROK_HOME or $HOME)".into())
-        })?;
-        self.save_to(&path)
-    }
-
     /// Atomically insert a credential and save — safe for concurrent use.
-    ///
-    /// Instead of the caller doing `insert_rmcp` + `save_default` (which races
-    /// with other processes), this method:
-    /// 1. Acquires a file lock on `mcp_credentials.json.lock`
-    /// 2. Reloads the store from disk (picks up other processes' writes)
-    /// 3. Inserts the new entry
-    /// 4. Saves atomically (temp + rename)
-    /// 5. Updates `self` with the merged result
-    /// 6. Releases the lock
     pub fn insert_and_save(
         &mut self,
         server_name: &str,
         server_url: &url::Url,
         creds: rmcp::transport::auth::StoredCredentials,
     ) -> Result<()> {
+        self.mutate_default(|store| store.insert_rmcp(server_name, server_url, creds))
+    }
+
+    /// Atomically remove the credentials for one server name + URL and save.
+    /// Other entries written by concurrent processes are preserved.
+    pub fn remove_and_save(&mut self, server_name: &str, server_url: &Url) -> Result<bool> {
         let path = Self::default_path().ok_or_else(|| {
             McpCredentialError::Other("no user grok home (set $GROK_HOME or $HOME)".into())
         })?;
+        self.remove_and_save_to(&path, server_name, server_url)
+    }
+
+    fn remove_and_save_to(
+        &mut self,
+        path: &Path,
+        server_name: &str,
+        server_url: &Url,
+    ) -> Result<bool> {
+        self.mutate_and_save_to(path, |store| {
+            store
+                .entries
+                .remove(&Self::key(server_name, server_url))
+                .is_some()
+        })
+    }
+
+    /// Atomically remove every credential for a server name. This preserves the
+    /// legacy config-removal behavior while ensuring it cannot overwrite a
+    /// concurrent token refresh. Prefer [`Self::remove_and_save`] when the URL
+    /// is known.
+    pub fn remove_all_by_server_name_and_save(&mut self, server_name: &str) -> Result<usize> {
+        let path = Self::default_path().ok_or_else(|| {
+            McpCredentialError::Other("no user grok home (set $GROK_HOME or $HOME)".into())
+        })?;
+        self.remove_all_by_server_name_and_save_to(&path, server_name)
+    }
+
+    fn remove_all_by_server_name_and_save_to(
+        &mut self,
+        path: &Path,
+        server_name: &str,
+    ) -> Result<usize> {
+        self.mutate_and_save_to(path, |store| store.remove_by_server_name(server_name))
+    }
+
+    fn mutate_default<T>(&mut self, mutate: impl FnOnce(&mut Self) -> T) -> Result<T> {
+        let path = Self::default_path().ok_or_else(|| {
+            McpCredentialError::Other("no user grok home (set $GROK_HOME or $HOME)".into())
+        })?;
+        self.mutate_and_save_to(&path, mutate)
+    }
+
+    /// Serialize a read-modify-write transaction across processes. The lock is
+    /// cross-platform (`fs2` uses `flock`/`LockFileEx`) and every mutation
+    /// reloads from disk while holding it, so stale adapter instances cannot
+    /// overwrite credentials saved by another process.
+    fn mutate_and_save_to<T>(
+        &mut self,
+        path: &Path,
+        mutate: impl FnOnce(&mut Self) -> T,
+    ) -> Result<T> {
         let lock_path = path.with_extension("lock");
-
-        // Ensure parent dir exists.
         if let Some(parent) = lock_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(lock_path)?;
+        fs2::FileExt::lock_exclusive(&lock_file)?;
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::io::AsRawFd;
-
-            let lock_file = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(&lock_path)?;
-            let fd = lock_file.as_raw_fd();
-            loop {
-                if unsafe { libc::flock(fd, libc::LOCK_EX) } == 0 {
-                    break;
-                }
-                let err = std::io::Error::last_os_error();
-                if err.kind() == std::io::ErrorKind::Interrupted {
-                    continue; // Retry on EINTR.
-                }
-                // Lock failed for another reason — fall back to non-atomic insert.
-                self.insert_rmcp(server_name, server_url, creds);
-                return self.save_to(&path);
-            }
-
-            // Reload from disk under lock to merge with concurrent writes.
-            let mut fresh = Self::load_from(&path).unwrap_or_default();
-            fresh.insert_rmcp(server_name, server_url, creds);
-            fresh.save_to(&path)?;
-            *self = fresh;
-
-            // Lock released when lock_file is dropped.
-        }
-
-        #[cfg(not(unix))]
-        {
-            // No flock on non-unix — best-effort.
-            self.insert_rmcp(server_name, server_url, creds);
-            self.save_to(&path)?;
-        }
-
-        Ok(())
+        let mut fresh = Self::load_from(path)?;
+        let result = mutate(&mut fresh);
+        fresh.save_to(path)?;
+        *self = fresh;
+        Ok(result)
     }
 
     /// Save to a specific path.
     ///
     /// Writes atomically via temp file + rename to prevent credential loss on
-    /// crash. On Unix, the temp file is created with 0600 permissions from the
-    /// start (no TOCTOU window where secrets are world-readable).
-    pub fn save_to(&self, path: &Path) -> Result<()> {
+    /// crash. The temp file is restricted to the current user before credential
+    /// bytes are written (mode 0600 on Unix, a protected DACL on Windows).
+    fn save_to(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
         let content = serde_json::to_string_pretty(self)?;
-        let tmp_path = path.with_extension("tmp");
-
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        #[cfg(not(windows))]
+        let mut tmp = tempfile::Builder::new()
+            .prefix(".mcp_credentials-")
+            .suffix(".tmp")
+            .tempfile_in(parent)?;
+        #[cfg(windows)]
+        let mut tmp = create_secure_windows_tempfile(parent)?;
+        #[cfg(unix)]
         {
-            use std::io::Write;
-
-            #[cfg(unix)]
-            let file = {
-                use std::os::unix::fs::OpenOptionsExt;
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(&tmp_path)?
-            };
-            #[cfg(not(unix))]
-            let file = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&tmp_path)?;
-
-            let mut writer = std::io::BufWriter::new(file);
-            writer.write_all(content.as_bytes())?;
-            writer.flush()?;
+            use std::os::unix::fs::PermissionsExt;
+            tmp.as_file()
+                .set_permissions(std::fs::Permissions::from_mode(0o600))?;
         }
-
-        std::fs::rename(&tmp_path, path)?;
+        use std::io::Write;
+        tmp.write_all(content.as_bytes())?;
+        tmp.as_file_mut().sync_all()?;
+        tmp.persist(path).map_err(|e| e.error)?;
         Ok(())
     }
 
@@ -202,7 +202,7 @@ impl McpCredentialStore {
     }
 
     /// Insert rmcp `StoredCredentials` for a server.
-    pub fn insert_rmcp(
+    fn insert_rmcp(
         &mut self,
         server_name: &str,
         server_url: &Url,
@@ -218,13 +218,8 @@ impl McpCredentialStore {
             .contains_key(&Self::key(server_name, server_url))
     }
 
-    /// Remove credentials for a server.
-    pub fn remove(&mut self, server_name: &str, server_url: &Url) {
-        self.entries.remove(&Self::key(server_name, server_url));
-    }
-
     /// Remove all credentials for a server by name (any URL).
-    pub fn remove_by_server_name(&mut self, server_name: &str) -> usize {
+    fn remove_by_server_name(&mut self, server_name: &str) -> usize {
         let prefix = format!("{server_name}:");
         let before = self.entries.len();
         self.entries.retain(|k, _| !k.starts_with(&prefix));
@@ -240,6 +235,130 @@ impl McpCredentialStore {
     fn default_path() -> Option<PathBuf> {
         Some(xai_grok_config::user_grok_home()?.join(CREDENTIALS_FILENAME))
     }
+}
+
+/// Create a credential tempfile atomically with a protected DACL that grants
+/// access only to the current user. Passing the security descriptor to
+/// `CreateFileW` avoids a create-then-harden window in a permissive GROK_HOME.
+#[cfg(windows)]
+fn create_secure_windows_tempfile(parent: &Path) -> std::io::Result<tempfile::NamedTempFile> {
+    tempfile::Builder::new()
+        .prefix(".mcp_credentials-")
+        .suffix(".tmp")
+        .make_in(parent, create_secure_windows_file)
+}
+
+#[cfg(windows)]
+fn create_secure_windows_file(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+    use windows::Win32::Foundation::{CloseHandle, HLOCAL, LocalFree};
+    use windows::Win32::Security::Authorization::{
+        EXPLICIT_ACCESS_W, SET_ACCESS, SetEntriesInAclW, TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
+    };
+    use windows::Win32::Security::{
+        ACE_FLAGS, ACL, GetTokenInformation, InitializeSecurityDescriptor, PSECURITY_DESCRIPTOR,
+        SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SetSecurityDescriptorControl,
+        SetSecurityDescriptorDacl, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    };
+    use windows::Win32::Storage::FileSystem::{
+        CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_TEMPORARY, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    use windows::core::PCWSTR;
+
+    unsafe {
+        let mut token_handle = windows::Win32::Foundation::HANDLE::default();
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token_handle)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::PermissionDenied, error))?;
+
+        let mut new_acl: *mut ACL = std::ptr::null_mut();
+        let result = (|| {
+            let mut return_length = 0;
+            let _ = GetTokenInformation(token_handle, TokenUser, None, 0, &mut return_length);
+            let word_count = (return_length as usize).div_ceil(std::mem::size_of::<usize>());
+            let mut token_user_buffer = vec![0_usize; word_count];
+            GetTokenInformation(
+                token_handle,
+                TokenUser,
+                Some(token_user_buffer.as_mut_ptr().cast()),
+                return_length,
+                &mut return_length,
+            )
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::PermissionDenied, error))?;
+
+            // Vec<usize> provides sufficient alignment for TOKEN_USER.
+            let token_user = &*token_user_buffer.as_ptr().cast::<TOKEN_USER>();
+            let explicit_access = EXPLICIT_ACCESS_W {
+                grfAccessPermissions: 0x10000000, // GENERIC_ALL
+                grfAccessMode: SET_ACCESS,
+                grfInheritance: ACE_FLAGS(0),
+                Trustee: TRUSTEE_W {
+                    pMultipleTrustee: std::ptr::null_mut(),
+                    MultipleTrusteeOperation:
+                        windows::Win32::Security::Authorization::NO_MULTIPLE_TRUSTEE,
+                    TrusteeForm: TRUSTEE_IS_SID,
+                    TrusteeType: TRUSTEE_IS_USER,
+                    ptstrName: windows::core::PWSTR(token_user.User.Sid.0 as *mut u16),
+                },
+            };
+            let acl_result = SetEntriesInAclW(Some(&[explicit_access]), None, &mut new_acl);
+            if acl_result.0 != 0 {
+                return Err(std::io::Error::from_raw_os_error(acl_result.0 as i32));
+            }
+
+            let mut descriptor = SECURITY_DESCRIPTOR::default();
+            let descriptor_ptr =
+                PSECURITY_DESCRIPTOR((&mut descriptor as *mut SECURITY_DESCRIPTOR).cast());
+            InitializeSecurityDescriptor(descriptor_ptr, 1).map_err(std::io::Error::other)?;
+            SetSecurityDescriptorDacl(descriptor_ptr, true, Some(new_acl), false)
+                .map_err(std::io::Error::other)?;
+            SetSecurityDescriptorControl(descriptor_ptr, SE_DACL_PROTECTED, SE_DACL_PROTECTED)
+                .map_err(std::io::Error::other)?;
+
+            let security_attributes = SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: descriptor_ptr.0,
+                bInheritHandle: false.into(),
+            };
+            let wide_path: Vec<u16> = path
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            let handle = CreateFileW(
+                PCWSTR::from_raw(wide_path.as_ptr()),
+                FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+                FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE,
+                Some(&security_attributes),
+                CREATE_NEW,
+                FILE_ATTRIBUTE_TEMPORARY,
+                None,
+            )
+            .map_err(windows_error_to_io)?;
+
+            Ok(std::fs::File::from_raw_handle(handle.0))
+        })();
+
+        let _ = LocalFree(Some(HLOCAL(new_acl.cast())));
+        let _ = CloseHandle(token_handle);
+        result
+    }
+}
+
+#[cfg(windows)]
+fn windows_error_to_io(error: windows::core::Error) -> std::io::Error {
+    // Win32 APIs exposed by windows-rs encode GetLastError in an HRESULT.
+    // Recover the original code so std::io maps filename collisions to
+    // ErrorKind::AlreadyExists and tempfile can retry with a new name.
+    let hresult = error.code().0 as u32;
+    let raw_code = if hresult & 0xffff_0000 == 0x8007_0000 {
+        hresult & 0xffff
+    } else {
+        hresult
+    };
+    std::io::Error::from_raw_os_error(raw_code as i32)
 }
 
 /// Adapter implementing rmcp's `CredentialStore` trait backed by the on-disk
@@ -300,9 +419,9 @@ impl rmcp::transport::auth::CredentialStore for McpCredentialStoreAdapter {
         let url = self.server_url.clone();
         tokio::task::spawn_blocking(move || {
             let mut store = McpCredentialStore::load_default().unwrap_or_default();
-            store.remove(&name, &url);
             store
-                .save_default()
+                .remove_and_save(&name, &url)
+                .map(|_| ())
                 .map_err(|e| rmcp::transport::auth::AuthError::InternalError(e.to_string()))
         })
         .await
@@ -325,15 +444,6 @@ mod tests {
         store.insert_rmcp("test", &url, test_stored_creds("test-client"));
         assert!(store.get("test", &url).is_some());
         assert_eq!(store.get("test", &url).unwrap().client_id, "test-client");
-    }
-
-    #[test]
-    fn remove_entry() {
-        let mut store = McpCredentialStore::default();
-        let url = Url::parse("https://test.example.com/mcp").unwrap();
-        store.insert_rmcp("test", &url, test_stored_creds("test-client"));
-        store.remove("test", &url);
-        assert!(store.get("test", &url).is_none());
     }
 
     #[test]
@@ -431,5 +541,241 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn locked_mutations_merge_stale_store_instances() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
+        let first_url = Url::parse("https://first.example.com/mcp").unwrap();
+        let second_url = Url::parse("https://second.example.com/mcp").unwrap();
+        let mut first = McpCredentialStore::default();
+        let mut stale_second = McpCredentialStore::default();
+
+        first
+            .mutate_and_save_to(&path, |store| {
+                store.insert_rmcp("first", &first_url, test_stored_creds("first-client"));
+            })
+            .unwrap();
+        stale_second
+            .mutate_and_save_to(&path, |store| {
+                store.insert_rmcp("second", &second_url, test_stored_creds("second-client"));
+            })
+            .unwrap();
+
+        let merged = McpCredentialStore::load_from(&path).unwrap();
+        assert!(merged.has_credentials("first", &first_url));
+        assert!(merged.has_credentials("second", &second_url));
+    }
+
+    #[test]
+    fn concurrent_process_mutations_preserve_both_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
+        let ready_dir = dir.path().join("ready");
+        std::fs::create_dir(&ready_dir).unwrap();
+        let current_exe = std::env::current_exe().unwrap();
+        let mut children = Vec::new();
+        for index in 0..2 {
+            children.push(
+                std::process::Command::new(&current_exe)
+                    .args([
+                        "credentials::tests::credential_mutation_child",
+                        "--ignored",
+                        "--exact",
+                    ])
+                    .env("GROK_MCP_CREDENTIAL_CHILD_PATH", &path)
+                    .env("GROK_MCP_CREDENTIAL_CHILD_INDEX", index.to_string())
+                    .env("GROK_MCP_CREDENTIAL_CHILD_READY_DIR", &ready_dir)
+                    .spawn()
+                    .unwrap(),
+            );
+        }
+        let mut children = ChildCleanup(children);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        wait_for_file(&ready_dir.join("ready-0"), deadline, "child 0 readiness");
+        wait_for_file(&ready_dir.join("ready-1"), deadline, "child 1 readiness");
+        std::fs::write(ready_dir.join("go-0"), b"go").unwrap();
+        wait_for_file(
+            &ready_dir.join("entered-0"),
+            deadline,
+            "child 0 transaction entry",
+        );
+        std::fs::write(ready_dir.join("go-1"), b"go").unwrap();
+        children.wait_success(deadline);
+
+        let merged = McpCredentialStore::load_from(&path).unwrap();
+        for index in 0..2 {
+            let name = format!("server-{index}");
+            let url = Url::parse(&format!("https://server-{index}.example.com/mcp")).unwrap();
+            assert!(merged.has_credentials(&name, &url));
+        }
+    }
+
+    #[test]
+    #[ignore = "launched as a subprocess by concurrent_process_mutations_preserve_both_entries"]
+    fn credential_mutation_child() {
+        let path = PathBuf::from(std::env::var_os("GROK_MCP_CREDENTIAL_CHILD_PATH").unwrap());
+        let index = std::env::var("GROK_MCP_CREDENTIAL_CHILD_INDEX").unwrap();
+        let ready_dir =
+            PathBuf::from(std::env::var_os("GROK_MCP_CREDENTIAL_CHILD_READY_DIR").unwrap());
+        let go_path = ready_dir.join(format!("go-{index}"));
+        std::fs::write(ready_dir.join(format!("ready-{index}")), b"ready").unwrap();
+        while !go_path.exists() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let name = format!("server-{index}");
+        let url = Url::parse(&format!("https://server-{index}.example.com/mcp")).unwrap();
+        let mut store = McpCredentialStore::default();
+        store
+            .mutate_and_save_to(&path, |fresh| {
+                std::fs::write(ready_dir.join(format!("entered-{index}")), b"entered").unwrap();
+                if index == "0" {
+                    // With the process lock, child 1 cannot enter until this
+                    // transaction commits. Without it, both children load the
+                    // empty store and this handshake deterministically exposes
+                    // the lost update.
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                    while !ready_dir.join("entered-1").exists()
+                        && std::time::Instant::now() < deadline
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                } else {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    wait_for_file(&ready_dir.join("committed-0"), deadline, "child 0 commit");
+                }
+                fresh.insert_rmcp(&name, &url, test_stored_creds(&name));
+            })
+            .unwrap();
+        std::fs::write(ready_dir.join(format!("committed-{index}")), b"committed").unwrap();
+    }
+
+    fn wait_for_file(path: &Path, deadline: std::time::Instant, description: &str) {
+        while !path.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {description}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    struct ChildCleanup(Vec<std::process::Child>);
+
+    impl ChildCleanup {
+        fn wait_success(&mut self, deadline: std::time::Instant) {
+            let mut completed = vec![false; self.0.len()];
+            while completed.iter().any(|done| !done) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "credential mutation subprocesses timed out"
+                );
+                for (index, child) in self.0.iter_mut().enumerate() {
+                    if completed[index] {
+                        continue;
+                    }
+                    if let Some(status) = child.try_wait().unwrap() {
+                        assert!(status.success(), "credential child {index} failed");
+                        completed[index] = true;
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+
+    impl Drop for ChildCleanup {
+        fn drop(&mut self) {
+            for child in &mut self.0 {
+                if child.try_wait().ok().flatten().is_none() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn locked_remove_all_preserves_other_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
+        let first_url = Url::parse("https://first.example.com/mcp").unwrap();
+        let second_url = Url::parse("https://second.example.com/mcp").unwrap();
+        let other_url = Url::parse("https://other.example.com/mcp").unwrap();
+        let mut store = McpCredentialStore::default();
+        store
+            .mutate_and_save_to(&path, |fresh| {
+                fresh.insert_rmcp("shared", &first_url, test_stored_creds("first"));
+                fresh.insert_rmcp("shared", &second_url, test_stored_creds("second"));
+                fresh.insert_rmcp("other", &other_url, test_stored_creds("other"));
+            })
+            .unwrap();
+
+        let removed = store
+            .remove_all_by_server_name_and_save_to(&path, "shared")
+            .unwrap();
+
+        assert_eq!(removed, 2);
+        let persisted = McpCredentialStore::load_from(&path).unwrap();
+        assert!(!persisted.has_credentials("shared", &first_url));
+        assert!(!persisted.has_credentials("shared", &second_url));
+        assert!(persisted.has_credentials("other", &other_url));
+    }
+
+    #[test]
+    fn locked_mutation_does_not_overwrite_malformed_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
+        std::fs::write(&path, "{ malformed").unwrap();
+        let mut store = McpCredentialStore::default();
+        let url = Url::parse("https://new.example.com/mcp").unwrap();
+
+        let result = store.mutate_and_save_to(&path, |fresh| {
+            fresh.insert_rmcp("new", &url, test_stored_creds("new-client"));
+        });
+
+        assert!(matches!(result, Err(McpCredentialError::Json(_))));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "{ malformed");
+    }
+
+    #[test]
+    fn locked_remove_preserves_entries_added_after_stale_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.json");
+        let removed_url = Url::parse("https://remove.example.com/mcp").unwrap();
+        let preserved_url = Url::parse("https://preserve.example.com/mcp").unwrap();
+        let mut seed = McpCredentialStore::default();
+        seed.mutate_and_save_to(&path, |store| {
+            store.insert_rmcp("shared", &removed_url, test_stored_creds("removed-client"));
+        })
+        .unwrap();
+        let mut stale_remover = McpCredentialStore::load_from(&path).unwrap();
+
+        let mut concurrent_writer = McpCredentialStore::default();
+        concurrent_writer
+            .mutate_and_save_to(&path, |store| {
+                store.insert_rmcp(
+                    "shared",
+                    &preserved_url,
+                    test_stored_creds("preserved-client"),
+                );
+            })
+            .unwrap();
+        let removed = stale_remover
+            .mutate_and_save_to(&path, |store| {
+                store
+                    .entries
+                    .remove(&McpCredentialStore::key("shared", &removed_url))
+                    .is_some()
+            })
+            .unwrap();
+
+        assert!(removed);
+        let final_store = McpCredentialStore::load_from(&path).unwrap();
+        assert!(!final_store.has_credentials("shared", &removed_url));
+        assert!(final_store.has_credentials("shared", &preserved_url));
     }
 }
