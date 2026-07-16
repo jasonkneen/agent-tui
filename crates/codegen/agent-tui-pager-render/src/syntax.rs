@@ -66,14 +66,23 @@ pub fn highlight_line(
 /// Returns the syntect instance matching the active theme.
 pub fn get_syntect() -> &'static Syntect {
     match crate::theme::Theme::current_kind() {
-        ThemeKind::GrokNight
-        | ThemeKind::RosePineMoon
-        | ThemeKind::OscuraMidnight
-        | ThemeKind::Auto => SYNTECT_GROKNIGHT
-            .get_or_init(|| Syntect::new(include_bytes!("../assets/grok-night.tmTheme"))),
         ThemeKind::TokyoNight => SYNTECT_TOKYONIGHT
             .get_or_init(|| Syntect::new(include_bytes!("../assets/tokyo-night.tmTheme"))),
         ThemeKind::GrokDay => SYNTECT_GROKDAY
             .get_or_init(|| Syntect::new(include_bytes!("../assets/grok-day.tmTheme"))),
+        // All other dark themes (and Auto fallback) share the GrokNight syntax palette.
+        ThemeKind::GrokNight
+        | ThemeKind::RosePineMoon
+        | ThemeKind::OscuraMidnight
+        | ThemeKind::OpenCode
+        | ThemeKind::Vercel
+        | ThemeKind::Copilot
+        | ThemeKind::Nerv
+        | ThemeKind::Catppuccin
+        | ThemeKind::Nord
+        | ThemeKind::Gruvbox
+        | ThemeKind::Dracula
+        | ThemeKind::Auto => SYNTECT_GROKNIGHT
+            .get_or_init(|| Syntect::new(include_bytes!("../assets/grok-night.tmTheme"))),
     }
 }

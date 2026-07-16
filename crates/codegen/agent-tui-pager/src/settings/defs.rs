@@ -70,6 +70,46 @@ const THEME_CHOICES: &[EnumChoice] = &[
         display: "Oscura Midnight",
         description: "Deep dark with warm accents; needs truecolor.",
     },
+    EnumChoice {
+        canonical: "opencode",
+        display: "OpenCode",
+        description: "Warm orange primary on near-black; needs truecolor.",
+    },
+    EnumChoice {
+        canonical: "vercel",
+        display: "Vercel",
+        description: "Geist monochrome with blue accents; needs truecolor.",
+    },
+    EnumChoice {
+        canonical: "copilot",
+        display: "Copilot",
+        description: "GitHub Dark with Copilot purple; needs truecolor.",
+    },
+    EnumChoice {
+        canonical: "nerv",
+        display: "NERV",
+        description: "Evangelion Unit-01 purple/green; needs truecolor.",
+    },
+    EnumChoice {
+        canonical: "catppuccin",
+        display: "Catppuccin",
+        description: "Catppuccin Mocha pastel dark; needs truecolor.",
+    },
+    EnumChoice {
+        canonical: "nord",
+        display: "Nord",
+        description: "Arctic north-bluish palette; needs truecolor.",
+    },
+    EnumChoice {
+        canonical: "gruvbox",
+        display: "Gruvbox",
+        description: "Warm retro groove dark; needs truecolor.",
+    },
+    EnumChoice {
+        canonical: "dracula",
+        display: "Dracula",
+        description: "Classic Dracula purple/pink; needs truecolor.",
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -485,6 +525,46 @@ const CONCRETE_THEME_CHOICES: &[EnumChoice] = &[
         canonical: "oscura-midnight",
         display: "Oscura Midnight",
         description: "Deep dark with warm accents; needs truecolor.",
+    },
+    EnumChoice {
+        canonical: "opencode",
+        display: "OpenCode",
+        description: "Warm orange primary on near-black; needs truecolor.",
+    },
+    EnumChoice {
+        canonical: "vercel",
+        display: "Vercel",
+        description: "Geist monochrome with blue accents; needs truecolor.",
+    },
+    EnumChoice {
+        canonical: "copilot",
+        display: "Copilot",
+        description: "GitHub Dark with Copilot purple; needs truecolor.",
+    },
+    EnumChoice {
+        canonical: "nerv",
+        display: "NERV",
+        description: "Evangelion Unit-01 purple/green; needs truecolor.",
+    },
+    EnumChoice {
+        canonical: "catppuccin",
+        display: "Catppuccin",
+        description: "Catppuccin Mocha pastel dark; needs truecolor.",
+    },
+    EnumChoice {
+        canonical: "nord",
+        display: "Nord",
+        description: "Arctic north-bluish palette; needs truecolor.",
+    },
+    EnumChoice {
+        canonical: "gruvbox",
+        display: "Gruvbox",
+        description: "Warm retro groove dark; needs truecolor.",
+    },
+    EnumChoice {
+        canonical: "dracula",
+        display: "Dracula",
+        description: "Classic Dracula purple/pink; needs truecolor.",
     },
 ];
 

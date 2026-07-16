@@ -6,7 +6,7 @@ Agent TUI draws all TUI colors from a central theme. You can switch themes while
 
 ## Available Themes
 
-Agent TUI includes five built-in themes, plus an `auto` option that follows your system appearance:
+Agent TUI includes thirteen built-in themes, plus an `auto` option that follows your system appearance:
 
 | Theme | Config Names | Description | Truecolor Required |
 |-------|-------------|-------------|--------------------|
@@ -15,6 +15,14 @@ Agent TUI includes five built-in themes, plus an `auto` option that follows your
 | **TokyoNight** | `tokyonight`, `tokyo-night`, `tokyo` | Dark, blue-tinted backgrounds from the Tokyo Night palette. Loses its character when quantized. | Yes |
 | **RosePineMoon** | `rosepine`, `rose-pine`, `rosepine-moon`, `rose-pine-moon` | Muted dark palette with mauve accents, from the Rosé Pine family. | Yes |
 | **OscuraMidnight** | `oscura`, `oscura-midnight` | Deep dark base with purple accents. | Yes |
+| **OpenCode** | `opencode`, `open-code` | Warm orange primary (`#fab283`) on near-black grays, matching the OpenCode TUI default. | Yes |
+| **Vercel** | `vercel`, `geist` | Geist Design System monochrome with blue accents. | Yes |
+| **Copilot** | `copilot`, `github-copilot`, `github` | GitHub Dark canvas with Copilot brand purple accents. | Yes |
+| **NERV** | `nerv`, `evangelion`, `eva`, `unit-01` | Evangelion Unit-01 palette: purple, neon green, warning orange on near-black. | Yes |
+| **Catppuccin** | `catppuccin`, `catppuccin-mocha`, `mocha` | Catppuccin Mocha pastel dark palette. | Yes |
+| **Nord** | `nord` | Arctic, north-bluish Nord palette. | Yes |
+| **Gruvbox** | `gruvbox`, `gruvbox-dark` | Warm retro-groove dark palette. | Yes |
+| **Dracula** | `dracula` | Classic Dracula purple/pink dark theme. | Yes |
 
 Theme names are case-insensitive. The `auto` option (alias `system`) is documented under [Auto Theme (System Appearance)](#auto-theme-system-appearance).
 
