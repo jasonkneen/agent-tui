@@ -7,6 +7,13 @@ use xai_grok_shell::cli_models::{AuthStatus, list_models};
 
 use crate::client_identity::{PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION};
 
+fn finish_model_discovery<T>(cancel: &CancellationToken, result: Result<T>) -> Result<T> {
+    // Signal shutdown before propagating a discovery error so the spawned
+    // agent owner remains alive while its worker observes cancellation.
+    cancel.cancel();
+    result
+}
+
 pub async fn list_available_models(agent_config: &AgentConfig) -> Result<()> {
     match AuthStatus::resolve(agent_config) {
         AuthStatus::ApiKey => println!("You are using XAI_API_KEY."),
@@ -21,8 +28,14 @@ pub async fn list_available_models(agent_config: &AgentConfig) -> Result<()> {
 
     let cancel = CancellationToken::new();
     let spawned = crate::acp::spawn::spawn_grok_shell(agent_config.clone(), &cancel, None).await?;
+    // Declared after `spawned` so unwind/abort drops this guard first and
+    // signals cancellation while the spawned-agent owner is still alive.
+    let _cancel_on_drop = cancel.clone().drop_guard();
 
-    let state = list_models(&spawned.channel.tx, PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION).await?;
+    let state = finish_model_discovery(
+        &cancel,
+        list_models(&spawned.channel.tx, PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION).await,
+    )?;
 
     println!("Default model: {}", state.current_model_id.0);
     println!();
@@ -34,7 +47,5 @@ pub async fn list_available_models(agent_config: &AgentConfig) -> Result<()> {
             println!("  - {}", m.model_id.0);
         }
     }
-
-    cancel.cancel();
     Ok(())
 }
