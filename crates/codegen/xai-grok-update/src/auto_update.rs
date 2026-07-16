@@ -1986,14 +1986,41 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Creates a temporary .npmrc file with the NPM token if present.
-/// Returns the path to the created file, or None if no token was set.
-fn create_temp_npmrc(npm_registry: Option<&str>) -> Result<Option<std::path::PathBuf>> {
+/// Owns a private temporary `.npmrc` and reports cleanup failures on drop.
+///
+/// The handle removes the file on drop, including when
+/// spawning npm fails or the install returns early. `tempfile` creates the path
+/// atomically with a randomized name, avoiding predictable-path and symlink
+/// attacks in the shared system temporary directory.
+struct TempNpmrc {
+    file: Option<tempfile::NamedTempFile>,
+}
+
+impl TempNpmrc {
+    fn new(file: tempfile::NamedTempFile) -> Self {
+        Self { file: Some(file) }
+    }
+
+    fn path(&self) -> &std::path::Path {
+        self.file.as_ref().expect("temporary npmrc is open").path()
+    }
+}
+
+impl Drop for TempNpmrc {
+    fn drop(&mut self) {
+        if let Some(file) = self.file.take()
+            && let Err(error) = file.close()
+        {
+            tracing::warn!(%error, "failed to remove temporary npm credential file");
+        }
+    }
+}
+
+/// Creates a temporary `.npmrc` containing `NPM_TOKEN`, when configured.
+fn create_temp_npmrc(npm_registry: Option<&str>) -> Result<Option<TempNpmrc>> {
     if let Ok(token) = std::env::var("NPM_TOKEN") {
         let token = token.trim();
         if !token.is_empty() {
-            let dir = std::env::temp_dir();
-            let npmrc_path = dir.join(format!(".npmrc-{}-install", std::process::id()));
             let registry_host = npm_registry
                 .and_then(|r| reqwest::Url::parse(r).ok())
                 .map(|u| {
@@ -2003,13 +2030,21 @@ fn create_temp_npmrc(npm_registry: Option<&str>) -> Result<Option<std::path::Pat
                 })
                 .unwrap_or_else(|| "registry.npmjs.org".to_string());
             let npmrc_content = format!("//{}/:_authToken={}\n", registry_host, token);
-            std::fs::write(&npmrc_path, npmrc_content)?;
+            let mut npmrc = tempfile::Builder::new()
+                .prefix(".npmrc-")
+                .suffix("-install")
+                .tempfile()?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&npmrc_path, std::fs::Permissions::from_mode(0o600))?;
+                npmrc
+                    .as_file()
+                    .set_permissions(std::fs::Permissions::from_mode(0o600))?;
             }
-            return Ok(Some(npmrc_path));
+            use std::io::Write;
+            npmrc.write_all(npmrc_content.as_bytes())?;
+            npmrc.as_file_mut().sync_all()?;
+            return Ok(Some(TempNpmrc::new(npmrc)));
         }
     }
     Ok(None)
@@ -2109,8 +2144,8 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
 
     // Use a temporary .npmrc to avoid exposing the token in process lists or shell history.
     let temp_npmrc = create_temp_npmrc(npm_registry)?;
-    if let Some(ref npmrc_path) = temp_npmrc {
-        cmd.arg(format!("--userconfig={}", npmrc_path.display()));
+    if let Some(ref npmrc) = temp_npmrc {
+        cmd.arg(format!("--userconfig={}", npmrc.path().display()));
     }
 
     cmd.stdin(Stdio::null())
@@ -2119,12 +2154,7 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
         .stderr(Stdio::inherit());
     xai_grok_tools::util::detach_std_command(&mut cmd);
     let status = cmd.status()?;
-
-    if let Some(path) = temp_npmrc
-        && let Err(e) = std::fs::remove_file(&path)
-    {
-        tracing::warn!("Failed to remove temp .npmrc file: {}", e);
-    }
+    drop(temp_npmrc);
 
     pb.finish_and_clear();
 
@@ -4202,8 +4232,8 @@ mod tests {
     fn test_create_temp_npmrc_default_registry() {
         let _g = InstallerEnvGuard::isolate();
         unsafe { std::env::set_var("NPM_TOKEN", "secret123") };
-        let path = create_temp_npmrc(None).unwrap().expect("file written");
-        let body = std::fs::read_to_string(&path).unwrap();
+        let file = create_temp_npmrc(None).unwrap().expect("file written");
+        let body = std::fs::read_to_string(file.path()).unwrap();
 
         assert!(
             body.contains("registry.npmjs.org"),
@@ -4212,8 +4242,6 @@ mod tests {
         assert!(body.contains("_authToken=secret123"), "token: {body}");
         assert!(body.starts_with("//"), "must be // prefix: {body}");
         assert!(body.ends_with('\n'), "must end with newline: {body}");
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -4221,8 +4249,8 @@ mod tests {
     fn test_create_temp_npmrc_token_trimmed() {
         let _g = InstallerEnvGuard::isolate();
         unsafe { std::env::set_var("NPM_TOKEN", "  padded-token  ") };
-        let path = create_temp_npmrc(None).unwrap().expect("file written");
-        let body = std::fs::read_to_string(&path).unwrap();
+        let file = create_temp_npmrc(None).unwrap().expect("file written");
+        let body = std::fs::read_to_string(file.path()).unwrap();
         assert!(
             body.contains("_authToken=padded-token"),
             "token must be trimmed: {body}"
@@ -4231,7 +4259,6 @@ mod tests {
             !body.contains("padded-token  "),
             "trailing whitespace must be stripped: {body}"
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -4239,10 +4266,10 @@ mod tests {
     fn test_create_temp_npmrc_custom_registry_extracts_host_and_path() {
         let _g = InstallerEnvGuard::isolate();
         unsafe { std::env::set_var("NPM_TOKEN", "tok") };
-        let path = create_temp_npmrc(Some("https://npm.example.com/repository/npm/"))
+        let file = create_temp_npmrc(Some("https://npm.example.com/repository/npm/"))
             .unwrap()
             .expect("file written");
-        let body = std::fs::read_to_string(&path).unwrap();
+        let body = std::fs::read_to_string(file.path()).unwrap();
 
         // Host + path must be preserved (trailing slash stripped per impl).
         assert!(
@@ -4250,8 +4277,6 @@ mod tests {
             "registry host+path: {body}"
         );
         assert!(body.contains("_authToken=tok"));
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -4259,15 +4284,14 @@ mod tests {
     fn test_create_temp_npmrc_custom_registry_with_port() {
         let _g = InstallerEnvGuard::isolate();
         unsafe { std::env::set_var("NPM_TOKEN", "tok") };
-        let path = create_temp_npmrc(Some("https://npm.example.com:8443/"))
+        let file = create_temp_npmrc(Some("https://npm.example.com:8443/"))
             .unwrap()
             .expect("file written");
-        let body = std::fs::read_to_string(&path).unwrap();
+        let body = std::fs::read_to_string(file.path()).unwrap();
         assert!(
             body.contains("npm.example.com:8443"),
             "port must be preserved: {body}"
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -4277,15 +4301,14 @@ mod tests {
         // public npm host so the auth token isn't silently lost.
         let _g = InstallerEnvGuard::isolate();
         unsafe { std::env::set_var("NPM_TOKEN", "tok") };
-        let path = create_temp_npmrc(Some("not a url"))
+        let file = create_temp_npmrc(Some("not a url"))
             .unwrap()
             .expect("file written");
-        let body = std::fs::read_to_string(&path).unwrap();
+        let body = std::fs::read_to_string(file.path()).unwrap();
         assert!(
             body.contains("registry.npmjs.org"),
             "invalid URL falls back: {body}"
         );
-        let _ = std::fs::remove_file(&path);
     }
 
     #[cfg(unix)]
@@ -4296,33 +4319,37 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let _g = InstallerEnvGuard::isolate();
         unsafe { std::env::set_var("NPM_TOKEN", "secret") };
-        let path = create_temp_npmrc(None).unwrap().expect("file written");
+        let file = create_temp_npmrc(None).unwrap().expect("file written");
 
-        let perms = std::fs::metadata(&path).unwrap().permissions();
+        let perms = std::fs::metadata(file.path()).unwrap().permissions();
         let mode = perms.mode() & 0o777;
         assert_eq!(
             mode, 0o600,
             "npmrc must be 0600 to protect the auth token, got {mode:o}"
         );
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     #[serial_test::serial]
-    fn test_create_temp_npmrc_unique_path_per_pid() {
-        // Two parallel installs would clobber each other if the path didn't
-        // include the PID. Verify the filename includes the current PID.
+    fn test_create_temp_npmrc_uses_unique_random_paths() {
+        // Multiple installs in the same process must never clobber one another.
         let _g = InstallerEnvGuard::isolate();
         unsafe { std::env::set_var("NPM_TOKEN", "tok") };
-        let path = create_temp_npmrc(None).unwrap().expect("file written");
-        let pid = std::process::id().to_string();
-        let name = path.file_name().unwrap().to_string_lossy().to_string();
-        assert!(
-            name.contains(&pid),
-            "filename should include PID: {name} (pid={pid})"
-        );
-        let _ = std::fs::remove_file(&path);
+        let first = create_temp_npmrc(None).unwrap().expect("first file");
+        let second = create_temp_npmrc(None).unwrap().expect("second file");
+        assert_ne!(first.path(), second.path());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_create_temp_npmrc_is_removed_on_drop() {
+        let _g = InstallerEnvGuard::isolate();
+        unsafe { std::env::set_var("NPM_TOKEN", "tok") };
+        let file = create_temp_npmrc(None).unwrap().expect("file written");
+        let path = file.path().to_path_buf();
+        assert!(path.exists());
+        drop(file);
+        assert!(!path.exists(), "temporary npmrc must be removed on drop");
     }
 
     // ──────────────────────────────────────────────────────────────────────
