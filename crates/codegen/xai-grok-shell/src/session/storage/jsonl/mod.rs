@@ -655,6 +655,47 @@ pub(crate) fn fork_filter_chat(items: &mut Vec<ConversationItem>) {
     }
     items.truncate(last_complete_end);
 }
+
+pub(crate) fn copy_tool_result_artifacts_between_dirs(
+    source_session_dir: &Path,
+    target_session_dir: &Path,
+    conversation: &mut [ConversationItem],
+) -> io::Result<usize> {
+    let source = source_session_dir.join("tool-results");
+    if !source.is_dir() {
+        return Ok(0);
+    }
+    let target = target_session_dir.join("tool-results");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700).create(&target)?;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(&target)?;
+
+    let mut copied = 0;
+    for entry in std::fs::read_dir(&source)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let destination = target.join(entry.file_name());
+        crate::util::secure_file::write_secure_file(&destination, &std::fs::read(entry.path())?)?;
+        copied += 1;
+    }
+    if copied > 0 {
+        transform_conversation_cwd(
+            conversation,
+            &source.to_string_lossy(),
+            &target.to_string_lossy(),
+        );
+    }
+    Ok(copied)
+}
+
 impl JsonlStorageAdapter {
     /// Fully synchronous version of `copy_session_data` for use inside
     /// `spawn_blocking`. Identical logic but uses `std::fs::write` instead
@@ -693,6 +734,11 @@ impl JsonlStorageAdapter {
         if options.strip_reasoning {
             chat_to_copy = xai_chat_state::compaction_utils::strip_reasoning_blocks(chat_to_copy);
         }
+        copy_tool_result_artifacts_between_dirs(
+            &self.session_dir(source_info),
+            &target_dir,
+            &mut chat_to_copy,
+        )?;
         let num_chat_messages = chat_to_copy.len();
         let num_messages = updates_to_copy.len();
         let target_model_id = options

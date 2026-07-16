@@ -1582,11 +1582,11 @@ impl SessionActor {
                 .iter()
                 .filter(|tc| tc.name == STRUCTURED_OUTPUT_TOOL)
             {
-                self.chat_state_handle
-                    .push_tool_result(ConversationItem::tool_result(
-                        tc.id.as_ref().to_owned(),
-                        "Call StructuredOutput alone, exactly once, after all other tools finish.",
-                    ));
+                self.push_bounded_tool_result(
+                    tc.id.as_ref().to_owned(),
+                    "Call StructuredOutput alone, exactly once, after all other tools finish.",
+                )
+                .await;
             }
             tool_calls.retain(|tc| tc.name != STRUCTURED_OUTPUT_TOOL);
             return StructuredOutputStep::Proceed;
@@ -1597,21 +1597,21 @@ impl SessionActor {
             && *retries < STRUCTURED_OUTPUT_MAX_RETRIES
         {
             *retries += 1;
-            self.chat_state_handle
-                .push_tool_result(ConversationItem::tool_result(
-                    call_id,
-                    format!("{err}\nFix the arguments and call StructuredOutput again."),
-                ));
+            self.push_bounded_tool_result(
+                call_id,
+                format!("{err}\nFix the arguments and call StructuredOutput again."),
+            )
+            .await;
             return StructuredOutputStep::Retry;
         }
-        self.chat_state_handle
-            .push_tool_result(ConversationItem::tool_result(
-                call_id,
-                match &validated {
-                    Ok(_) => "Structured output accepted.".to_string(),
-                    Err(err) => err.clone(),
-                },
-            ));
+        self.push_bounded_tool_result(
+            call_id,
+            match &validated {
+                Ok(_) => "Structured output accepted.".to_string(),
+                Err(err) => err.clone(),
+            },
+        )
+        .await;
         StructuredOutputStep::Complete(validated)
     }
     /// Shared turn-completion bookkeeping (plan cleanup, signals snapshot +

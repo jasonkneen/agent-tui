@@ -1351,7 +1351,27 @@ async fn bootstrap_initial_context(
         None => None,
     };
     if let Some(items) = live_items {
-        let ctx_out = verbatim_or_normalize_fork(items, child_context_window);
+        let mut ctx_out = verbatim_or_normalize_fork(items, child_context_window);
+        let parent_info = ctx
+            .parent_session_info
+            .clone()
+            .unwrap_or_else(|| SessionInfo {
+                id: acp::SessionId::new(ctx.parent_session_id.clone()),
+                cwd: ctx.parent_cwd.to_string_lossy().into_owned(),
+            });
+        let parent_session_dir = session::persistence::session_dir(&parent_info);
+        if let Err(error) = crate::session::storage::jsonl::copy_tool_result_artifacts_between_dirs(
+            &parent_session_dir,
+            child_session_dir,
+            &mut ctx_out.conversation,
+        ) {
+            tracing::warn!(
+                %error,
+                subagent_id = %request.id,
+                "live fork: failed to copy tool-result artifacts"
+            );
+            ctx_out.copy_error = Some(error.to_string());
+        }
         tracing::info!(
             subagent_id = % request.id, subagent_type = % request.subagent_type,
             loaded_items = ctx_out.conversation.len(), source = ? ctx_out.source,

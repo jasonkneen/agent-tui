@@ -34,6 +34,8 @@ pub struct ToolBridgeResult {
     pub output: ToolOutput,
     /// Prompt-ready text — with system reminders appended.
     pub prompt_text: String,
+    /// Byte offsets where structurally appended reminder segments begin.
+    pub reminder_starts: Vec<usize>,
 }
 
 impl From<ToolRunResult> for ToolBridgeResult {
@@ -41,6 +43,7 @@ impl From<ToolRunResult> for ToolBridgeResult {
         Self {
             output: result.output,
             prompt_text: result.prompt_text,
+            reminder_starts: result.reminder_starts,
         }
     }
 }

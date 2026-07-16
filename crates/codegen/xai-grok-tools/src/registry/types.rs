@@ -1609,6 +1609,22 @@ impl FinalizedToolset {
             Vec::new()
         };
         let prompt_text = output.to_prompt_format();
+        let mut reminder_starts = Vec::with_capacity(reminders.len());
+        let mut offset = prompt_text.len();
+        for (index, reminder) in reminders.iter().enumerate() {
+            reminder_starts.push(offset);
+            if index == 0 && prompt_text.is_empty() {
+                offset +=
+                    crate::reminders::wrap_reminder_with_tag(reminder, self.system_reminder_tag)
+                        .len();
+            } else {
+                offset += 2 + crate::reminders::wrap_reminder_with_tag(
+                    reminder,
+                    self.system_reminder_tag,
+                )
+                .len();
+            }
+        }
         let prompt_text = crate::reminders::format_with_reminders(
             prompt_text,
             reminders,
@@ -1621,6 +1637,7 @@ impl FinalizedToolset {
         Ok(ToolRunResult {
             output,
             prompt_text,
+            reminder_starts,
             effective_tool_name,
         })
     }
@@ -2976,6 +2993,50 @@ mod tests {
                 xai_tool_runtime::ToolStreamItem::Terminal(Ok("terminal-value".to_string())),
             ]))
         }
+    }
+    #[derive(Debug)]
+    struct TwoSegmentReminder;
+    #[async_trait::async_trait]
+    impl crate::types::tool::Reminder for TwoSegmentReminder {
+        async fn collect_reminders(
+            &self,
+            _resources: crate::types::resources::SharedResources,
+            _tool_output: &crate::types::output::ToolOutput,
+        ) -> Vec<String> {
+            vec!["first reminder".into(), "second reminder".into()]
+        }
+    }
+    #[tokio::test]
+    async fn tool_result_records_each_structural_reminder_boundary() {
+        let tmp = TempDir::new().unwrap();
+        let mut builder = ToolRegistryBuilder::new();
+        builder.register_reminder(TwoSegmentReminder);
+        let config = ToolServerConfig {
+            tools: vec![ToolConfig::for_tool::<grok_build::ReadFileTool>()],
+            behavior_preset: None,
+        };
+        let toolset = Arc::new(
+            builder
+                .finalize(config, test_session_context(&tmp))
+                .unwrap(),
+        );
+        toolset
+            .register_tool(
+                "stub".to_string(),
+                NonStreamingStub,
+                Some(serde_json::json!({ "type" : "object", "properties" : {} })),
+            )
+            .unwrap();
+        let result = toolset
+            .call("stub", serde_json::json!({}), "call-reminders", None)
+            .await
+            .unwrap();
+        assert_eq!(result.reminder_starts.len(), 2);
+        let first = result.reminder_starts[0];
+        let second = result.reminder_starts[1];
+        assert_eq!(&result.prompt_text[..first], "stub-output");
+        assert!(result.prompt_text[first..second].contains("first reminder"));
+        assert!(result.prompt_text[second..].contains("second reminder"));
     }
     /// Back-compat: a non-streaming stub tool driven through `call` yields a
     /// `ToolRunResult` whose `prompt_text` (with reminders applied) is intact.

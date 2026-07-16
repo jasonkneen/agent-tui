@@ -561,10 +561,15 @@ pub(crate) async fn spawn_session_actor(
         };
     let fs_backend: std::sync::Arc<dyn xai_grok_tools::computer::types::AsyncFileSystem> =
         if client_fs_capable && tool_context.gateway.is_some() {
-            std::sync::Arc::new(xai_grok_workspace::file_system::AcpFsAdapter::new(
-                tool_context.gateway.clone().unwrap(),
-                tool_context.session_id.clone().unwrap(),
-            ))
+            std::sync::Arc::new(
+                xai_grok_workspace::file_system::AcpFsAdapter::new(
+                    tool_context.gateway.clone().unwrap(),
+                    tool_context.session_id.clone().unwrap(),
+                )
+                .with_local_read_root(
+                    crate::session::persistence::session_dir(&session_info).join("tool-results"),
+                ),
+            )
         } else {
             std::sync::Arc::new(xai_grok_tools::computer::local::LocalFs)
         };

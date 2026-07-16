@@ -138,6 +138,13 @@ pub struct ToolRunResult {
     /// Prompt-ready text — layers can append system reminders, etc.
     /// Consumers use this for: model prompt (ConversationItem::tool_result).
     pub prompt_text: String,
+    /// Byte offsets where structurally appended reminder segments begin.
+    ///
+    /// An empty vector means no reminders were appended. Consumers that bound
+    /// model context use these boundaries instead of searching untrusted tool
+    /// output for reminder-like markup.
+    #[serde(default)]
+    pub reminder_starts: Vec<usize>,
     /// When a meta-tool dispatches to a different underlying tool (for example
     /// `use_tool` → `linear__save_issue`), this carries the effective tool name.
     /// `None` means the requested tool and executed tool are the same.
@@ -2411,6 +2418,7 @@ mod tests {
     fn sample_run_result(output: ToolOutput) -> ToolRunResult {
         ToolRunResult {
             prompt_text: "prompt".into(),
+            reminder_starts: Vec::new(),
             effective_tool_name: None,
             output,
         }
