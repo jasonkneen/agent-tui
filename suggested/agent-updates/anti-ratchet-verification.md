@@ -1,0 +1,11 @@
+# Convention: verification is anti-ratchet — the bar never rises between rounds
+
+**Rule.** On a re-verification round (PRIOR_GAPS non-empty), the verifier's PRIMARY job is to confirm each prior gap is genuinely fixed. A NEW objection that earlier rounds did not raise is grounds to refute ONLY when it is (a) a demonstrable defect in shipped behavior, or (b) an unmet gating criterion of the plan. It is never a stylistic or test-construction preference the prior round implicitly accepted. When every prior gap is fixed and every gating criterion holds, the verdict is `Not Refuted` — even if the verifier would personally raise more.
+
+**Grounding.**
+- `goal_verifier_prompt.md`, "Anti-ratchet — converge, don't re-litigate": "The bar does NOT rise between rounds: a NEW objection that earlier rounds did not raise is grounds to refute ONLY when it is a demonstrable defect in shipped behavior or an unmet gating criterion of the plan — never a stylistic or test-construction preference the prior round implicitly accepted. Raising a fresh nitpick each round while the criteria hold is the failure mode that makes goals unfinishable."
+- The same prompt balances this against the skeptical default: "Default to `refuted: true` if uncertain" — anti-ratchet narrows *which* objections count on later rounds, it does not soften the standard applied to the objections that do count.
+
+**Why:** the goal loop is verifier-gated — the implementer iterates until the verifier stops refuting. A verifier that surfaces a different novel complaint each round (while prior gaps are fixed and criteria hold) produces the whack-a-mole non-convergence pattern the Strategist role exists to diagnose. Anti-ratchet is what makes the loop a fixpoint search instead of an unbounded taste review.
+
+**How to apply:** when authoring or reviewing any adversarial-verification prompt or process (not just the goal harness), thread PRIOR_GAPS (or equivalent) into the verifier's inputs and state the two-part admissibility test for new objections explicitly. When acting as a reviewer yourself across rounds: first re-check the previous round's findings, then admit new findings only through the demonstrable-defect / gating-criterion gate. Treat a rising bar across rounds as a process defect to route back to the governing prompt, not as thoroughness.

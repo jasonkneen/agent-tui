@@ -1,0 +1,11 @@
+# Convention: acceptance criteria fit their cap by grouping, never by dropping
+
+**Rule.** An acceptance-criteria cap is a **ceiling, not a target to fill**. When the identified defining mechanics exceed the cap, the planner folds them into a smaller criteria set by GROUPING related mechanics — a single criterion may name several closely-related mechanics that form ONE checkable outcome — but never a whole-system end-to-end gate, and never by silently omitting a core mechanic. Grouping, not dropping, is the only sanctioned way to fit the cap.
+
+**Grounding.**
+- `crates/codegen/agent-tui-shell/src/session/templates/goal_planner_prompt.md`: "Do not map one criterion per mechanic. Identify the defining mechanics, then FOLD them into a SMALL criteria set by GROUPING related ones — a single criterion may name several closely-related mechanics that form ONE checkable outcome (never a whole-system end-to-end gate) — so the set fits the `## Acceptance criteria` cap below (a ceiling, not a target to fill)."
+- The same prompt states the prohibition directly: "Grouping, NOT dropping, is how you fit the cap: never silently omit a core mechanic."
+
+**Why:** the criteria set is what the adversarial verifier gates on. A dropped mechanic disappears from verification entirely, so the goal can pass while missing a defining behavior — the silent-omission failure. Conversely, one criterion per mechanic blows the cap and produces plans that small-model readers can't hold; and a single whole-system end-to-end criterion is unfalsifiable in parts, so a partial failure refutes everything. Grouped criteria keep every mechanic verifiable while staying inside the budget.
+
+**How to apply:** when writing any capped checklist that gates verification (acceptance criteria, gating checklists, review rubrics), first enumerate everything that must hold, then compress by grouping closely-related items into single checkable outcomes. Treat any compression that removes an item from the enumerated set as a defect, and treat a cap-sized list padded with filler as the inverse smell — the cap is a ceiling, not a quota.

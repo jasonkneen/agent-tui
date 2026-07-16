@@ -1,0 +1,12 @@
+# Convention: local-CLI credential detection is discovery-only — inference always rides the warm runtime, never a one-shot HTTP call
+
+**Rule.** The `agent_tui_shell::auth::local_cli` helpers exist solely to detect whether a vendor's own CLI is logged in and to seed runtime discovery. They never become an inference path. All actual inference for an external vendor goes through that vendor's warm runtime connection (Claude Agent SDK client, `codex app-server` socket) — never a one-shot HTTP request to the provider's API using credentials the detector found.
+
+**Grounding.**
+- `docs/LOCAL_CLI_AUTH.md`: "Credential **detection** (`auth::local_cli`) only answers 'is this CLI logged in?' and seeds discovery. **Inference** goes through a **warm runtime connection**, not a one-shot `reqwest` to `api.anthropic.com`."
+- `AGENTS.md`, Multi-vendor runtimes: "Detect helpers: `agent_tui_shell::auth::local_cli` (Claude first)" — listed separately from the runtimes (Claude Agent SDK warm sidecar, `CodexRuntimePool`), which own the actual traffic.
+- The performance rationale in `docs/LOCAL_CLI_AUTH.md`: cold-start cost is dominated by process spawn, auth materialization + initialize handshake, and TLS / first model connect — exactly the costs a one-shot call re-pays on every turn and a warm connection pays once.
+
+**Why:** the detector sees where credentials live (`~/.claude` keychain material, `~/.codex/auth.json`), so the tempting shortcut is to lift them and call the provider API directly. That shortcut reimplements the vendor's auth semantics (token refresh, session state) outside the vendor's own harness, re-pays the full cold-start cost per request, and violates the harness-reuse boundary the fork's vendor-integration convention draws (no Agent TUI OAuth, no `SamplerConfig` HTTP for Claude/Codex).
+
+**How to apply:** when wiring or reviewing any external-vendor code path, check what the `local_cli` result is used for — enabling/announcing a runtime is fine; constructing an HTTP client from it is a defect. If a vendor needs a request served, route it to that vendor's runtime pool; if no runtime exists yet, build one (see the integrate-new-vendor-runtime workflow) rather than borrowing the detected credential for a direct call.

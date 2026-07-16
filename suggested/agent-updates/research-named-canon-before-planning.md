@@ -1,0 +1,12 @@
+# Convention: a named-canon objective gets its defining mechanics researched before planning — never from memory
+
+**Rule.** When an objective names something with an established canon or spec — a named game or "classic X", a named algorithm/protocol/format, or a "clone of <a specific product>" — and web access is available, the planner FIRST researches its **defining mechanics** with the web-search/web-fetch tools before writing acceptance criteria. Defining mechanics are the primary behaviors without which the deliverable is not recognizably that thing. The rule applies ONLY to named things: a generic archetype ("a todo app", "a REST API for a blog") is not a named artifact and skips the research step.
+
+**Grounding.**
+- `crates/codegen/agent-tui-shell/src/session/templates/goal_planner_prompt.md`: "When the OBJECTIVE names something with an established canon or spec … FIRST research it with your `{WEB_SEARCH_TOOL}` tool (and `{WEB_FETCH_TOOL}` to open a source) to learn its DEFINING mechanics before writing criteria; do NOT plan it from memory alone."
+- The same prompt supplies the test for what counts as defining: "the PRIMARY behaviors without which the deliverable is NOT recognizably that thing — e.g. for a key-value store, durable get-after-set; for a parser, round-trip of valid input; for a platformer, enemies that defeat / are defeated by the player plus a win state and a lose state" — while error/edge/invalid-input handling stays a Non-goal unless the objective states it.
+- And the scope boundary: "a generic archetype ('a todo app', 'a REST API for a blog') is not a named artifact — skip it."
+
+**Why:** the plan is the single source of truth for "what was supposed to happen", read by the implementer, verifiers, and classifier. Criteria written from memory for a named canon quietly omit or distort the mechanics that make the deliverable recognizable — and because verification is plan-gated, the goal then passes verification while shipping the wrong thing. Research at plan time is the only point where the omission is cheap to prevent.
+
+**How to apply:** when authoring or reviewing any planning prompt or plan for a named-canon deliverable, check for a research step before the criteria; when writing criteria yourself, derive them from a fetched source's defining mechanics, not recall. Do not over-apply: adding a research phase to a generic archetype burns turns for nothing — the named/generic test above is the boundary.
