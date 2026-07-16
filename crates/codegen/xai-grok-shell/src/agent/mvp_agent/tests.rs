@@ -2878,7 +2878,6 @@ fn chat_session_spawn_options_matches_thin_profile() {
 #[test]
 fn ext_method_rewind_uses_local_dispatch_without_bridge() {
     use acp::Agent as _;
-    let _env = crate::env::EnvVarGuard::remove(crate::env::GROK_DISABLE_CUSTOM_BRIDGE_ENV);
     run_local_for_bridge_test(|| async {
         let agent = build_minimal_agent_for_tests();
         let params = serde_json::json!({ "sessionId" : "sess-local" });

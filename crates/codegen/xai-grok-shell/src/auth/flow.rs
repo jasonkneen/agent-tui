@@ -93,15 +93,25 @@ fn config_login_device_flow(effective: Option<&toml::Value>) -> Option<bool> {
 /// Returns the deciding tier so the caller can log which one chose the transport.
 fn resolve_device_flow(
     login_override: LoginTransportOverride,
+    env: Option<bool>,
     config: Option<bool>,
     remote: Option<bool>,
 ) -> crate::agent::config::Resolved<bool> {
-    crate::agent::config::BoolFlag::env("GROK_LOGIN_DEVICE_FLOW")
-        .cli(login_override.as_cli_bool())
-        .config(config)
-        .feature_flag(remote)
-        .default(false)
-        .resolve()
+    use crate::agent::config::{ConfigSource, Resolved};
+
+    if let Some(value) = login_override.as_cli_bool() {
+        return Resolved::new(value, ConfigSource::Cli);
+    }
+    if let Some(value) = env {
+        return Resolved::new(value, ConfigSource::Env);
+    }
+    if let Some(value) = config {
+        return Resolved::new(value, ConfigSource::Config);
+    }
+    if let Some(value) = remote {
+        return Resolved::new(value, ConfigSource::Remote);
+    }
+    Resolved::new(false, ConfigSource::Default)
 }
 
 /// Whether `run_cli_login` should use the device flow for `config`: only the
@@ -126,9 +136,9 @@ async fn should_use_device_flow(login_override: LoginTransportOverride) -> bool 
     }
     let resolved = if login_override.as_cli_bool().is_some() {
         // CLI flag wins outright, so skip the config load and the remote settings fetch.
-        resolve_device_flow(login_override, None, None)
+        resolve_device_flow(login_override, None, None, None)
     } else {
-        // Read once to gate the fetch; resolve_device_flow reads it again for the decision.
+        // Read once to gate the fetch and use the same snapshot for the decision.
         let env = crate::agent::config::env_bool("GROK_LOGIN_DEVICE_FLOW");
         // One config snapshot feeds both the `[auth]` tier and the proxy URL.
         let effective = crate::config::load_effective_config().ok();
@@ -152,7 +162,7 @@ async fn should_use_device_flow(login_override: LoginTransportOverride) -> bool 
         } else {
             None
         };
-        resolve_device_flow(login_override, config, remote)
+        resolve_device_flow(login_override, env, config, remote)
     };
     tracing::info!(
         transport = if resolved.value { "device" } else { "loopback" },
@@ -1035,20 +1045,7 @@ mod tests {
     use super::*;
     use crate::auth::AuthMode;
     use crate::auth::config::XAI_OAUTH2_ISSUER;
-    use crate::env::EnvVarGuard;
     use chrono::Utc;
-
-    /// Run `f` with `GROK_LOGIN_DEVICE_FLOW` set to `value` (unset for `None`).
-    /// `EnvVarGuard` serializes the process env and restores it on drop, so
-    /// `resolve_device_flow` reads the env tier from a known state.
-    fn with_device_flow_env<T>(value: Option<bool>, f: impl FnOnce() -> T) -> T {
-        let _guard = match value {
-            Some(true) => EnvVarGuard::set("GROK_LOGIN_DEVICE_FLOW", "true"),
-            Some(false) => EnvVarGuard::set("GROK_LOGIN_DEVICE_FLOW", "false"),
-            None => EnvVarGuard::remove("GROK_LOGIN_DEVICE_FLOW"),
-        };
-        f()
-    }
 
     // A grok.com first-party (x.ai-issuer) OIDC session — `is_xai_auth()` true.
     fn oidc_session(key: &str, refresh: Option<&str>) -> GrokAuth {
@@ -1302,37 +1299,28 @@ mod tests {
     #[tokio::test]
     async fn preresolved_bypasses_resolver_and_is_never_cli() {
         // Regression for the double-log / source=cli bug: the inner flow must
-        // honor `Preresolved` WITHOUT re-running the resolver. Each case pins the
-        // opposite env value, so a leak into the resolver would flip the result —
-        // returning the carried value proves the early return (and no second log).
-        {
-            let _guard = EnvVarGuard::set("GROK_LOGIN_DEVICE_FLOW", "false");
-            assert!(
-                should_use_device_flow(LoginTransportOverride::Preresolved(true)).await,
-                "Preresolved(true) honors device without re-resolving"
-            );
-        }
-        {
-            let _guard = EnvVarGuard::set("GROK_LOGIN_DEVICE_FLOW", "true");
-            assert!(
-                !should_use_device_flow(LoginTransportOverride::Preresolved(false)).await,
-                "Preresolved(false) honors loopback without re-resolving"
-            );
-            assert!(
-                should_use_device_flow(LoginTransportOverride::None).await,
-                "the resolver path still honors env (sole resolution)"
-            );
-        }
+        // honor `Preresolved` WITHOUT re-running the resolver.
+        assert!(
+            should_use_device_flow(LoginTransportOverride::Preresolved(true)).await,
+            "Preresolved(true) honors device without re-resolving"
+        );
+        assert!(
+            !should_use_device_flow(LoginTransportOverride::Preresolved(false)).await,
+            "Preresolved(false) honors loopback without re-resolving"
+        );
         // Even if it reached the resolver it carries no CLI value, so a remote
         // decision is the remote tier, never cli.
-        with_device_flow_env(None, || {
-            assert_eq!(
-                resolve_device_flow(LoginTransportOverride::Preresolved(true), None, Some(true))
-                    .source,
-                crate::agent::config::ConfigSource::Remote,
-                "Preresolved must never resolve as the cli tier"
-            );
-        });
+        assert_eq!(
+            resolve_device_flow(
+                LoginTransportOverride::Preresolved(true),
+                None,
+                None,
+                Some(true),
+            )
+            .source,
+            crate::agent::config::ConfigSource::Remote,
+            "Preresolved must never resolve as the cli tier"
+        );
     }
 
     #[test]
@@ -1385,138 +1373,126 @@ mod tests {
     #[test]
     fn device_flow_precedence_cli_beats_env_config_remote() {
         // CLI flag wins over a *conflicting* env + config + remote feature flag.
-        with_device_flow_env(Some(true), || {
-            assert!(
-                !resolve_device_flow(
-                    LoginTransportOverride::ForceLoopback,
-                    Some(true),
-                    Some(true)
-                )
-                .value,
-                "--oauth must force loopback even when env+config+remote say device"
-            );
-        });
-        with_device_flow_env(Some(false), || {
-            assert!(
-                resolve_device_flow(
-                    LoginTransportOverride::ForceDevice,
-                    Some(false),
-                    Some(false)
-                )
-                .value,
-                "--device-auth must force device even when env+config+remote say loopback"
-            );
-        });
+        assert!(
+            !resolve_device_flow(
+                LoginTransportOverride::ForceLoopback,
+                Some(true),
+                Some(true),
+                Some(true),
+            )
+            .value,
+            "--oauth must force loopback even when env+config+remote say device"
+        );
+        assert!(
+            resolve_device_flow(
+                LoginTransportOverride::ForceDevice,
+                Some(false),
+                Some(false),
+                Some(false),
+            )
+            .value,
+            "--device-auth must force device even when env+config+remote say loopback"
+        );
     }
 
     #[test]
     fn device_flow_precedence_env_beats_config() {
         // No CLI flag: env wins over a conflicting config.
-        with_device_flow_env(Some(false), || {
-            assert!(!resolve_device_flow(LoginTransportOverride::None, Some(true), None).value);
-        });
-        with_device_flow_env(Some(true), || {
-            assert!(resolve_device_flow(LoginTransportOverride::None, Some(false), None).value);
-        });
+        assert!(
+            !resolve_device_flow(LoginTransportOverride::None, Some(false), Some(true), None).value
+        );
+        assert!(
+            resolve_device_flow(LoginTransportOverride::None, Some(true), Some(false), None).value
+        );
     }
 
     #[test]
     fn device_flow_env_beats_remote() {
         // env sits above the remote feature flag.
-        with_device_flow_env(Some(false), || {
-            assert!(
-                !resolve_device_flow(LoginTransportOverride::None, None, Some(true)).value,
-                "env=loopback must win over remote=device"
-            );
-        });
-        with_device_flow_env(Some(true), || {
-            assert!(
-                resolve_device_flow(LoginTransportOverride::None, None, Some(false)).value,
-                "env=device must win over remote=loopback"
-            );
-        });
+        assert!(
+            !resolve_device_flow(LoginTransportOverride::None, Some(false), None, Some(true)).value,
+            "env=loopback must win over remote=device"
+        );
+        assert!(
+            resolve_device_flow(LoginTransportOverride::None, Some(true), None, Some(false)).value,
+            "env=device must win over remote=loopback"
+        );
     }
 
     #[test]
     fn device_flow_config_beats_remote() {
         // Local config sits above the remote feature flag (env unset so config decides).
-        with_device_flow_env(None, || {
-            assert!(
-                !resolve_device_flow(LoginTransportOverride::None, Some(false), Some(true)).value,
-                "config=loopback must win over remote=device"
-            );
-            assert!(
-                resolve_device_flow(LoginTransportOverride::None, Some(true), Some(false)).value,
-                "config=device must win over remote=loopback"
-            );
-        });
+        assert!(
+            !resolve_device_flow(LoginTransportOverride::None, None, Some(false), Some(true)).value,
+            "config=loopback must win over remote=device"
+        );
+        assert!(
+            resolve_device_flow(LoginTransportOverride::None, None, Some(true), Some(false)).value,
+            "config=device must win over remote=loopback"
+        );
     }
 
     #[test]
     fn device_flow_precedence_config_then_default() {
         // No CLI flag, no env: config decides; absent everything → loopback.
-        with_device_flow_env(None, || {
-            assert!(!resolve_device_flow(LoginTransportOverride::None, Some(false), None).value);
-            assert!(resolve_device_flow(LoginTransportOverride::None, Some(true), None).value);
-            assert!(
-                !resolve_device_flow(LoginTransportOverride::None, None, None).value,
-                "default is loopback"
-            );
-        });
+        assert!(!resolve_device_flow(LoginTransportOverride::None, None, Some(false), None).value);
+        assert!(resolve_device_flow(LoginTransportOverride::None, None, Some(true), None).value);
+        assert!(
+            !resolve_device_flow(LoginTransportOverride::None, None, None, None).value,
+            "default is loopback"
+        );
     }
 
     #[test]
     fn device_flow_remote_then_default() {
         // No CLI flag, no env, no config: the remote feature flag drives the rollout.
-        with_device_flow_env(None, || {
-            assert!(
-                resolve_device_flow(LoginTransportOverride::None, None, Some(true)).value,
-                "remote=device rolls device-auth in when nothing local is set"
-            );
-            assert!(
-                !resolve_device_flow(LoginTransportOverride::None, None, Some(false)).value,
-                "remote=loopback keeps loopback when nothing local is set"
-            );
-            // remote settings unavailable / flag unset → None → hardcoded loopback default.
-            assert!(
-                !resolve_device_flow(LoginTransportOverride::None, None, None).value,
-                "remote settings unavailable falls back to the loopback default"
-            );
-        });
+        assert!(
+            resolve_device_flow(LoginTransportOverride::None, None, None, Some(true)).value,
+            "remote=device rolls device-auth in when nothing local is set"
+        );
+        assert!(
+            !resolve_device_flow(LoginTransportOverride::None, None, None, Some(false)).value,
+            "remote=loopback keeps loopback when nothing local is set"
+        );
+        // remote settings unavailable / flag unset → None → hardcoded loopback default.
+        assert!(
+            !resolve_device_flow(LoginTransportOverride::None, None, None, None).value,
+            "remote settings unavailable falls back to the loopback default"
+        );
     }
 
     #[test]
     fn device_flow_records_deciding_tier() {
         // The resolver records which tier decided, so the rollout ramp can log it.
         use crate::agent::config::ConfigSource;
-        with_device_flow_env(Some(false), || {
-            assert_eq!(
-                resolve_device_flow(LoginTransportOverride::ForceDevice, Some(false), None).source,
-                ConfigSource::Cli,
-                "an explicit CLI flag is reported as the cli tier"
-            );
-        });
-        with_device_flow_env(Some(true), || {
-            assert_eq!(
-                resolve_device_flow(LoginTransportOverride::None, None, Some(false)).source,
-                ConfigSource::Env
-            );
-        });
-        with_device_flow_env(None, || {
-            assert_eq!(
-                resolve_device_flow(LoginTransportOverride::None, Some(true), Some(false)).source,
-                ConfigSource::Config
-            );
-            assert_eq!(
-                resolve_device_flow(LoginTransportOverride::None, None, Some(true)).source,
-                ConfigSource::Remote,
-                "the remote feature flag is reported as the remote tier"
-            );
-            assert_eq!(
-                resolve_device_flow(LoginTransportOverride::None, None, None).source,
-                ConfigSource::Default
-            );
-        });
+        assert_eq!(
+            resolve_device_flow(
+                LoginTransportOverride::ForceDevice,
+                Some(false),
+                Some(false),
+                None,
+            )
+            .source,
+            ConfigSource::Cli,
+            "an explicit CLI flag is reported as the cli tier"
+        );
+        assert_eq!(
+            resolve_device_flow(LoginTransportOverride::None, Some(true), None, Some(false)).source,
+            ConfigSource::Env
+        );
+        assert_eq!(
+            resolve_device_flow(LoginTransportOverride::None, None, Some(true), Some(false)).source,
+            ConfigSource::Config
+        );
+        assert_eq!(
+            resolve_device_flow(LoginTransportOverride::None, None, None, Some(true)).source,
+            ConfigSource::Remote,
+            "the remote feature flag is reported as the remote tier"
+        );
+        assert_eq!(
+            resolve_device_flow(LoginTransportOverride::None, None, None, None).source,
+            ConfigSource::Default
+        );
     }
 
     fn legacy_auth() -> GrokAuth {

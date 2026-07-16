@@ -126,7 +126,9 @@ compression = []
 sandbox-enforce = ["xai-grok-sandbox/enforce"]
 default-bazel = [
     "sandbox-enforce",
+    "test-support",
     ]
+test-support = []
 
 [dev-dependencies]
 filetime = { workspace = true }
