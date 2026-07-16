@@ -780,6 +780,19 @@ async fn replace_system_head_noop_when_head_matches_modulo_newline() {
 }
 
 #[tokio::test]
+async fn guarded_system_head_replace_is_atomic_with_inference_history_check() {
+    let h = TestHarness::with_conversation(vec![
+        ConversationItem::system("old"),
+        ConversationItem::user("hi"),
+        ConversationItem::assistant("already inferred"),
+    ]);
+    let result = h.handle.replace_system_head_before_inference("new").await;
+    assert_eq!(result, Some(None));
+    let conv = h.handle.get_conversation().await;
+    assert!(matches!(&conv[0], ConversationItem::System(s) if s.content.as_ref() == "old"));
+}
+
+#[tokio::test]
 async fn replace_system_head_inserts_when_absent() {
     let h = TestHarness::with_conversation(vec![ConversationItem::user("hi")]);
     let changed = h.handle.replace_system_head("sys").await;

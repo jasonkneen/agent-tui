@@ -274,10 +274,9 @@ impl SessionActor {
         );
         Ok(())
     }
-    /// Apply a client-supplied `systemPromptOverride` on session attach without
-    /// wiping user/assistant history: swap only the leading `System` message,
-    /// atomically inside the `ChatStateActor` (see
-    /// `ChatStateCommand::ReplaceSystemHead` for the serialization guarantees).
+    /// Apply a client-supplied `systemPromptOverride` only before the first
+    /// model inference. Existing inferred history must keep its original system
+    /// prefix so earlier turns are not reinterpreted under new instructions.
     /// `system_prompt.txt` (not owned by the persistence actor) is saved
     /// directly, even on a head no-op, so a previously-diverged secondary
     /// artifact self-heals. Skipped entirely on a verbatim mirror-fork
@@ -290,16 +289,42 @@ impl SessionActor {
             );
             return;
         }
-        let Some(changed) = self
-            .chat_state_handle
-            .replace_system_head(&system_prompt)
-            .await
-        else {
-            tracing::error!(
+        // Hold the session state lock across the actor command so prompt
+        // promotion cannot start an inference between the active-turn check and
+        // the atomic history predicate/replacement in ChatStateActor.
+        let state = self.state.lock().await;
+        if state.running_task.is_some()
+            || self
+                .session_turn_active
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            tracing::warn!(
                 session_id = % self.session_info.id.0,
-                "handle_replace_system_prompt: chat-state actor unavailable; override not applied"
+                "handle_replace_system_prompt: ignored override while inference is active"
             );
             return;
+        }
+        let result = self
+            .chat_state_handle
+            .replace_system_head_before_inference(&system_prompt)
+            .await;
+        drop(state);
+        let changed = match result {
+            Some(Some(changed)) => changed,
+            Some(None) => {
+                tracing::warn!(
+                    session_id = % self.session_info.id.0,
+                    "handle_replace_system_prompt: ignored override for session with inference history"
+                );
+                return;
+            }
+            None => {
+                tracing::error!(
+                    session_id = % self.session_info.id.0,
+                    "handle_replace_system_prompt: chat-state actor unavailable; override not applied"
+                );
+                return;
+            }
         };
         save_system_prompt(&self.session_info, &system_prompt);
         if changed {

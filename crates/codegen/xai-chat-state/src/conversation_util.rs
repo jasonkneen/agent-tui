@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use xai_grok_sampling_types::conversation::ConversationItem;
+use xai_grok_sampling_types::conversation::{ContentPart, ConversationItem, SyntheticReason};
 
 /// Equal after trimming trailing `\n`/`\r` from both sides. Used for attach
 /// idempotency so a stored head that differs from a client override only by a
@@ -12,6 +12,34 @@ use xai_grok_sampling_types::conversation::ConversationItem;
 /// Interior and leading whitespace are significant.
 pub fn canonical_system_prompt_eq(a: &str, b: &str) -> bool {
     a.trim_end_matches(['\n', '\r']) == b.trim_end_matches(['\n', '\r'])
+}
+
+/// Whether the conversation contains output produced by a model inference.
+///
+/// Once this is true, changing the leading system prompt would reinterpret
+/// existing turns under different instructions and invalidate the stable
+/// prompt prefix used by backend caches.
+pub fn has_inference_history(conversation: &[ConversationItem]) -> bool {
+    conversation.iter().any(|item| match item {
+        ConversationItem::Assistant(_)
+        | ConversationItem::ToolResult(_)
+        | ConversationItem::BackendToolCall(_)
+        | ConversationItem::Reasoning(_) => true,
+        ConversationItem::User(xai_grok_sampling_types::conversation::UserItem {
+            synthetic_reason: Some(SyntheticReason::CompactionMeta),
+            ..
+        }) => true,
+        ConversationItem::User(user) => user.content.iter().any(|part| {
+            matches!(
+                part,
+                ContentPart::Text { text }
+                    if text.starts_with(
+                        crate::compaction_utils::COMPACT_SUMMARY_CONTINUATION_PREFIX
+                    )
+            )
+        }),
+        ConversationItem::System(_) => false,
+    })
 }
 
 /// Replace the leading `System` message with `prompt`, or insert one at the head
@@ -66,6 +94,47 @@ mod tests {
         assert!(canonical_system_prompt_eq("a\nb\n", "a\nb"));
         assert!(!canonical_system_prompt_eq("a\nb", "ab"));
         assert!(!canonical_system_prompt_eq(" hello", "hello"));
+    }
+
+    #[test]
+    fn inference_history_ignores_bootstrap_only_prefix() {
+        let history = vec![
+            ConversationItem::system("system"),
+            ConversationItem::user("startup context"),
+        ];
+        assert!(!has_inference_history(&history));
+    }
+
+    #[test]
+    fn inference_history_detects_assistant_output() {
+        let history = vec![
+            ConversationItem::system("system"),
+            ConversationItem::user("hello"),
+            ConversationItem::assistant("response"),
+        ];
+        assert!(has_inference_history(&history));
+    }
+
+    #[test]
+    fn inference_history_detects_compacted_summary_only_history() {
+        let history = vec![
+            ConversationItem::system("system"),
+            ConversationItem::user_meta("summary of earlier inferred turns"),
+        ];
+        assert!(has_inference_history(&history));
+    }
+
+    #[test]
+    fn inference_history_detects_legacy_untagged_compacted_summary() {
+        let legacy_summary = format!(
+            "{}\n\nlegacy summary",
+            crate::compaction_utils::COMPACT_SUMMARY_CONTINUATION_PREFIX
+        );
+        let history = vec![
+            ConversationItem::system("system"),
+            ConversationItem::user(legacy_summary),
+        ];
+        assert!(has_inference_history(&history));
     }
 
     #[test]

@@ -699,12 +699,12 @@ fn neutralize_compaction_control_tokens(text: &str) -> String {
 /// Clean tags via [`format_compact_summary`] and prepend the continuation
 /// preamble. This is the user message content that replaces the compacted
 /// conversation.
+pub(crate) const COMPACT_SUMMARY_CONTINUATION_PREFIX: &str = "This session is being continued from a previous conversation that ran out of context. \
+The summary below covers the earlier portion of the conversation.";
+
 pub fn format_compact_summary_content(raw_summary: &str) -> String {
     let cleaned = format_compact_summary(raw_summary);
-    format!(
-        "This session is being continued from a previous conversation that ran out of context. \
-         The summary below covers the earlier portion of the conversation.\n\n{cleaned}"
-    )
+    format!("{COMPACT_SUMMARY_CONTINUATION_PREFIX}\n\n{cleaned}")
 }
 /// Floor for the cleaned seed (degenerate band observed at 75–264
 /// chars; smallest healthy prod summary observed at 3,242 chars).

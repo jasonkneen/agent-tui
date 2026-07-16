@@ -3390,7 +3390,9 @@ impl MvpAgent {
         if let Some(override_prompt) = system_prompt_override_from_meta(
             session_meta,
             init_meta,
-        ) && !chat_history.is_empty() && !startup_hints.preserve_inherited_system
+        ) && !chat_history.is_empty()
+            && !startup_hints.preserve_inherited_system
+            && !xai_chat_state::conversation_util::has_inference_history(&chat_history)
         {
             let changed = replace_or_insert_system_head(
                 &mut chat_history,
