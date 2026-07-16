@@ -2,27 +2,27 @@
 // Thin trampoline: resolves the grok binary from the matching per-platform
 // optional dependency package and execs it.
 //
-// Falls back to bootstrapping the canonical ~/.grok/bin/grok-<version> symlink
+// Falls back to bootstrapping the canonical ~/.agent-tui/bin/agent-tui-<version> symlink
 // layout if postinstall hasn't run (e.g. npx, or postinstall failure).
 //
 // Binary location strategy (in priority order):
-//   1. ~/.grok/bin/grok        — canonical versioned symlink (postinstall.js)
-//   2. @xai-official/grok-<platform>/bin/grok[.exe]      — decompressed sibling
-//   3. @xai-official/grok-<platform>/bin/grok[.exe].br   — brotli-compressed
+//   1. ~/.agent-tui/bin/agent-tui        — canonical versioned symlink (postinstall.js)
+//   2. @agent-tui/agent-tui-<platform>/bin/agent-tui[.exe]      — decompressed sibling
+//   3. @agent-tui/agent-tui-<platform>/bin/agent-tui[.exe].br   — brotli-compressed
 //
 // Per-platform binaries are shipped brotli-compressed to stay well under
-// npm's ~200 MB tarball ceiling. See sibling packages @xai-official/grok-*.
+// npm's ~200 MB tarball ceiling. See sibling packages @agent-tui/agent-tui-*.
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const zlib = require('zlib');
 
-const pkgName = '@xai-official/grok';
+const pkgName = '@agent-tui/grok';
 const IS_WINDOWS = process.platform === 'win32';
 const EXE = IS_WINDOWS ? '.exe' : '';
 const BIN_NAME = `grok${EXE}`;
-const CANONICAL_DIR = path.join(os.homedir(), '.grok', 'bin');
+const CANONICAL_DIR = path.join(os.homedir(), '.agent-tui', 'bin');
 const CANONICAL_PATH = path.join(CANONICAL_DIR, BIN_NAME);
 
 function readLocalVersion() {
@@ -33,7 +33,7 @@ function readLocalVersion() {
 // matching optional dependency wasn't installed (unsupported platform, or
 // npm refused to install optionalDependencies).
 function resolvePlatformPackageDir() {
-    const platformPkg = `@xai-official/grok-${process.platform}-${process.arch}`;
+    const platformPkg = `@agent-tui/agent-tui-${process.platform}-${process.arch}`;
     try {
         return path.dirname(require.resolve(`${platformPkg}/package.json`));
     } catch {
@@ -56,7 +56,7 @@ function decompressBrotli(brPath, outPath) {
 function bootstrapCanonical(sourceBinPath, version) {
     try {
         fs.mkdirSync(CANONICAL_DIR, { recursive: true });
-        const versionedName = `grok-${version}${EXE}`;
+        const versionedName = `agent-tui-${version}${EXE}`;
         const versionedPath = path.join(CANONICAL_DIR, versionedName);
         if (!fs.existsSync(versionedPath)) {
             const tmpPath = versionedPath + `.tmp.${process.pid}`;
@@ -97,7 +97,7 @@ function resolveBinary() {
     const platformDir = resolvePlatformPackageDir();
     if (!platformDir) {
         console.error(`${pkgName}: no platform binary installed for ${process.platform}-${process.arch}.`);
-        console.error(`  Expected sibling package @xai-official/grok-${process.platform}-${process.arch}.`);
+        console.error(`  Expected sibling package @agent-tui/agent-tui-${process.platform}-${process.arch}.`);
         console.error(`  This usually means npm skipped optionalDependencies (e.g. --no-optional)`);
         console.error(`  or the platform is not supported.`);
         process.exit(1);

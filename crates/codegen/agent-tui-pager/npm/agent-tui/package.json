@@ -1,10 +1,10 @@
 {
-    "name": "@xai-official/grok",
+    "name": "@agent-tui/agent-tui",
     "version": "0.1.220-alpha.4",
-    "description": "Bring Grok into your terminal",
+    "description": "Bring Agent TUI into your terminal",
     "license": "Apache-2.0",
     "bin": {
-        "grok": "bin/grok"
+        "agent-tui": "bin/agent-tui"
     },
     "files": [
         "bin/"
@@ -31,11 +31,11 @@
         "@iarna/toml": "^3.0.0"
     },
     "optionalDependencies": {
-        "@xai-official/grok-darwin-arm64": "0.1.220-alpha.4",
-        "@xai-official/grok-darwin-x64": "0.1.220-alpha.4",
-        "@xai-official/grok-linux-arm64": "0.1.220-alpha.4",
-        "@xai-official/grok-linux-x64": "0.1.220-alpha.4",
-        "@xai-official/grok-win32-arm64": "0.1.220-alpha.4",
-        "@xai-official/grok-win32-x64": "0.1.220-alpha.4"
+        "@agent-tui/agent-tui-darwin-arm64": "0.1.220-alpha.4",
+        "@agent-tui/agent-tui-darwin-x64": "0.1.220-alpha.4",
+        "@agent-tui/agent-tui-linux-arm64": "0.1.220-alpha.4",
+        "@agent-tui/agent-tui-linux-x64": "0.1.220-alpha.4",
+        "@agent-tui/agent-tui-win32-arm64": "0.1.220-alpha.4",
+        "@agent-tui/agent-tui-win32-x64": "0.1.220-alpha.4"
     }
 }

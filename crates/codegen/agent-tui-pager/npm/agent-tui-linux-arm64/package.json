@@ -1,7 +1,7 @@
 {
-    "name": "@xai-official/grok-linux-arm64",
+    "name": "@agent-tui/agent-tui-linux-arm64",
     "version": "0.2.0-dev",
-    "description": "linux-arm64 binary for @xai-official/grok. Do not install directly; install @xai-official/grok instead.",
+    "description": "linux-arm64 binary for @agent-tui/agent-tui. Do not install directly; install @agent-tui/agent-tui instead.",
     "license": "Apache-2.0",
     "files": [
         "bin/",

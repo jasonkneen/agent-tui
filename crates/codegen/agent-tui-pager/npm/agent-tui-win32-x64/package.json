@@ -1,7 +1,7 @@
 {
-    "name": "@xai-official/grok-win32-arm64",
+    "name": "@agent-tui/agent-tui-win32-x64",
     "version": "0.2.0-dev",
-    "description": "win32-arm64 binary for @xai-official/grok. Do not install directly; install @xai-official/grok instead.",
+    "description": "win32-x64 binary for @agent-tui/agent-tui. Do not install directly; install @agent-tui/agent-tui instead.",
     "license": "Apache-2.0",
     "files": [
         "bin/",
@@ -11,7 +11,7 @@
         "win32"
     ],
     "cpu": [
-        "arm64"
+        "x64"
     ],
     "publishConfig": {
         "access": "public"

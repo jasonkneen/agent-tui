@@ -1,14 +1,14 @@
 {
-    "name": "@xai-official/grok-darwin-x64",
+    "name": "@agent-tui/agent-tui-linux-x64",
     "version": "0.2.0-dev",
-    "description": "darwin-x64 binary for @xai-official/grok. Do not install directly; install @xai-official/grok instead.",
+    "description": "linux-x64 binary for @agent-tui/agent-tui. Do not install directly; install @agent-tui/agent-tui instead.",
     "license": "Apache-2.0",
     "files": [
         "bin/",
         "THIRD_PARTY_NOTICES.md"
     ],
     "os": [
-        "darwin"
+        "linux"
     ],
     "cpu": [
         "x64"
