@@ -128,23 +128,110 @@ async fn run_headless_with_env(
 // Smoke tests
 // ============================================================================
 
-/// Smoke test: the binary loads and exits without crashing.
-/// This does NOT require the mock server — it's the absolute minimum bar.
-#[tokio::test]
+/// The three public version surfaces must agree and keep their machine-readable
+/// contract stable. This does not require the mock server.
+#[test]
 #[ignore] // requires pre-built binary; run with --ignored
-async fn test_version_exits_zero() {
+fn test_version_output_contract() {
     let binary = grok_binary();
-    let output = Command::new(&binary)
-        .arg("--version")
-        .output()
-        .unwrap_or_else(|e| panic!("failed to run {}: {e}", binary.display()));
+    let home = tempfile::TempDir::new().expect("create isolated version-test home");
+    let grok_home = home.path().join(".grok");
 
-    assert!(
-        output.status.success(),
-        "grok --version failed (exit {:?}):\n{}",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let run = |args: &[&str]| {
+        Command::new(&binary)
+            .args(args)
+            .env("HOME", home.path())
+            .env("GROK_HOME", &grok_home)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run {}: {e}", binary.display()))
+    };
+    let checked_stdout = |label: &str, output: std::process::Output| {
+        assert!(
+            output.status.success(),
+            "{label} failed (exit {:?}):\n{}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "{label} wrote unexpected stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .unwrap_or_else(|e| panic!("{label} stdout was not UTF-8: {e}"))
+    };
+
+    let assert_contract = |expected_channel: &str| {
+        let flag_output = checked_stdout("grok --version", run(&["--version"]));
+        let human_output = checked_stdout("grok version", run(&["version"]));
+        let json_output = checked_stdout("grok version --json", run(&["version", "--json"]));
+
+        assert_eq!(
+            flag_output.trim(),
+            human_output.trim(),
+            "the clap flag and version subcommand must render the same human contract"
+        );
+
+        let payload: serde_json::Value = serde_json::from_str(json_output.trim())
+            .unwrap_or_else(|e| panic!("version JSON was invalid: {e}\n{json_output}"));
+        let object = payload
+            .as_object()
+            .expect("version JSON must be a top-level object");
+        let current_version = object
+            .get("currentVersion")
+            .and_then(serde_json::Value::as_str)
+            .expect("currentVersion must be a string");
+        assert!(
+            !current_version.is_empty(),
+            "currentVersion must not be empty"
+        );
+        assert_eq!(
+            object.get("channel").and_then(serde_json::Value::as_str),
+            Some(expected_channel),
+            "JSON channel must match the isolated version cache"
+        );
+        assert!(
+            !object.contains_key("current_version"),
+            "snake_case current_version would break the documented JSON contract"
+        );
+
+        let label = match expected_channel {
+            "stable" => " [stable]",
+            "alpha" => " [alpha]",
+            "unknown" => "",
+            other => panic!("unexpected test channel {other}"),
+        };
+        assert_eq!(
+            human_output.trim(),
+            format!("grok {current_version}{label}")
+        );
+        current_version.to_owned()
+    };
+
+    let current_version = assert_contract("unknown");
+    std::fs::create_dir_all(&grok_home).expect("create isolated GROK_HOME");
+    let write_cache = |stable_version: &str| {
+        let fixture = serde_json::json!({
+            "version": "0.0.0",
+            "stable_version": stable_version,
+            "checked_at": "2026-01-01T00:00:00Z",
+        });
+        std::fs::write(
+            grok_home.join("version.json"),
+            serde_json::to_vec(&fixture).expect("serialize version cache fixture"),
+        )
+        .expect("write version cache fixture");
+    };
+
+    // Channel comparison uses the installed xai-grok-version value, which can
+    // intentionally differ from the pager build's displayed package version.
+    // Extreme valid semvers exercise both comparison branches without coupling
+    // this executable-level test to either crate's versioning scheme.
+    write_cache("999999.0.0");
+    assert_eq!(assert_contract("stable"), current_version);
+
+    write_cache("0.0.0");
+    assert_eq!(assert_contract("alpha"), current_version);
 }
 
 /// Verify the crash handler installs without interfering with normal startup.
