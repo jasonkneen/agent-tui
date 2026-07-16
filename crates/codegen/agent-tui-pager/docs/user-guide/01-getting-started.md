@@ -8,7 +8,34 @@ You can use it interactively as a full-screen TUI, run it headlessly for scripti
 
 ## Installation
 
-**Agent TUI** is a packaging fork of Agent TUI Build. Build from this repository:
+**Agent TUI** is a packaging fork of Grok Build. Prefer a prebuilt release, or build from source.
+
+### Prebuilt (GitHub Releases)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jasonkneen/agent-tui/fork/agent-tui/crates/codegen/agent-tui-pager/scripts/install.sh | bash
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/jasonkneen/agent-tui/fork/agent-tui/crates/codegen/agent-tui-pager/scripts/install.ps1 | iex
+```
+
+Useful variants:
+
+```bash
+# specific version
+curl -fsSL …/install.sh | bash -s 0.1.220
+
+# alpha channel
+AGENT_TUI_CHANNEL=alpha curl -fsSL …/install.sh | bash
+```
+
+Maintainer release process: **`RELEASING.md`** at the repository root.
+Releases: https://github.com/jasonkneen/agent-tui/releases
+
+### Build from source
 
 ```bash
 cargo run -p agent-tui-bin                 # debug
@@ -29,7 +56,7 @@ Or install the npm package wrappers (when published for this fork):
 npm i -g @agent-tui/agent-tui
 ```
 
-> **Note:** The public `https://x.ai/cli/install.sh` installer installs **official Agent TUI Build** (`grok`), not this fork. Use cargo (or this tree’s scripts) for Agent TUI.
+> **Note:** Official `https://x.ai/cli/install.sh` installs upstream Grok Build (`grok`), not this fork.
 
 Verify the installation:
 

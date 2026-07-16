@@ -1,14 +1,12 @@
 #
-# Agent TUI installer for PowerShell — https://x.ai/cli/install.ps1
+# Agent TUI installer for PowerShell — installs from GitHub Releases.
 #
 # Auth: GROK_DEPLOYMENT_KEY env var (takes precedence) or ~/.agent-tui/auth.json from `agent-tui login`.
-# Env: GROK_CHANNEL (stable|alpha|enterprise, default: stable), AGENT_TUI_BIN_DIR, GROK_PROXY_URL
+# Env: GROK_CHANNEL / AGENT_TUI_CHANNEL, AGENT_TUI_BIN_DIR, AGENT_TUI_GITHUB_REPO, GROK_PROXY_URL
 #
 # Usage:
-#   irm https://x.ai/cli/install.ps1 | iex                                       # latest stable
-#   & ([scriptblock]::Create((irm https://x.ai/cli/install.ps1))) -Version 0.1.42 # specific version
-#   $env:GROK_VERSION="0.1.42"; irm https://x.ai/cli/install.ps1 | iex           # specific version (alt)
-#   $env:GROK_DEPLOYMENT_KEY="<key>"; irm https://x.ai/cli/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/jasonkneen/agent-tui/fork/agent-tui/crates/codegen/agent-tui-pager/scripts/install.ps1 | iex
+#   & ([scriptblock]::Create((irm .../install.ps1))) -Version 0.1.220
 #
 
 param(
@@ -31,11 +29,19 @@ if (-not $Version -and $env:GROK_VERSION) {
 
 # This script is Windows-only. PS 5.1 has no Platform property and only runs on Windows.
 if ($PSVersionTable.Platform -and $PSVersionTable.Platform -ne 'Win32NT') {
-    Write-Error "This installer is for Windows. On macOS/Linux, use: curl -fsSL https://x.ai/cli/install.sh | bash"
+    Write-Error "This installer is for Windows. On macOS/Linux, use: curl -fsSL https://raw.githubusercontent.com/jasonkneen/agent-tui/fork/agent-tui/crates/codegen/agent-tui-pager/scripts/install.sh | bash"
     exit 1
 }
 
-$GrokDir = Join-Path $env:USERPROFILE '.grok'
+if ($env:AGENT_TUI_HOME) {
+    $GrokDir = $env:AGENT_TUI_HOME
+} elseif ($env:GROK_HOME) {
+    $GrokDir = $env:GROK_HOME
+} else {
+    $GrokDir = Join-Path $env:USERPROFILE '.agent-tui'
+}
+$GithubRepo = if ($env:AGENT_TUI_GITHUB_REPO) { $env:AGENT_TUI_GITHUB_REPO } else { 'jasonkneen/agent-tui' }
+$AssetPrefix = 'agent-tui'
 
 # --- Helpers ---
 
@@ -147,36 +153,36 @@ $platform = "windows-$arch"
 
 # --- Resolve version and channel ---
 
-$BaseUrlPrimary = 'https://x.ai/cli'
-$BaseUrlFallback = 'https://storage.googleapis.com/grok-build-public-artifacts/cli'
 $DownloadDir = Join-Path $GrokDir 'downloads'
-$BinDir = if ($env:AGENT_TUI_BIN_DIR) { $env:AGENT_TUI_BIN_DIR } else { Join-Path $GrokDir 'bin' }
+$BinDir = if ($env:AGENT_TUI_BIN_DIR) { $env:AGENT_TUI_BIN_DIR } elseif ($env:GROK_BIN_DIR) { $env:GROK_BIN_DIR } else { Join-Path $GrokDir 'bin' }
 
 New-Item -ItemType Directory -Path $DownloadDir -Force | Out-Null
 New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 
-$Channel = if ($env:GROK_CHANNEL) { $env:GROK_CHANNEL } else { 'stable' }
-
-# Pick a working BaseUrl: try Cloudflare-fronted x.ai first, fall back to
-# direct GCS if it's unreachable. The probe doubles as the channel-pointer
-# fetch when no -Version was passed, so the happy path costs zero extra requests.
-if (-not $Version) { Write-Host "Fetching latest $Channel version..." -ForegroundColor DarkGray }
-$probeResult = Download-String "$BaseUrlPrimary/$Channel"
-if ($probeResult) {
-    $BaseUrl = $BaseUrlPrimary
-} else {
-    Write-Host "Note: $BaseUrlPrimary unreachable, falling back to direct GCS." -ForegroundColor Yellow
-    $BaseUrl = $BaseUrlFallback
-    $probeResult = Download-String "$BaseUrl/$Channel"
-}
+$Channel = if ($env:AGENT_TUI_CHANNEL) { $env:AGENT_TUI_CHANNEL } elseif ($env:GROK_CHANNEL) { $env:GROK_CHANNEL } else { 'stable' }
 
 if ($Version) {
     $resolvedVersion = $Version
-} elseif ($probeResult) {
-    $resolvedVersion = $probeResult.Trim()
 } else {
-    Write-Error "Failed to fetch latest version from $BaseUrlPrimary/$Channel and $BaseUrlFallback/$Channel"
-    exit 1
+    Write-Host "Fetching latest $Channel version from GitHub ($GithubRepo)..." -ForegroundColor DarkGray
+    $GhApi = "https://api.github.com/repos/$GithubRepo"
+    if ($Channel -eq 'alpha') {
+        $listJson = Download-String "$GhApi/releases?per_page=30"
+        if ($listJson) {
+            $releases = $listJson | ConvertFrom-Json
+            $tag = ($releases | Where-Object { -not $_.draft } | Select-Object -First 1).tag_name
+        }
+    } else {
+        $latestJson = Download-String "$GhApi/releases/latest"
+        if ($latestJson) {
+            $tag = ($latestJson | ConvertFrom-Json).tag_name
+        }
+    }
+    if (-not $tag) {
+        Write-Error "Failed to fetch latest version from $GhApi (channel=$Channel). Publish a release or pass -Version."
+        exit 1
+    }
+    $resolvedVersion = $tag.TrimStart('v')
 }
 
 if ($AuthSource) {
@@ -187,29 +193,28 @@ if ($AuthSource) {
 
 # --- Download binary ---
 
-$binaryPath = Join-Path $DownloadDir "grok-$platform.exe"
-$artifactBase = "$BaseUrl/grok-$resolvedVersion-$platform"
+$storedName = "$AssetPrefix-$resolvedVersion-$platform"
+$binaryPath = Join-Path $DownloadDir "$storedName.exe"
+$assetName = "$storedName.exe"
+$artifactUrl = "https://github.com/$GithubRepo/releases/download/v$resolvedVersion/$assetName"
 
 $downloaded = $false
-foreach ($url in @("$artifactBase.exe", $artifactBase)) {
-    try {
-        Download-File $url $binaryPath
-        $downloaded = $true
-        break
-    } catch {
-        continue
-    }
+try {
+    Download-File $artifactUrl $binaryPath
+    $downloaded = $true
+} catch {
+    $downloaded = $false
 }
 
 if (-not $downloaded) {
     if (Test-Path $binaryPath) { Remove-Item $binaryPath -Force }
-    Write-Error "Binary download failed from $artifactBase.exe and $artifactBase"
+    Write-Error "Binary download failed from $artifactUrl"
     exit 1
 }
 
 # --- Install binary (locked-file safe) ---
 
-foreach ($binName in @('grok.exe', 'agent.exe')) {
+foreach ($binName in @('agent-tui.exe', 'agent.exe')) {
     $dest = Join-Path $BinDir $binName
     $old = "$dest.old"
 
@@ -236,8 +241,8 @@ Write-Host "  Installed to $BinDir\agent-tui.exe and $BinDir\agent.exe." -Foregr
 $completionsDir = Join-Path (Join-Path $GrokDir 'completions') 'powershell'
 try {
     New-Item -ItemType Directory -Path $completionsDir -Force | Out-Null
-    & (Join-Path $BinDir 'grok.exe') completions powershell 2>$null |
-        Set-Content (Join-Path $completionsDir 'grok.ps1') -ErrorAction SilentlyContinue
+    & (Join-Path $BinDir 'agent-tui.exe') completions powershell 2>$null |
+        Set-Content (Join-Path $completionsDir 'agent-tui.ps1') -ErrorAction SilentlyContinue
 } catch {}
 
 # --- Persist installer config ---

@@ -29,17 +29,26 @@ const MSG_RUN_UPDATE_MANUAL: &str = "Run `grok update` to get the latest version
 /// Manual-install one-liner for this platform's bootstrap installer.
 fn manual_install_cmd() -> &'static str {
     if cfg!(windows) {
-        "irm https://x.ai/cli/install.ps1 | iex"
+        "irm https://raw.githubusercontent.com/jasonkneen/agent-tui/fork/agent-tui/crates/codegen/agent-tui-pager/scripts/install.ps1 | iex"
     } else {
-        "curl -fsSL https://x.ai/cli/install.sh | bash"
+        "curl -fsSL https://raw.githubusercontent.com/jasonkneen/agent-tui/fork/agent-tui/crates/codegen/agent-tui-pager/scripts/install.sh | bash"
     }
 }
 
 /// Build a reinstall hint for a known installer type.
 fn reinstall_hint(installer: &str) -> String {
     match installer {
-        "npm" => "Please reinstall via npm:\n  npm i -g @xai-official/grok".to_string(),
-        "gh-release" => "Please reinstall via GitHub Releases:\n  gh release download --repo xai-org-shared/grok-build --pattern 'grok-*' --output grok && chmod +x grok".to_string(),
+        "npm" => format!(
+            "Please reinstall via npm:\n  npm i -g {}",
+            crate::version::NPM_PACKAGE
+        ),
+        "gh-release" => format!(
+            "Please reinstall via GitHub Releases:\n  gh release download --repo {} --pattern '{}-*' --output {} && chmod +x {}",
+            crate::version::GH_RELEASE_REPO,
+            crate::version::RELEASE_ASSET_PREFIX,
+            crate::version::MANAGED_BIN_NAME,
+            crate::version::MANAGED_BIN_NAME,
+        ),
         _ => format!("Please reinstall via:\n  {}", manual_install_cmd()),
     }
 }
@@ -1088,7 +1097,79 @@ async fn download_cli_artifact_from_gcs(
 }
 
 async fn install_internal(target: Option<&str>, update_config: &UpdateConfig) -> Result<()> {
-    install_internal_from_bases(target, update_config, crate::version::CLI_BASE_URLS).await
+    // Production path: GitHub Releases over HTTP (no `gh` CLI, no xAI CDN).
+    install_from_github_http(target, update_config).await
+}
+
+/// Download + activate a release asset from GitHub Releases via HTTPS.
+///
+/// Used by the `internal` installer (install.sh and in-app auto-update) so
+/// users do not need the `gh` CLI. Asset layout matches the release workflow:
+/// `agent-tui-{version}-{platform}[.exe]`.
+async fn install_from_github_http(
+    target: Option<&str>,
+    update_config: &UpdateConfig,
+) -> Result<()> {
+    let (os, arch) = detect_platform()?;
+    let platform = format!("{os}-{arch}");
+
+    let version = match target {
+        Some(v) => {
+            semver::Version::parse(v)
+                .map_err(|_| anyhow::anyhow!("invalid version format: '{v}'"))?;
+            v.to_string()
+        }
+        None => crate::version::fetch_github_http_version(&update_config.channel).await?,
+    };
+
+    let grok_home = grok_home();
+    let download_dir = grok_home.join("downloads");
+    tokio::fs::create_dir_all(&download_dir).await?;
+
+    let asset_name = crate::version::release_asset_name(&version, &platform);
+    // Store under a stable versioned name (strip .exe for the on-disk key on Windows).
+    let stored_name = format!(
+        "{}-{}-{}",
+        crate::version::RELEASE_ASSET_PREFIX,
+        version,
+        platform
+    );
+    let binary_path = if cfg!(windows) {
+        download_dir.join(format!("{stored_name}.exe"))
+    } else {
+        download_dir.join(&stored_name)
+    };
+
+    let url = crate::version::github_release_asset_url(&version, &platform);
+    eprintln!(
+        "  Downloading {} v{version} ({platform}) from GitHub Releases...",
+        crate::version::MANAGED_BIN_NAME
+    );
+    // `asset_name` is only used for messaging; download uses the full URL.
+    let _ = asset_name;
+    download_with_progress(&url, &binary_path).await?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755)).await?;
+    }
+
+    if !smoke_test_binary(&binary_path).await {
+        let _ = tokio::fs::remove_file(&binary_path).await;
+        anyhow::bail!(
+            "downloaded binary failed to run.\n\
+             Your current version is unchanged.\n\
+             To update manually: {}",
+            manual_install_cmd()
+        );
+    }
+
+    activate_verified_download(&VerifiedDownload {
+        version,
+        binary_path,
+    })
+    .await
 }
 
 /// Try the base-dependent install phase ([`download_verified_from_base`]:
@@ -1191,13 +1272,31 @@ async fn download_verified_from_base(
     let download_dir = grok_home.join("downloads");
     tokio::fs::create_dir_all(&download_dir).await?;
 
-    let binary_name = format!("grok-{}-{}", version, platform);
-    let binary_path = download_dir.join(&binary_name);
+    let binary_name = format!(
+        "{}-{}-{}",
+        crate::version::RELEASE_ASSET_PREFIX,
+        version,
+        platform
+    );
+    let binary_path = if platform.starts_with("windows") {
+        download_dir.join(format!("{binary_name}.exe"))
+    } else {
+        download_dir.join(&binary_name)
+    };
 
-    eprintln!("  Downloading grok v{} ({})...", version, platform);
+    eprintln!(
+        "  Downloading {} v{version} ({platform})...",
+        crate::version::MANAGED_BIN_NAME
+    );
 
-    // Published already +x (see `publish_downloaded_artifact`).
-    download_cli_artifact_from_gcs(gcs_base_url, &binary_name, &binary_path, true).await?;
+    // Flat-layout mirrors publish already +x (see `publish_downloaded_artifact`).
+    // Prefer the versioned name; on Windows also try the `.exe` suffix object.
+    let object = if platform.starts_with("windows") {
+        format!("{binary_name}.exe")
+    } else {
+        binary_name.clone()
+    };
+    download_cli_artifact_from_gcs(gcs_base_url, &object, &binary_path, true).await?;
 
     // Smoke-test: run the binary before activating it. A truncated or
     // corrupt download is caught here and never becomes the active grok.
@@ -1227,7 +1326,7 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
     let bin_dir = grok_home.join("bin");
     tokio::fs::create_dir_all(&bin_dir).await?;
 
-    // Atomic swap of ~/.grok/bin/{grok,agent} -> downloaded binary.
+    // Atomic swap of ~/.agent-tui/bin/{agent-tui,agent} -> downloaded binary.
     let link_path = swap_managed_bin_links(&download.binary_path, &bin_dir).await?;
 
     remove_stale_pager(&bin_dir).await;
@@ -1235,6 +1334,13 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
     eprintln!();
 
     // Clean up old versioned binaries (keeps current + 1 previous).
+    cleanup_old_downloads(
+        &download_dir,
+        crate::version::RELEASE_ASSET_PREFIX,
+        &download.version,
+    )
+    .await;
+    // Legacy prefixes from dual-install / pre-fork downloads.
     cleanup_old_downloads(&download_dir, "grok", &download.version).await;
     cleanup_old_downloads(&download_dir, "grok-pager", &download.version).await;
 
@@ -1342,11 +1448,15 @@ async fn swap_managed_bin_links(
     binary_path: &std::path::Path,
     bin_dir: &std::path::Path,
 ) -> Result<std::path::PathBuf> {
-    let grok_name = if cfg!(windows) { "grok.exe" } else { "grok" };
+    let primary = if cfg!(windows) {
+        format!("{}.exe", crate::version::MANAGED_BIN_NAME)
+    } else {
+        crate::version::MANAGED_BIN_NAME.to_string()
+    };
     let agent_name = if cfg!(windows) { "agent.exe" } else { "agent" };
-    let grok_link = bin_dir.join(grok_name);
+    let primary_link = bin_dir.join(&primary);
     let agent_link = bin_dir.join(agent_name);
-    let link_paths: [std::path::PathBuf; 2] = [grok_link.clone(), agent_link];
+    let link_paths: [std::path::PathBuf; 2] = [primary_link.clone(), agent_link];
 
     // Capture every link up-front so a 2nd-link capture failure can't
     // strand the 1st mid-swap.
@@ -1415,7 +1525,7 @@ async fn swap_managed_bin_links(
     for cap in &captured {
         cap.cleanup().await;
     }
-    Ok(grok_link)
+    Ok(primary_link)
 }
 
 /// Snapshot of a managed-bin link's prior state for rollback in
@@ -1901,11 +2011,11 @@ async fn gh_release_download(tag: &str, pattern: &str, dest: &std::path::Path) -
     Ok(())
 }
 
-/// Download and install grok from GitHub Releases (xai-org-shared/grok-build).
+/// Download and install Agent TUI from GitHub Releases via the `gh` CLI.
 ///
 /// Uses `gh release download` to fetch the binary matching the current platform.
-/// This works anywhere the `gh` CLI is authenticated, without needing npm or
-/// internal network access.
+/// Prefer this when `gh` is available and authenticated; otherwise the
+/// `internal` installer uses plain HTTPS ([`install_from_github_http`]).
 async fn install_gh_release(target: Option<&str>) -> Result<()> {
     let (os, arch) = detect_platform()?;
     let platform = format!("{}-{}", os, arch);
@@ -1921,16 +2031,26 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
     tokio::fs::create_dir_all(&download_dir).await?;
     tokio::fs::create_dir_all(&bin_dir).await?;
 
-    let binary_name = format!("grok-{}-{}", version, platform);
-    let binary_path = download_dir.join(&binary_name);
-    let tag = format!("v{}", version);
+    let asset_name = crate::version::release_asset_name(&version, &platform);
+    let stored_name = format!(
+        "{}-{}-{}",
+        crate::version::RELEASE_ASSET_PREFIX,
+        version,
+        platform
+    );
+    let binary_path = if cfg!(windows) {
+        download_dir.join(format!("{stored_name}.exe"))
+    } else {
+        download_dir.join(&stored_name)
+    };
+    let tag = format!("v{version}");
 
     eprintln!(
-        "  Downloading grok v{} ({}) from GitHub Releases...",
-        version, platform
+        "  Downloading {} v{version} ({platform}) from GitHub Releases...",
+        crate::version::MANAGED_BIN_NAME
     );
 
-    gh_release_download(&tag, &binary_name, &binary_path).await?;
+    gh_release_download(&tag, &asset_name, &binary_path).await?;
 
     // chmod +x
     #[cfg(unix)]
@@ -1939,31 +2059,35 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
         tokio::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755)).await?;
     }
 
-    // Atomic swap of ~/.grok/bin/{grok,agent} -> downloaded binary.
+    // Atomic swap of ~/.agent-tui/bin/{agent-tui,agent} -> downloaded binary.
     swap_managed_bin_links(&binary_path, &bin_dir).await?;
 
-    // Update grok-latest -> versioned binary so any existing symlinks that route
-    // through it (e.g. /usr/local/bin/grok -> ~/.grok/downloads/grok-latest)
-    // resolve to the newly installed version.
+    // Update agent-tui-latest -> versioned binary so any existing symlinks that
+    // route through it resolve to the newly installed version.
     #[cfg(unix)]
     {
-        let latest_path = download_dir.join("grok-latest");
+        let latest_path = download_dir.join(format!(
+            "{}-latest",
+            crate::version::RELEASE_ASSET_PREFIX
+        ));
         let rel_target = relative_symlink_target(&binary_path, &latest_path);
         if let Err(e) = atomic_symlink_swap(&rel_target, &latest_path).await {
-            tracing::warn!("Failed to update grok-latest symlink: {e}");
+            tracing::warn!("Failed to update agent-tui-latest symlink: {e}");
         }
     }
 
-    // Also update /usr/local/bin/{grok,agent} if either points directly into
-    // ~/.grok/downloads/ (legacy layout — skips the grok-latest indirection).
-    // Permission errors ignored.
+    // Also update /usr/local/bin/{agent-tui,agent} if either points directly into
+    // the managed downloads dir. Permission errors ignored.
     #[cfg(unix)]
-    for name in ["grok", "agent"] {
+    for name in [crate::version::MANAGED_BIN_NAME, "agent"] {
         let system_link = std::path::PathBuf::from(format!("/usr/local/bin/{name}"));
         if let Ok(existing_target) = tokio::fs::read_link(&system_link).await {
             let target_str = existing_target.to_string_lossy();
-            if target_str.contains(".grok/downloads/") && !target_str.ends_with("grok-latest") {
-                // Try to update; ignore permission errors
+            if (target_str.contains(".agent-tui/downloads/")
+                || target_str.contains(".grok/downloads/"))
+                && !target_str.ends_with("agent-tui-latest")
+                && !target_str.ends_with("grok-latest")
+            {
                 let _ = atomic_symlink_swap(&binary_path, &system_link).await;
             }
         }
@@ -1974,6 +2098,12 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
     eprintln!();
 
     // Clean up old versioned binaries (keeps current + 1 previous).
+    cleanup_old_downloads(
+        &download_dir,
+        crate::version::RELEASE_ASSET_PREFIX,
+        &version,
+    )
+    .await;
     cleanup_old_downloads(&download_dir, "grok", &version).await;
     cleanup_old_downloads(&download_dir, "grok-pager", &version).await;
 
@@ -2107,7 +2237,7 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
     warn_if_other_grok_processes_running();
 
     let version_arg = match target {
-        Some(ver) => format!("@xai-official/grok@{ver}"),
+        Some(ver) => format!("{}@{ver}", crate::version::NPM_PACKAGE),
         None => {
             // All current callers resolve the version via get_latest_version
             // (which applies max(stable, alpha) for the alpha channel) before
@@ -2118,7 +2248,8 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
                 "install_npm called without a resolved version, falling back to dist-tag"
             );
             format!(
-                "@xai-official/grok@{}",
+                "{}@{}",
+                crate::version::NPM_PACKAGE,
                 if channel == "alpha" {
                     "alpha"
                 } else {
@@ -3244,7 +3375,7 @@ mod tests {
         let hint = reinstall_hint("npm");
         assert!(hint.contains("npm i -g"), "should suggest npm i -g: {hint}");
         assert!(
-            hint.contains("@xai-official/grok"),
+            hint.contains(crate::version::NPM_PACKAGE),
             "should name the package: {hint}"
         );
     }
@@ -3257,7 +3388,7 @@ mod tests {
             "should suggest gh release download: {hint}"
         );
         assert!(
-            hint.contains("xai-org-shared/grok-build"),
+            hint.contains(crate::version::GH_RELEASE_REPO),
             "should name the repo: {hint}"
         );
     }

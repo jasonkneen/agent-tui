@@ -10,20 +10,42 @@ use agent_tui_shell::env::GrokBuildEnvironment;
 use agent_tui_shell::util::grok_home::grok_home;
 
 const TTL_SECONDS_BEFORE_AUTO_UPDATE: Duration = Duration::from_secs(60 * 30);
-const NPM_PACKAGE: &str = "@xai-official/grok";
-pub const GH_RELEASE_REPO: &str = "xai-org-shared/grok-build";
 
-/// Primary CLI base URL: Cloudflare-fronted x.ai endpoint with edge caching
-/// for binaries and origin-respecting no-cache for channel pointers.
-pub(crate) const CLI_BASE_URL_PRIMARY: &str = "https://x.ai/cli";
+/// npm meta-package for Agent TUI (optionalDependencies pull platform binaries).
+pub const NPM_PACKAGE: &str = "@agent-tui/agent-tui";
 
-/// Fallback CLI base URL: direct GCS, used when the primary is unreachable
-/// (Cloudflare outage, regional CF egress issue, DNS hijack, etc.).
+/// GitHub repository that hosts release assets for this fork.
+///
+/// Keep in sync with install scripts, RELEASING.md, and AGENTS.md.
+pub const GH_RELEASE_REPO: &str = "jasonkneen/agent-tui";
+
+/// Versioned release asset prefix: `{RELEASE_ASSET_PREFIX}-{version}-{platform}`.
+pub const RELEASE_ASSET_PREFIX: &str = "agent-tui";
+
+/// Primary managed CLI binary name under `~/.agent-tui/bin/`.
+pub const MANAGED_BIN_NAME: &str = "agent-tui";
+
+/// GitHub Releases download base: `{GH_DOWNLOAD_BASE}/v{version}/{asset}`.
+pub const GH_DOWNLOAD_BASE: &str =
+    "https://github.com/jasonkneen/agent-tui/releases/download";
+
+/// GitHub Releases API base for version resolution without the `gh` CLI.
+pub const GH_API_RELEASES: &str =
+    "https://api.github.com/repos/jasonkneen/agent-tui/releases";
+
+/// Flat-layout CLI base URLs (channel pointer + `{asset}` at root). Used by
+/// tests and optional self-hosted mirrors. Production Agent TUI installs use
+/// GitHub Releases ([`GH_DOWNLOAD_BASE`] / [`fetch_github_http_version`]).
+pub(crate) const CLI_BASE_URL_PRIMARY: &str =
+    "https://github.com/jasonkneen/agent-tui/releases/latest/download";
+
+/// Legacy upstream GCS fallback (official Grok Build public artifacts).
+/// Kept so enterprise / dual-install mirrors can still be pointed here via
+/// `install_internal_from_base` in tests or custom tooling.
 pub(crate) const CLI_BASE_URL_FALLBACK: &str =
     "https://storage.googleapis.com/grok-build-public-artifacts/cli";
 
-/// CLI base URLs in preference order. Callers (channel-pointer fetch, binary
-/// download, in-app updater) try each in turn and stop at the first success.
+/// CLI base URLs in preference order for flat-layout downloads only.
 pub(crate) const CLI_BASE_URLS: &[&str] = &[CLI_BASE_URL_PRIMARY, CLI_BASE_URL_FALLBACK];
 
 /// Minimal configuration the update system needs from the environment.
@@ -345,9 +367,98 @@ async fn fetch_gcs_channel_pointer(channel: &str, base_url: &str) -> Result<Stri
 pub async fn fetch_latest_version(installer: &str, config: &UpdateConfig) -> Result<String> {
     match installer {
         "npm" => fetch_npm_version(&config.channel, config.npm_registry.as_deref()).await,
+        // `gh` CLI path (authenticated corporate proxies, etc.).
         "gh-release" => fetch_gh_release_version(&config.channel).await,
-        _ => fetch_gcs_version(&config.channel).await,
+        // install.sh + in-app "internal": GitHub Releases over HTTP (no `gh` needed).
+        "internal" => fetch_github_http_version(&config.channel).await,
+        // Unknown installer labels fall back to the same GitHub HTTP channel.
+        _ => fetch_github_http_version(&config.channel).await,
     }
+}
+
+/// Build the GitHub Releases download URL for a versioned platform asset.
+pub fn github_release_asset_url(version: &str, platform: &str) -> String {
+    let asset = release_asset_name(version, platform);
+    format!("{GH_DOWNLOAD_BASE}/v{version}/{asset}")
+}
+
+/// Versioned release asset filename (no directory). Windows assets include `.exe`.
+pub fn release_asset_name(version: &str, platform: &str) -> String {
+    let base = format!("{RELEASE_ASSET_PREFIX}-{version}-{platform}");
+    if platform.starts_with("windows") {
+        format!("{base}.exe")
+    } else {
+        base
+    }
+}
+
+/// Fetch the latest version from the GitHub Releases REST API (no `gh` CLI).
+///
+/// - `stable` / `enterprise`: `GET .../releases/latest` (non-prerelease).
+/// - `alpha`: lists recent releases and returns the semver-greatest tag
+///   (includes prereleases).
+pub async fn fetch_github_http_version(channel: &str) -> Result<String> {
+    let client = reqwest::Client::builder()
+        .user_agent(format!(
+            "agent-tui-update ({})",
+            agent_tui_version::PRODUCT_DISPLAY_NAME
+        ))
+        .timeout(Duration::from_secs(30))
+        .build()?;
+
+    if channel == "alpha" {
+        let url = format!("{GH_API_RELEASES}?per_page=30");
+        let body = client
+            .get(&url)
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
+        let releases: Vec<Value> = serde_json::from_str(&body)?;
+        let mut best: Option<String> = None;
+        for rel in releases {
+            if rel.get("draft").and_then(|d| d.as_bool()).unwrap_or(false) {
+                continue;
+            }
+            let Some(tag) = rel.get("tag_name").and_then(|t| t.as_str()) else {
+                continue;
+            };
+            let version = tag.strip_prefix('v').unwrap_or(tag);
+            if semver::Version::parse(version).is_err() {
+                continue;
+            }
+            best = Some(match best {
+                Some(ref cur) => semver_max(cur, version)?,
+                None => version.to_string(),
+            });
+        }
+        return best.ok_or_else(|| {
+            anyhow::anyhow!("No releases found via GitHub API for {}", GH_RELEASE_REPO)
+        });
+    }
+
+    // stable / enterprise / default
+    let url = format!("{GH_API_RELEASES}/latest");
+    let body = client
+        .get(&url)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    let value: Value = serde_json::from_str(&body)?;
+    let tag = value
+        .get("tag_name")
+        .and_then(|t| t.as_str())
+        .ok_or_else(|| anyhow::anyhow!("GitHub latest release missing tag_name"))?;
+    let version = tag.strip_prefix('v').unwrap_or(tag).to_string();
+    if version.is_empty() {
+        anyhow::bail!("No releases found in {}", GH_RELEASE_REPO);
+    }
+    Ok(version)
 }
 
 /// Write the version cache to disk, recording that `version` was seen at the
@@ -391,9 +502,9 @@ pub async fn write_version_cache(version: &str, stable_version: Option<&str>) {
 ///
 /// Each installer is fully independent — no cross-installer fallback.
 ///
-/// - `"npm"` — uses `npm view` against the public registry.
-/// - `"internal"` — reads the channel pointer from the public GCS bucket.
-/// - `"gh-release"` — uses `gh release list` against GitHub Releases.
+/// - `"npm"` — uses `npm view` against the public registry (`NPM_PACKAGE`).
+/// - `"internal"` — GitHub Releases REST API ([`fetch_github_http_version`]).
+/// - `"gh-release"` — uses `gh release list` against [`GH_RELEASE_REPO`].
 pub async fn get_latest_version(installer: &str, config: &UpdateConfig) -> Result<String> {
     let version = fetch_latest_version(installer, config).await?;
     let stable_ptr = try_fetch_stable_pointer().await;
@@ -443,7 +554,10 @@ pub fn installed_on_disk_version() -> Option<String> {
         // metadata() follows the symlink: Err means the target is gone
         // (dangling link) and the version it names is not actually on disk.
         std::fs::metadata(&app).ok()?;
-        version_from_versioned_binary_name(target.file_name()?.to_str()?, "grok")
+        let name = target.file_name()?.to_str()?;
+        // Prefer the fork prefix; accept legacy `grok-*` downloads from dual installs.
+        version_from_versioned_binary_name(name, RELEASE_ASSET_PREFIX)
+            .or_else(|| version_from_versioned_binary_name(name, "grok"))
     }
     #[cfg(not(unix))]
     {
@@ -490,6 +604,11 @@ pub(crate) fn version_from_versioned_binary_name(name: &str, bin_prefix: &str) -
 /// (~30 min). This keeps startup and post-install paths fast.
 pub(crate) async fn try_fetch_stable_pointer() -> Option<String> {
     tokio::time::timeout(Duration::from_millis(500), async {
+        // Prefer GitHub Releases (fork production channel).
+        if let Ok(v) = fetch_github_http_version("stable").await {
+            return Some(v);
+        }
+        // Flat-layout mirrors (tests / self-hosted).
         for base in CLI_BASE_URLS {
             if let Ok(v) = fetch_gcs_channel_pointer("stable", base).await {
                 return Some(v);

@@ -1,0 +1,41 @@
+# Lightweight CI for the Agent TUI fork — compile-check on PRs and main.
+# Full multi-platform release builds live in release.yml (tag push).
+
+name: CI
+
+on:
+  push:
+    branches: [main, master, "fork/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: cargo check
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.92.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          protoc --version
+
+      - name: Check agent-tui-bin
+        run: cargo check -p agent-tui-bin
+
+      - name: Check agent-tui-update
+        run: cargo check -p agent-tui-update
+
+      - name: Unit tests (update crate)
+        run: cargo test -p agent-tui-update --lib

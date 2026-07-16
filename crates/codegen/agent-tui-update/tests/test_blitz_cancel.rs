@@ -53,11 +53,11 @@ fn seed_previous_good(home: &Path, version: &str, platform: &str) -> PathBuf {
     std::fs::create_dir_all(&downloads).unwrap();
     std::fs::create_dir_all(&bin).unwrap();
 
-    let prev = downloads.join(format!("grok-{version}-{platform}"));
+    let prev = downloads.join(format!("agent-tui-{version}-{platform}"));
     std::fs::write(&prev, small_good_artifact()).unwrap();
     std::fs::set_permissions(&prev, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    let rel = format!("../downloads/grok-{version}-{platform}");
+    let rel = format!("../downloads/agent-tui-{version}-{platform}");
     for name in ["grok", "agent"] {
         let link = bin.join(name);
         let _ = std::fs::remove_file(&link);
@@ -149,7 +149,7 @@ async fn run_one(
     let prev_good = seed_previous_good(home, "0.1.100", &platform);
     let new_binary = home
         .join("downloads")
-        .join(format!("grok-{version}-{platform}"));
+        .join(format!("agent-tui-{version}-{platform}"));
     let cfg = make_update_config("stable");
 
     server.set_mode(mode);
@@ -293,7 +293,7 @@ async fn smoke_test_rejects_garbage_and_keeps_previous_good() {
 
     let new_binary = home
         .join("downloads")
-        .join(format!("grok-0.1.181-{platform}"));
+        .join(format!("agent-tui-0.1.181-{platform}"));
     assert_invariant(home, &prev_good, &new_binary, Expect::PreviousGood);
 
     // A subsequent clean serve must succeed.

@@ -2,23 +2,31 @@
 
 Bring Agent TUI into your terminal. Fast, flicker-free CLI built for plans, subagents, and parallel work.
 
-**[Homepage](https://x.ai/cli)** | **[Documentation](https://docs.x.ai/build/overview)**
+**[GitHub](https://github.com/jasonkneen/agent-tui)** | **[Releases](https://github.com/jasonkneen/agent-tui/releases)** | **[Docs](https://github.com/jasonkneen/agent-tui/tree/fork/agent-tui/crates/codegen/agent-tui-pager/docs/user-guide)**
 
 ## Install
 
+Preferred — GitHub Releases installer:
+
 ```bash
-# Preferred for this fork: build from source
-cargo build -p agent-tui-bin --release
-# binary: target/release/agent-tui
+curl -fsSL https://raw.githubusercontent.com/jasonkneen/agent-tui/fork/agent-tui/crates/codegen/agent-tui-pager/scripts/install.sh | bash
 ```
 
-Or install with npm (when published):
+Or npm (when this package is published):
 
 ```bash
 npm i -g @agent-tui/agent-tui
 ```
 
+Or build from source:
+
+```bash
+cargo build -p agent-tui-bin --release
+# binary: target/release/agent-tui
+```
+
 > Official `https://x.ai/cli/install.sh` installs upstream Grok Build (`grok`), not Agent TUI.
+> Maintainer publish steps: repo root `RELEASING.md`.
 
 
 ## Get Started

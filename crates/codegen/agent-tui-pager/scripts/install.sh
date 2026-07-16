@@ -1,18 +1,20 @@
 #!/bin/bash
-# Agent TUI fork note: local install paths use ~/.agent-tui and binary
-# name agent-tui. Download URLs may still point at upstream Grok Build
-# artifacts until this fork publishes its own release channel.
+# Agent TUI installer — installs from GitHub Releases (jasonkneen/agent-tui).
 #
-#
-# Agent TUI installer — https://x.ai/cli/install.sh
+# Maintainer guide: RELEASING.md at the repository root.
+# Asset names: agent-tui-{version}-{os}-{arch}[.exe]  (os=macos|linux|windows)
 #
 # Auth: GROK_DEPLOYMENT_KEY (takes precedence) or ~/.agent-tui/auth.json from `agent-tui login`.
-# Env: GROK_CHANNEL (stable|alpha|enterprise, default: stable), AGENT_TUI_BIN_DIR, GROK_PROXY_URL
+# Env:
+#   GROK_CHANNEL / AGENT_TUI_CHANNEL  stable|alpha|enterprise (default: stable)
+#   AGENT_TUI_BIN_DIR                 install bin dir (default: ~/.agent-tui/bin)
+#   AGENT_TUI_GITHUB_REPO             owner/repo (default: jasonkneen/agent-tui)
+#   GROK_PROXY_URL                    deployment config proxy (optional)
 #
 # Usage:
-#   curl -fsSL https://x.ai/cli/install.sh | bash            # latest stable
-#   curl -fsSL https://x.ai/cli/install.sh | bash -s 0.1.42  # specific version
-#   GROK_DEPLOYMENT_KEY=<key> bash <(curl -fsSL https://x.ai/cli/install.sh)
+#   curl -fsSL https://raw.githubusercontent.com/jasonkneen/agent-tui/fork/agent-tui/crates/codegen/agent-tui-pager/scripts/install.sh | bash
+#   curl -fsSL .../install.sh | bash -s 0.1.220
+#   AGENT_TUI_CHANNEL=alpha bash <(curl -fsSL .../install.sh)
 #
 # Windows: run under Git for Windows / MSYS2 Bash (same curl | bash flow); WSL
 # uses the Linux binary.
@@ -155,35 +157,37 @@ case "$(uname -m)" in
     *)                    echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-BASE_URL_PRIMARY="https://x.ai/cli"
-BASE_URL_FALLBACK="https://storage.googleapis.com/grok-build-public-artifacts/cli"
-DOWNLOAD_DIR="$HOME/.agent-tui/downloads"
-BIN_DIR="${AGENT_TUI_BIN_DIR:-$HOME/.agent-tui/bin}"
+GITHUB_REPO="${AGENT_TUI_GITHUB_REPO:-jasonkneen/agent-tui}"
+GH_API="https://api.github.com/repos/${GITHUB_REPO}"
+GH_DOWNLOAD="https://github.com/${GITHUB_REPO}/releases/download"
+# Config home: AGENT_TUI_HOME → GROK_HOME (legacy) → ~/.agent-tui
+TUI_HOME="${AGENT_TUI_HOME:-${GROK_HOME:-$HOME/.agent-tui}}"
+DOWNLOAD_DIR="${TUI_HOME}/downloads"
+BIN_DIR="${AGENT_TUI_BIN_DIR:-${GROK_BIN_DIR:-${TUI_HOME}/bin}}"
 mkdir -p "$DOWNLOAD_DIR" "$BIN_DIR"
 
 platform="${os}-${arch}"
-CHANNEL="${GROK_CHANNEL:-stable}"
+CHANNEL="${AGENT_TUI_CHANNEL:-${GROK_CHANNEL:-stable}}"
+ASSET_PREFIX="agent-tui"
 
-# Pick a working BASE_URL: try Cloudflare-fronted x.ai first, fall back to
-# direct GCS if it's unreachable. The probe doubles as the channel-pointer
-# fetch when no explicit TARGET was passed, so the happy path costs zero
-# extra HTTP requests.
-if [ -z "$TARGET" ]; then echo "Fetching latest ${CHANNEL} version..." >&2; fi
-probe_result=$(download_file "${BASE_URL_PRIMARY}/${CHANNEL}" 2>/dev/null) || true
-if [ -n "$probe_result" ]; then
-    BASE_URL="$BASE_URL_PRIMARY"
-else
-    echo "Note: ${BASE_URL_PRIMARY} unreachable, falling back to direct GCS." >&2
-    BASE_URL="$BASE_URL_FALLBACK"
-    probe_result=$(download_file "${BASE_URL}/${CHANNEL}" 2>/dev/null) || true
-fi
-
+# Resolve version from GitHub Releases when not pinned.
 if [ -n "$TARGET" ]; then
     version="$TARGET"
 else
-    version=$(printf '%s' "$probe_result" | tr -d '\r' | head -n1 | tr -d '[:space:]')
+    echo "Fetching latest ${CHANNEL} version from GitHub (${GITHUB_REPO})..." >&2
+    if [ "$CHANNEL" = "alpha" ]; then
+        # Include prereleases: take the first non-draft release in the list.
+        releases_json=$(download_file "${GH_API}/releases?per_page=30" 2>/dev/null) || true
+        tag=$(printf '%s' "$releases_json" | tr ',' '\n' | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+    else
+        # stable / enterprise: latest non-prerelease
+        latest_json=$(download_file "${GH_API}/releases/latest" 2>/dev/null) || true
+        tag=$(json_get "$latest_json" "tag_name")
+    fi
+    version=$(printf '%s' "$tag" | sed 's/^v//')
     if [ -z "$version" ]; then
-        echo "Error: failed to fetch latest version from ${BASE_URL_PRIMARY}/${CHANNEL} and ${BASE_URL_FALLBACK}/${CHANNEL}" >&2
+        echo "Error: failed to fetch latest version from ${GH_API} (channel=${CHANNEL})." >&2
+        echo "  Check that ${GITHUB_REPO} has a published release, or pass a version: bash install.sh 0.1.220" >&2
         exit 1
     fi
 fi
@@ -199,35 +203,26 @@ else
     echo "Installing Agent TUI $version ($platform)..." >&2
 fi
 
-binary_path="$DOWNLOAD_DIR/grok-$platform"
-artifact_base="${BASE_URL}/grok-${version}-${platform}"
-
+stored_name="${ASSET_PREFIX}-${version}-${platform}"
+binary_path="$DOWNLOAD_DIR/${stored_name}"
+asset_name="${stored_name}"
 if [ "$os" = "windows" ]; then
     binary_path="${binary_path}.exe"
+    asset_name="${asset_name}.exe"
 fi
+artifact_url="${GH_DOWNLOAD}/v${version}/${asset_name}"
 
 binary_tmp="${binary_path}.tmp.$$"
 rm -f "$binary_tmp" 2>/dev/null || true
 
-echo "  Downloading grok ${version}..." >&2
-if [ "$os" = "windows" ]; then
-    if ! download_file_parallel "${artifact_base}.exe" "$binary_tmp"; then
-        if ! download_file_parallel "$artifact_base" "$binary_tmp"; then
-            rm -f "$binary_tmp"
-            if is_not_found "${artifact_base}.exe"; then
-                echo "Error: Agent TUI is not yet available for your system ($platform)." >&2
-            else
-                echo "Error: binary download failed (${artifact_base}.exe and ${artifact_base})" >&2
-            fi
-            exit 1
-        fi
-    fi
-elif ! download_file_parallel "$artifact_base" "$binary_tmp"; then
+echo "  Downloading agent-tui ${version} from GitHub Releases..." >&2
+if ! download_file_parallel "$artifact_url" "$binary_tmp"; then
     rm -f "$binary_tmp"
-    if is_not_found "$artifact_base"; then
+    if is_not_found "$artifact_url"; then
         echo "Error: Agent TUI is not yet available for your system ($platform)." >&2
+        echo "  Expected asset: ${asset_name} on ${GITHUB_REPO} release v${version}" >&2
     else
-        echo "Error: binary download failed from ${artifact_base}" >&2
+        echo "Error: binary download failed from ${artifact_url}" >&2
     fi
     exit 1
 fi
@@ -252,7 +247,7 @@ if [ "$os" = "windows" ]; then
 else
     chmod +x "$binary_tmp"
     if ! "$binary_tmp" --version </dev/null >/dev/null 2>&1; then
-        echo "Error: downloaded grok failed to run; keeping the existing install." >&2
+        echo "Error: downloaded agent-tui failed to run; keeping the existing install." >&2
         rm -f "$binary_tmp"
         exit 1
     fi
@@ -271,16 +266,16 @@ else
 fi
 
 # Generate shell completions (best-effort)
-mkdir -p "$HOME/.agent-tui/completions/bash" "$HOME/.agent-tui/completions/zsh"
-"$BIN_DIR/agent-tui" completions bash > "$HOME/.agent-tui/completions/bash/agent-tui.bash" 2>/dev/null || true
-"$BIN_DIR/agent-tui" completions zsh  > "$HOME/.agent-tui/completions/zsh/_grok"     2>/dev/null || true
+mkdir -p "$TUI_HOME/completions/bash" "$TUI_HOME/completions/zsh"
+"$BIN_DIR/agent-tui" completions bash > "$TUI_HOME/completions/bash/agent-tui.bash" 2>/dev/null || true
+"$BIN_DIR/agent-tui" completions zsh  > "$TUI_HOME/completions/zsh/_agent-tui" 2>/dev/null || true
 # Fish: write to the auto-loaded completions dir so it works immediately
 if mkdir -p "$HOME/.config/fish/completions" 2>/dev/null; then
-    "$BIN_DIR/agent-tui" completions fish > "$HOME/.config/fish/completions/grok.fish" 2>/dev/null || true
+    "$BIN_DIR/agent-tui" completions fish > "$HOME/.config/fish/completions/agent-tui.fish" 2>/dev/null || true
 fi
 
 # Persist installer source and channel to config
-CONFIG_FILE="$HOME/.agent-tui/config.toml"
+CONFIG_FILE="$TUI_HOME/config.toml"
 CLI_BLOCK="installer = \"internal\""
 if [ "$CHANNEL" != "stable" ]; then
     CLI_BLOCK="${CLI_BLOCK}\nchannel = \"${CHANNEL}\""
@@ -321,16 +316,16 @@ if [ -n "$GROK_DEPLOYMENT_KEY" ]; then
         MANAGED_CONFIG=$(json_get "$DEPLOY_RESPONSE" "managed_config")
         REQUIREMENTS=$(json_get "$DEPLOY_RESPONSE" "requirements")
         if [ -n "$MANAGED_CONFIG" ] && [ "$MANAGED_CONFIG" != "null" ]; then
-            printf '%s\n' "$MANAGED_CONFIG" > "$HOME/.agent-tui/managed_config.toml"
+            printf '%s\n' "$MANAGED_CONFIG" > "$TUI_HOME/managed_config.toml"
             echo "  Managed config applied." >&2
         else
-            rm -f "$HOME/.agent-tui/managed_config.toml"
+            rm -f "$TUI_HOME/managed_config.toml"
         fi
         if [ -n "$REQUIREMENTS" ] && [ "$REQUIREMENTS" != "null" ]; then
-            printf '%s\n' "$REQUIREMENTS" > "$HOME/.agent-tui/requirements.toml"
+            printf '%s\n' "$REQUIREMENTS" > "$TUI_HOME/requirements.toml"
             echo "  Requirements applied." >&2
         else
-            rm -f "$HOME/.agent-tui/requirements.toml"
+            rm -f "$TUI_HOME/requirements.toml"
         fi
     fi
 fi
@@ -347,16 +342,16 @@ path_has_dir() {
     case ":$PATH:" in *":$1:"*) return 0 ;; *) return 1 ;; esac
 }
 
-# Try to symlink into a directory already on PATH so grok works immediately
+# Try to symlink into a directory already on PATH so agent-tui works immediately
 # without restarting the shell. Candidate dirs in preference order.
 SYMLINK_CREATED=""
 if [ "$os" != "windows" ] && ! path_has_dir "$BIN_DIR"; then
     for candidate in "$HOME/.local/bin" "/usr/local/bin"; do
         if path_has_dir "$candidate" && [ -d "$candidate" ] && [ -w "$candidate" ]; then
-            ln -sf "$BIN_DIR/agent-tui" "$candidate/grok"
+            ln -sf "$BIN_DIR/agent-tui" "$candidate/agent-tui"
             ln -sf "$BIN_DIR/agent" "$candidate/agent"
             SYMLINK_CREATED="$candidate"
-            echo "  Symlinked $candidate/grok -> $BIN_DIR/agent-tui" >&2
+            echo "  Symlinked $candidate/agent-tui -> $BIN_DIR/agent-tui" >&2
             echo "  Symlinked $candidate/agent -> $BIN_DIR/agent" >&2
             break
         fi
@@ -447,5 +442,5 @@ else
 fi
 
 if [ "$os" = "windows" ]; then
-    echo "To use grok from cmd.exe or PowerShell, add %USERPROFILE%\\.agent-tui\\bin to your PATH." >&2
+    echo "To use agent-tui from cmd.exe or PowerShell, add %USERPROFILE%\\.agent-tui\\bin to your PATH." >&2
 fi

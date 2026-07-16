@@ -52,6 +52,44 @@ cargo run -p agent-tui-bin
 cargo build -p agent-tui-bin --release   # target/release/agent-tui
 ```
 
+## Releases (GitHub)
+
+This fork ships multi-platform binaries via **GitHub Releases** on
+[`jasonkneen/agent-tui`](https://github.com/jasonkneen/agent-tui).
+
+**Full maintainer guide (checklist, npm, troubleshooting): [RELEASING.md](RELEASING.md).**
+
+| Piece | Location |
+|-------|----------|
+| Release workflow | [`.github/workflows/release.yml`](.github/workflows/release.yml) |
+| CI | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
+| Bootstrap installers | `crates/codegen/agent-tui-pager/scripts/install.{sh,ps1}` |
+| In-app updater | `crates/codegen/agent-tui-update` |
+| Agent notes | [AGENTS.md](AGENTS.md) |
+
+### Quick release
+
+```sh
+git tag -a v0.1.220 -m "Agent TUI v0.1.220"
+git push origin v0.1.220
+# → Actions builds assets + creates the GitHub Release
+```
+
+### Install from a release
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jasonkneen/agent-tui/fork/agent-tui/crates/codegen/agent-tui-pager/scripts/install.sh | bash
+# pin:  … | bash -s 0.1.220
+# alpha: AGENT_TUI_CHANNEL=alpha … | bash
+```
+
+```powershell
+irm https://raw.githubusercontent.com/jasonkneen/agent-tui/fork/agent-tui/crates/codegen/agent-tui-pager/scripts/install.ps1 | iex
+```
+
+> Default branch for raw script URLs is currently **`fork/agent-tui`**. If you
+> rename the default branch to `main`, update those URLs (list in RELEASING.md).
+
 ## Migration from `~/.grok`
 
 ```sh

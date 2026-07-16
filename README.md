@@ -11,8 +11,10 @@ Agent Client Protocol (ACP).
 Grok / xAI remain fully supported as **providers** (login via Grok.com or
 `XAI_API_KEY`). See [FORK.md](FORK.md) for fork details and what was renamed.
 
+[Install](#install-a-prebuilt-release) ·
 [Building from source](#building-from-source) ·
 [Documentation](#documentation) ·
+[Releasing](RELEASING.md) ·
 [Repository layout](#repository-layout) ·
 [License](#license)
 
@@ -38,6 +40,27 @@ cargo build -p agent-tui-bin --release  # release binary: target/release/agent-t
 cargo check -p agent-tui-bin            # fast validation
 ```
 
+### Install a prebuilt release
+
+```sh
+# macOS / Linux — latest stable from GitHub Releases
+curl -fsSL https://raw.githubusercontent.com/jasonkneen/agent-tui/fork/agent-tui/crates/codegen/agent-tui-pager/scripts/install.sh | bash
+```
+
+```powershell
+# Windows
+irm https://raw.githubusercontent.com/jasonkneen/agent-tui/fork/agent-tui/crates/codegen/agent-tui-pager/scripts/install.ps1 | iex
+```
+
+| | |
+|--|--|
+| Repo | [jasonkneen/agent-tui](https://github.com/jasonkneen/agent-tui) |
+| Releases | [github.com/jasonkneen/agent-tui/releases](https://github.com/jasonkneen/agent-tui/releases) |
+| Pin version | `bash -s 0.1.220` |
+| Alpha channel | `AGENT_TUI_CHANNEL=alpha … \| bash` |
+| Maintainer ship process | **[RELEASING.md](RELEASING.md)** |
+| Fork / rename notes | [FORK.md](FORK.md) |
+
 On first launch it opens your browser to authenticate (Grok.com) or use
 `XAI_API_KEY` — see the
 [authentication guide](crates/codegen/agent-tui-pager/docs/user-guide/02-authentication.md).
@@ -47,10 +70,13 @@ Config defaults to `~/.agent-tui` (override with `$AGENT_TUI_HOME`; legacy
 
 ## Documentation
 
-The user guide ships with the pager crate:
-[`crates/codegen/agent-tui-pager/docs/user-guide/`](crates/codegen/agent-tui-pager/docs/user-guide/)
-— getting started, keyboard shortcuts, slash commands, configuration, theming,
-MCP servers, skills, plugins, hooks, headless mode, sandboxing, and more.
+| Doc | Audience |
+|-----|----------|
+| [RELEASING.md](RELEASING.md) | Maintainers — cut tags, CI release, npm, troubleshooting |
+| [FORK.md](FORK.md) | What differs from upstream Grok Build |
+| [AGENTS.md](AGENTS.md) | Automation / coding-agent constraints |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Upstream vs fork contribution notes |
+| [User guide](crates/codegen/agent-tui-pager/docs/user-guide/) | End users — auth, shortcuts, config, MCP, skills, … |
 
 Upstream product docs (Grok Build): [docs.x.ai/build/overview](https://docs.x.ai/build/overview).
 
