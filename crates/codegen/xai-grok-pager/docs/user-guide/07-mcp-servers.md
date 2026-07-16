@@ -107,6 +107,12 @@ grok mcp add --transport sse linear https://mcp.linear.app/sse
 # Remove a server
 grok mcp remove github
 
+# Forget locally stored OAuth credentials for a configured server
+grok mcp logout linear
+
+# If its configuration was already removed, provide the previous server URL
+grok mcp logout linear --url https://mcp.linear.app/mcp
+
 # Diagnose a server's configuration and connectivity
 grok mcp doctor               # Check every configured server
 grok mcp doctor github        # Check one server
@@ -118,6 +124,8 @@ The transport defaults to `stdio`; pass `--transport http` or `--transport sse` 
 By default `grok mcp add` writes to `~/.grok/config.toml` (`--scope user`). Use `--scope project` to write to `.grok/config.toml` in the current directory instead, which can be committed and shared with your team (see [Project-Scoped MCP Servers](#project-scoped-mcp-servers)). Header and environment variable values are stored verbatim, so reference secrets as `${VAR}` instead of pasting them into a committed project config (see [Example Configurations](#example-configurations)). `grok mcp list` shows servers from both scopes, marking project-scoped ones with `(project)`.
 
 `grok mcp remove` searches both scopes and exits 0 after removing the server. It exits 1 when the name is not found, or when the name is defined in both user and project scope — pass `--scope` to say which one to remove.
+
+Removing a server deliberately retains its locally stored OAuth credentials because another scope or project may use the same server name and URL. Run `grok mcp logout <name>` before removal to forget those credentials, or pass the former URL with `--url` after removal. Logout removes the local credential entry; it does not revoke access at the provider.
 
 Breaking changes from earlier releases: `--env` now takes one `KEY=value` per flag (use `-e A=1 -e B=2`, not `--env A=1 B=2`), and server names may only contain letters, numbers, hyphens, and underscores.
 
