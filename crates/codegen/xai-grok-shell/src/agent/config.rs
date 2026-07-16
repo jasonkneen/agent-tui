@@ -736,7 +736,7 @@ fn remote_compat_value(
     }
 }
 /// Resolve vendor compatibility cells from TOML and remote settings.
-fn resolve_compat_config(
+pub(crate) fn resolve_compat_config(
     config: &CompatConfigToml,
     remote: Option<&crate::util::config::RemoteSettings>,
 ) -> CompatConfig {

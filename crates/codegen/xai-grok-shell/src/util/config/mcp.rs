@@ -109,34 +109,7 @@ pub fn load_mcp_servers_with_oauth(
 ) -> (Vec<acp::McpServer>, McpOAuthConfigMap) {
     let global_config =
         crate::config::load_from_disk().unwrap_or_else(|_| TomlValue::Table(toml::map::Map::new()));
-
-    let mut servers_map: IndexMap<String, McpServerConfig> = IndexMap::new();
-    for (name, config) in parse_mcp_servers_from_toml(&global_config) {
-        servers_map.insert(name, config);
-    }
-
-    let project_configs = crate::config::find_project_configs(cwd);
-    for config_path in &project_configs {
-        if let Ok(root) = crate::config::load_config_file(config_path) {
-            for (name, config) in parse_mcp_servers_from_toml(&root) {
-                servers_map.insert(name, config);
-            }
-        }
-    }
-    // Also load from ~/.claude.json (lower priority than TOML)
-    for (name, config) in load_claude_json_mcp_servers_as_configs(cwd, compat) {
-        servers_map.entry(name).or_insert(config);
-    }
-
-    // Also load from ~/.cursor/mcp.json (lower priority than TOML and ~/.claude.json)
-    for (name, config) in load_cursor_mcp_servers_as_configs(cwd, compat) {
-        servers_map.entry(name).or_insert(config);
-    }
-
-    // Also load from .mcp.json files (lower priority than TOML, ~/.claude.json, and ~/.cursor)
-    for (name, config) in load_mcp_json_servers_as_configs(cwd) {
-        servers_map.entry(name).or_insert(config);
-    }
+    let servers_map = merge_mcp_server_configs(&global_config, cwd, compat);
 
     let mut oauth_configs = McpOAuthConfigMap::new();
     let mut acp_servers = Vec::new();
@@ -153,6 +126,34 @@ pub fn load_mcp_servers_with_oauth(
     }
 
     (acp_servers, oauth_configs)
+}
+
+fn merge_mcp_server_configs(
+    global_config: &TomlValue,
+    cwd: &std::path::Path,
+    compat: &CompatConfig,
+) -> IndexMap<String, McpServerConfig> {
+    let mut servers = parse_mcp_servers_from_toml(global_config);
+
+    for config_path in crate::config::find_project_configs(cwd) {
+        if let Ok(root) = crate::config::load_config_file(&config_path) {
+            for (name, config) in parse_mcp_servers_from_toml(&root) {
+                servers.insert(name, config);
+            }
+        }
+    }
+
+    for (name, config) in load_claude_json_mcp_servers_as_configs(cwd, compat) {
+        servers.entry(name).or_insert(config);
+    }
+    for (name, config) in load_cursor_mcp_servers_as_configs(cwd, compat) {
+        servers.entry(name).or_insert(config);
+    }
+    for (name, config) in load_mcp_json_servers_as_configs(cwd) {
+        servers.entry(name).or_insert(config);
+    }
+
+    servers
 }
 
 /// Load the worktree pool configuration from config.toml.
@@ -184,6 +185,28 @@ pub fn load_mcp_servers(cwd: &std::path::Path, compat: &CompatConfig) -> Vec<acp
     let global_config = crate::config::load_effective_config()
         .unwrap_or_else(|_| TomlValue::Table(toml::map::Map::new()));
     reload_mcp_servers_merged(&global_config, cwd, compat)
+}
+
+/// Resolve one MCP server config from the same merged catalog used by runtime sessions.
+///
+/// This includes native user/project TOML plus configured Claude, Cursor, and
+/// `.mcp.json` compatibility sources. It is intended for management commands
+/// that need to inspect an existing definition without imposing `mcp add`'s
+/// naming restrictions on compatibility-source keys. Disabled definitions are
+/// retained because management commands may still need to operate on them.
+pub fn get_effective_mcp_server_config(
+    name: &str,
+    cwd: &std::path::Path,
+) -> Option<McpServerConfig> {
+    let global_config = crate::config::load_effective_config().ok()?;
+    let compat_config = global_config
+        .get("compat")
+        .cloned()
+        .and_then(|value| value.try_into::<CompatConfigToml>().ok())
+        .unwrap_or_default();
+    let compat = crate::agent::config::resolve_compat_config(&compat_config, None);
+
+    merge_mcp_server_configs(&global_config, cwd, &compat).shift_remove(name)
 }
 
 /// Load MCP servers from config.toml only (global + project-scoped), without
@@ -474,7 +497,9 @@ pub async fn save_mcp_server_config_at(
 /// Delete an MCP server entry from `~/.grok/config.toml`.
 ///
 /// Removes `[mcp_servers.<name>]`, cleans up `disabled_mcp_servers` and
-/// `[disabled_mcp_tools.<name>]` entries. Returns `true` if the entry existed.
+/// `[disabled_mcp_tools.<name>]` entries. OAuth credentials are retained because
+/// the global credential key can still be shared by another project or config
+/// scope. Returns `true` if the entry existed.
 pub async fn delete_mcp_server_config(server_name: &str) -> Result<bool> {
     delete_mcp_server_config_at(&config_path(), server_name).await
 }
@@ -482,9 +507,9 @@ pub async fn delete_mcp_server_config(server_name: &str) -> Result<bool> {
 /// Delete an MCP server entry from the config file at `path`.
 ///
 /// Same semantics as [`delete_mcp_server_config`] but targets an explicit
-/// config file, e.g. a project-scoped `.grok/config.toml`. OAuth credential
-/// cleanup is keyed by server name against the global credential store, so it
-/// also drops credentials a same-named server in another config file uses.
+/// config file, e.g. a project-scoped `.grok/config.toml`. Removing configuration
+/// is deliberately separate from OAuth logout: credential keys are global to a
+/// name + URL and can be shared by definitions in other projects or scopes.
 pub async fn delete_mcp_server_config_at(
     path: &std::path::Path,
     server_name: &str,
@@ -546,24 +571,23 @@ pub async fn delete_mcp_server_config_at(
     tokio::fs::write(&tmp, &toml_str).await?;
     tokio::fs::rename(&tmp, &path).await?;
 
-    // Clean up OAuth credentials for the deleted server.
-    let credential_server_name = server_name.to_owned();
-    match tokio::task::spawn_blocking(move || {
-        let mut cred_store = xai_grok_mcp::credentials::McpCredentialStore::default();
-        cred_store.remove_all_by_server_name_and_save(&credential_server_name)
+    Ok(true)
+}
+
+/// Explicitly forget OAuth credentials for one MCP server name + URL.
+///
+/// Configuration deletion intentionally retains globally shared credentials;
+/// this is the opt-in logout path for users who want the stored identity gone.
+pub async fn forget_mcp_credentials(server_name: &str, server_url: &url::Url) -> Result<bool> {
+    let server_name = server_name.to_owned();
+    let server_url = server_url.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut store = xai_grok_mcp::credentials::McpCredentialStore::default();
+        store.remove_and_save(&server_name, &server_url)
     })
     .await
-    {
-        Ok(Ok(_)) => {}
-        Ok(Err(error)) => {
-            tracing::warn!(server_name, %error, "failed to remove MCP OAuth credentials");
-        }
-        Err(error) => {
-            tracing::warn!(server_name, %error, "MCP OAuth credential cleanup task failed");
-        }
-    }
-
-    Ok(true)
+    .map_err(|error| anyhow::anyhow!("MCP OAuth credential cleanup task failed: {error}"))?
+    .map_err(Into::into)
 }
 
 /// Load disabled_tools for all MCP servers from `[disabled_mcp_tools]` in config.toml.
