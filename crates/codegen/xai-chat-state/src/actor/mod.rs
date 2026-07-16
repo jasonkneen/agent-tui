@@ -208,6 +208,10 @@ impl ChatStateActor {
                 let changed = self.replace_system_head(&prompt);
                 let _ = reply.send(changed);
             }
+            ChatStateCommand::ReplaceSystemHeadBeforeInference { prompt, reply } => {
+                let result = self.replace_system_head_before_inference(&prompt);
+                let _ = reply.send(result);
+            }
             ChatStateCommand::CachePromptText { text } => {
                 self.state.prompt_texts.push(text);
             }

@@ -143,6 +143,14 @@ pub enum ChatStateCommand {
         reply: oneshot::Sender<bool>,
     },
 
+    /// Like `ReplaceSystemHead`, but atomically refuses the mutation once the
+    /// conversation contains any model-produced history. The nested reply is
+    /// `None` when blocked and `Some(changed)` when the operation was allowed.
+    ReplaceSystemHeadBeforeInference {
+        prompt: String,
+        reply: oneshot::Sender<Option<bool>>,
+    },
+
     /// Cache prompt text for rewind preview.
     CachePromptText { text: String },
 
@@ -388,6 +396,11 @@ mod tests {
         let _ = ChatStateCommand::ReplaceConversation {
             items: vec![],
             is_compaction: false,
+        };
+        let (tx, _rx) = oneshot::channel();
+        let _ = ChatStateCommand::ReplaceSystemHeadBeforeInference {
+            prompt: "override".to_string(),
+            reply: tx,
         };
         let _ = ChatStateCommand::CachePromptText {
             text: "prompt".to_string(),

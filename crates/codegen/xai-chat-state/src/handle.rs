@@ -214,6 +214,17 @@ impl ChatStateHandle {
         .await
     }
 
+    /// Atomically align the system head only before any model inference output
+    /// exists. Returns `Some(None)` when history blocks the mutation,
+    /// `Some(Some(changed))` when allowed, or outer `None` if the actor is dead.
+    pub async fn replace_system_head_before_inference(&self, prompt: &str) -> Option<Option<bool>> {
+        let prompt = prompt.to_owned();
+        self.query("ReplaceSystemHeadBeforeInference", |reply| {
+            ChatStateCommand::ReplaceSystemHeadBeforeInference { prompt, reply }
+        })
+        .await
+    }
+
     /// Cache prompt text for rewind preview.
     pub fn cache_prompt_text(&self, text: String) {
         let _ = self.cmd_tx.send(ChatStateCommand::CachePromptText { text });

@@ -461,6 +461,16 @@ impl ChatStateActor {
         changed
     }
 
+    /// Atomically replace the system head only while no inference output exists.
+    /// Returns `None` when existing model-produced history makes the mutation
+    /// unsafe, otherwise `Some(changed)`.
+    pub(super) fn replace_system_head_before_inference(&mut self, prompt: &str) -> Option<bool> {
+        if crate::conversation_util::has_inference_history(&self.state.conversation) {
+            return None;
+        }
+        Some(self.replace_system_head(prompt))
+    }
+
     /// Restore all state fields from a snapshot.
     pub(super) fn restore_snapshot(&mut self, snap: ChatStateSnapshot) {
         self.snapshot_turn_slice();

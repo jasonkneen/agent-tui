@@ -1,8 +1,8 @@
 //! Actor-path coverage for `handle_replace_system_prompt` — the
-//! resident-reconnect `systemPromptOverride` sync. Head-swap semantics are
+//! resident-reconnect `systemPromptOverride` guard. Head-swap semantics are
 //! unit-tested in `xai_chat_state` (`conversation_util` and the actor tests);
-//! these cover only what is unique to the `SessionActor` seam: the end-to-end
-//! swap and the `preserve_inherited_system` skip.
+//! these cover only what is unique to the `SessionActor` seam: zero-inference
+//! application and the history/preserve-inherited guards.
 
 use xai_grok_sampling_types::conversation::ConversationItem;
 
@@ -26,7 +26,7 @@ async fn actor_with_history(history: Vec<ConversationItem>) -> SessionActor {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn handle_replace_system_prompt_replaces_head_and_preserves_turns() {
+async fn handle_replace_system_prompt_preserves_existing_inference_history() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -42,10 +42,32 @@ async fn handle_replace_system_prompt_replaces_head_and_preserves_turns() {
                 .await;
 
             let conv = actor.chat_state_handle.get_conversation().await;
-            assert_eq!(head_text(&conv).as_deref(), Some("client override"));
-            assert_eq!(conv.len(), 3, "must not wipe user/assistant turns");
+            assert_eq!(head_text(&conv).as_deref(), Some("composer default"));
+            assert_eq!(conv.len(), 3, "must not rewrite or wipe prior turns");
             assert!(matches!(conv[1], ConversationItem::User(_)));
             assert!(matches!(conv[2], ConversationItem::Assistant(_)));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn handle_replace_system_prompt_applies_before_first_inference() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let actor = actor_with_history(vec![
+                ConversationItem::system("composer default"),
+                ConversationItem::user("startup context"),
+            ])
+            .await;
+
+            actor
+                .handle_replace_system_prompt("client override".to_string())
+                .await;
+
+            let conv = actor.chat_state_handle.get_conversation().await;
+            assert_eq!(head_text(&conv).as_deref(), Some("client override"));
+            assert_eq!(conv.len(), 2);
         })
         .await;
 }
