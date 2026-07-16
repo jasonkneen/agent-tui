@@ -60,6 +60,102 @@ async fn grok_build_server() -> MockInferenceServer {
     .expect("start mock server")
 }
 
+/// Serve one deployment-config response on every connection. Setup retries
+/// transient failures, so the fixture deliberately accepts until its runtime
+/// is dropped instead of assuming a single request.
+async fn spawn_setup_server(status: u16, body: &str) -> String {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind setup mock server");
+    let addr = listener.local_addr().expect("setup mock server address");
+    let body = body.to_owned();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let body = body.clone();
+            tokio::spawn(async move {
+                let mut request = Vec::new();
+                loop {
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                    let mut chunk = [0_u8; 1024];
+                    match socket.read(&mut chunk).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(read) => request.extend_from_slice(&chunk[..read]),
+                    }
+                }
+                let reason = match status {
+                    200 => "OK",
+                    401 => "Unauthorized",
+                    500 => "Internal Server Error",
+                    _ => "Test Response",
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            });
+        }
+    });
+    format!("http://{addr}/deployment/config")
+}
+
+async fn run_setup_binary(
+    home: &Path,
+    endpoint: Option<&str>,
+    json: bool,
+    grok_home: Option<&Path>,
+) -> HeadlessResult {
+    let mut cmd = tokio::process::Command::new(grok_binary());
+    cmd.arg("setup")
+        .current_dir(home)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    if json {
+        cmd.arg("--json");
+    }
+    test_env_cmd_tokio(&mut cmd, "http://127.0.0.1:9", home);
+    cmd.env_remove("GROK_DEPLOYMENT_KEY")
+        .env_remove("GROK_AUTH")
+        .env_remove("GROK_AUTH_PATH")
+        .env_remove("GROK_MANAGED_CONFIG_URL")
+        .env_remove("GROK_MANAGED_CONFIG")
+        .env("GROK_DEPLOYMENT_CONFIG_BACKOFF_MS", "1");
+    if let Some(endpoint) = endpoint {
+        cmd.env("GROK_DEPLOYMENT_KEY", "setup-test-key")
+            .env("GROK_MANAGED_CONFIG_URL", endpoint);
+    }
+    if let Some(grok_home) = grok_home {
+        cmd.env("GROK_HOME", grok_home);
+    }
+    run_headless_with_cmd(cmd).await
+}
+
+fn assert_no_managed_policy_artifacts(home: &Path) {
+    for name in [
+        "managed_config.toml",
+        "requirements.toml",
+        "managed_config.sig.json",
+        "managed_config_cache.json",
+        "managed_config.lock",
+    ] {
+        let path = home.join(".grok").join(name);
+        assert!(
+            !path.exists(),
+            "setup --json must not create managed-policy artifact {}",
+            path.display()
+        );
+    }
+}
+
 /// Parse a headless run's stdout as a single JSON object.
 fn parse_stdout_json(result: &HeadlessResult) -> serde_json::Value {
     serde_json::from_str(result.stdout.trim())
@@ -315,6 +411,229 @@ async fn test_models_output_and_cleanup_contract() {
         !server.has_chat_completion_request() && !server.has_responses_request(),
         "listing models must not start an inference request; requests:\n{}",
         server.request_log_summary()
+    );
+}
+
+#[tokio::test]
+#[ignore] // requires pre-built binary; run with --ignored
+async fn test_setup_without_principal_exits_nonzero_with_guidance() {
+    let home = tempfile::TempDir::new().expect("create setup test home");
+    let result = run_setup_binary(home.path(), None, false, None).await;
+
+    assert!(!result.timed_out, "grok setup must not hang");
+    assert!(!result.status.success(), "missing principal must fail");
+    assert!(
+        result.stdout.is_empty(),
+        "unexpected stdout: {}",
+        result.stdout
+    );
+    let deployment_key_example = if cfg!(unix) {
+        "  export GROK_DEPLOYMENT_KEY=<your-key>"
+    } else {
+        "  $env:GROK_DEPLOYMENT_KEY=\"<your-key>\""
+    };
+    let expected_stderr = [
+        "Error: No deployment key or team sign-in found.",
+        "",
+        "To install managed configuration, sign in with a team using `grok login`",
+        "or set a deployment key:",
+        "",
+        deployment_key_example,
+        "  grok setup",
+        "",
+        "Or add the key to ~/.grok/config.toml:",
+        "",
+        "  [endpoints]",
+        "  deployment_key = \"<your-key>\"",
+        "",
+        "If you don't have a deployment key, contact your organization's Grok administrator.",
+        "",
+    ]
+    .join("\n");
+    assert_eq!(result.stderr, expected_stderr);
+}
+
+#[tokio::test]
+#[ignore] // requires pre-built binary; run with --ignored
+async fn test_setup_json_reports_configured_and_empty_states_without_writes() {
+    let configured_body = serde_json::json!({
+        "deployment_id": "deployment-42",
+        "team_id": null,
+        "managed_config": "[cli]\ntheme = \"dark\"\n",
+        "requirements": "[updates]\nminimum_version = \"0.1.0\"\n",
+    })
+    .to_string();
+    let configured_endpoint = spawn_setup_server(200, &configured_body).await;
+    let configured_home = tempfile::TempDir::new().expect("create configured setup home");
+    let configured = run_setup_binary(
+        configured_home.path(),
+        Some(&configured_endpoint),
+        true,
+        None,
+    )
+    .await;
+    assert_headless_success(&configured, "grok setup --json configured", None);
+    let configured_json = parse_stdout_json(&configured);
+    assert_eq!(configured_json["source"], "deploymentKey");
+    assert_eq!(configured_json["configured"], true);
+    assert_eq!(configured_json["deploymentId"], "deployment-42");
+    assert_eq!(
+        configured_json["managedConfig"],
+        "[cli]\ntheme = \"dark\"\n"
+    );
+    assert_eq!(
+        configured_json["requirements"],
+        "[updates]\nminimum_version = \"0.1.0\"\n"
+    );
+    assert_eq!(configured_json["failClosed"], false);
+    assert_no_managed_policy_artifacts(configured_home.path());
+
+    let empty_endpoint = spawn_setup_server(200, "{}").await;
+    let empty_home = tempfile::TempDir::new().expect("create empty setup home");
+    let empty = run_setup_binary(empty_home.path(), Some(&empty_endpoint), true, None).await;
+    assert_headless_success(&empty, "grok setup --json empty", None);
+    let empty_json = parse_stdout_json(&empty);
+    assert_eq!(empty_json["source"], "deploymentKey");
+    assert_eq!(empty_json["configured"], false);
+    assert_eq!(empty_json["deploymentId"], Value::Null);
+    assert!(
+        empty
+            .stderr
+            .contains("doesn't have a managed configuration yet"),
+        "empty JSON state must include admin guidance:\n{}",
+        empty.stderr
+    );
+    assert_no_managed_policy_artifacts(empty_home.path());
+}
+
+#[tokio::test]
+#[ignore] // requires pre-built binary; run with --ignored
+async fn test_setup_json_fetch_failure_exits_nonzero() {
+    let endpoint = spawn_setup_server(401, "{}").await;
+    let home = tempfile::TempDir::new().expect("create setup failure home");
+    let result = run_setup_binary(home.path(), Some(&endpoint), true, None).await;
+
+    assert!(
+        !result.timed_out,
+        "grok setup --json must not hang on failure"
+    );
+    assert!(
+        !result.status.success(),
+        "rejected deployment key must fail"
+    );
+    assert!(
+        result
+            .stderr
+            .contains("Couldn't fetch managed configuration."),
+        "fetch failure was not surfaced:\n{}",
+        result.stderr
+    );
+}
+
+#[tokio::test]
+#[ignore] // requires pre-built binary; run with --ignored
+async fn test_setup_installs_served_configuration() {
+    let body = serde_json::json!({
+        "deployment_id": "deployment-42",
+        "managed_config": "[cli]\ntheme = \"dark\"\n",
+        "requirements": "[updates]\nminimum_version = \"0.1.0\"\n",
+    })
+    .to_string();
+    let endpoint = spawn_setup_server(200, &body).await;
+    let home = tempfile::TempDir::new().expect("create setup install home");
+    let result = run_setup_binary(home.path(), Some(&endpoint), false, None).await;
+
+    assert_headless_success(&result, "grok setup install", None);
+    assert!(
+        result.stderr.contains("Applied managed configuration."),
+        "success message missing:\n{}",
+        result.stderr
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.path().join(".grok/managed_config.toml"))
+            .expect("read installed managed config"),
+        "[cli]\ntheme = \"dark\"\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.path().join(".grok/requirements.toml"))
+            .expect("read installed requirements"),
+        "[updates]\nminimum_version = \"0.1.0\"\n"
+    );
+}
+
+#[tokio::test]
+#[ignore] // requires pre-built binary; run with --ignored
+async fn test_setup_empty_configuration_is_a_successful_noop() {
+    let endpoint = spawn_setup_server(200, "{}").await;
+    let home = tempfile::TempDir::new().expect("create setup noop home");
+    let result = run_setup_binary(home.path(), Some(&endpoint), false, None).await;
+
+    assert_headless_success(&result, "grok setup empty", None);
+    assert!(
+        result
+            .stderr
+            .contains("doesn't have a managed configuration yet"),
+        "no-op guidance missing:\n{}",
+        result.stderr
+    );
+    assert!(!home.path().join(".grok/managed_config.toml").exists());
+    assert!(!home.path().join(".grok/requirements.toml").exists());
+}
+
+#[tokio::test]
+#[cfg(unix)]
+#[ignore] // requires pre-built binary; run with --ignored
+async fn test_setup_install_failure_exits_nonzero() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let running_as_root = Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .is_some_and(|output| String::from_utf8_lossy(&output.stdout).trim() == "0");
+    if running_as_root {
+        return;
+    }
+
+    let body = serde_json::json!({
+        "deployment_id": "deployment-42",
+        "managed_config": "[cli]\ntheme = \"dark\"\n",
+    })
+    .to_string();
+    let endpoint = spawn_setup_server(200, &body).await;
+    let home = tempfile::TempDir::new().expect("create setup install failure home");
+    let blocked_grok_home = home.path().join(".grok");
+    std::fs::create_dir(&blocked_grok_home).expect("create blocked GROK_HOME");
+    // Let the installer acquire its existing lock, then fail at the atomic
+    // policy write rather than taking the intentional lock-contention no-op.
+    std::fs::write(blocked_grok_home.join("managed_config.lock"), "")
+        .expect("create managed-config lock file");
+    std::fs::set_permissions(&blocked_grok_home, std::fs::Permissions::from_mode(0o555))
+        .expect("make GROK_HOME read-only");
+    let result = run_setup_binary(
+        home.path(),
+        Some(&endpoint),
+        false,
+        Some(&blocked_grok_home),
+    )
+    .await;
+    std::fs::set_permissions(&blocked_grok_home, std::fs::Permissions::from_mode(0o755))
+        .expect("restore GROK_HOME permissions");
+
+    assert!(
+        !result.timed_out,
+        "grok setup must not hang on write failure"
+    );
+    assert!(
+        !result.status.success(),
+        "installer write failure must fail"
+    );
+    assert!(
+        result
+            .stderr
+            .contains("Couldn't apply managed configuration."),
+        "installer failure was not surfaced:\n{}",
+        result.stderr
     );
 }
 

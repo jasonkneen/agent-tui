@@ -147,51 +147,48 @@ fn init_tracing_simple(app_entrypoint: &'static str) {
         ),
     );
 }
-/// `grok setup`: rendering + exit codes only; fetch logic lives in `xai_grok_shell::managed_config`.
+/// `grok setup`: render command outcomes; fetch logic lives in `xai_grok_shell::managed_config`.
 /// `json` prints the served configuration instead of installing it.
-async fn run_setup_command(json: bool) {
+async fn run_setup_command(json: bool) -> Result<()> {
     use xai_grok_shell::managed_config::{self, SetupOutcome};
     if !managed_config::has_principal() {
-        eprintln!("No deployment key or team sign-in found.");
-        eprintln!();
-        eprintln!("To install managed configuration, sign in with a team using `grok login`,");
-        eprintln!("or set a deployment key:");
-        eprintln!();
-        if cfg!(unix) {
-            eprintln!("  export GROK_DEPLOYMENT_KEY=<your-key>");
+        let deployment_key_example = if cfg!(unix) {
+            "  export GROK_DEPLOYMENT_KEY=<your-key>"
         } else {
-            eprintln!("  $env:GROK_DEPLOYMENT_KEY=\"<your-key>\"");
-        }
-        eprintln!("  grok setup");
-        eprintln!();
-        eprintln!("Or add the key to ~/.grok/config.toml:");
-        eprintln!();
-        eprintln!("  [endpoints]");
-        eprintln!("  deployment_key = \"<your-key>\"");
-        eprintln!();
-        eprintln!(
-            "If you don't have a deployment key, contact your organization's Grok administrator."
-        );
-        std::process::exit(1);
+            "  $env:GROK_DEPLOYMENT_KEY=\"<your-key>\""
+        };
+        let guidance = [
+            "No deployment key or team sign-in found.",
+            "",
+            "To install managed configuration, sign in with a team using `grok login`,",
+            "or set a deployment key:",
+            "",
+            deployment_key_example,
+            "  grok setup",
+            "",
+            "Or add the key to ~/.grok/config.toml:",
+            "",
+            "  [endpoints]",
+            "  deployment_key = \"<your-key>\"",
+            "",
+            "If you don't have a deployment key, contact your organization's Grok administrator.",
+        ]
+        .join("\n");
+        anyhow::bail!(guidance);
     }
     if json {
-        match managed_config::fetch_setup_report().await {
-            Ok(report) => {
-                let out = serde_json::to_string_pretty(&report)
-                    .expect("setup report has no non-serializable values");
-                println!("{out}");
-                if !report.configured {
-                    eprintln!(
-                        "Your team doesn't have a managed configuration yet. A team admin can set one up at console.x.ai."
-                    );
-                }
-            }
-            Err(e) => {
-                eprintln!("Couldn't fetch managed configuration. {e}");
-                std::process::exit(1);
-            }
+        let report = managed_config::fetch_setup_report()
+            .await
+            .map_err(|e| anyhow::anyhow!("Couldn't fetch managed configuration. {e}"))?;
+        let out = serde_json::to_string_pretty(&report)
+            .expect("setup report has no non-serializable values");
+        println!("{out}");
+        if !report.configured {
+            eprintln!(
+                "Your team doesn't have a managed configuration yet. A team admin can set one up at console.x.ai."
+            );
         }
-        return;
+        return Ok(());
     }
     match managed_config::run_setup().await {
         SetupOutcome::Installed => eprintln!("Applied managed configuration."),
@@ -201,10 +198,10 @@ async fn run_setup_command(json: bool) {
             );
         }
         SetupOutcome::Failed(e) => {
-            eprintln!("Couldn't apply managed configuration. {e}");
-            std::process::exit(1);
+            anyhow::bail!("Couldn't apply managed configuration. {e}");
         }
     }
+    Ok(())
 }
 fn resolve_target(args: &LeaderTargetArgs) -> LeaderTarget {
     match args.pid {
@@ -1645,7 +1642,7 @@ async fn async_main() -> Result<()> {
             Command::Setup { json } => {
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
-                run_setup_command(json).await;
+                run_setup_command(json).await?;
                 return Ok(());
             }
             Command::Mcp(mcp_args) => {
