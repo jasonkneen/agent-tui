@@ -168,6 +168,69 @@ async fn test_version_with_crash_handler_exits_zero() {
     );
 }
 
+/// Exercise the user-facing `grok models` command through the built binary.
+/// This covers auth banner rendering, shell spawn/model discovery, default
+/// markers, and graceful command completion after cancellation.
+#[tokio::test]
+#[ignore] // requires pre-built binary; run with --ignored
+async fn test_models_output_and_cleanup_contract() {
+    let server = MockInferenceServer::start_with_models(vec![
+        MockModelEntry::new("model-alpha"),
+        MockModelEntry::new("model-beta"),
+    ])
+    .await
+    .expect("start models mock server");
+    let home = tempfile::TempDir::new().expect("create isolated models-test home");
+    let grok_home = home.path().join(".grok");
+    std::fs::create_dir_all(&grok_home).expect("create isolated GROK_HOME");
+    std::fs::write(
+        grok_home.join("config.toml"),
+        "[models]\ndefault = \"model-beta\"\n",
+    )
+    .expect("write models config");
+
+    let mut cmd = tokio::process::Command::new(grok_binary());
+    cmd.arg("models")
+        .current_dir(home.path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    test_env_cmd_tokio(&mut cmd, &server.url(), home.path());
+    cmd.env_remove("GROK_MODELS_LIST_URL")
+        .env_remove("GROK_MODELS_BASE_URL");
+    let result = run_headless_with_cmd(cmd).await;
+
+    assert_headless_success(&result, "grok models", Some(&server));
+    assert_no_crashes(&result.stderr);
+    assert_eq!(
+        result.stdout,
+        concat!(
+            "You are using XAI_API_KEY.\n",
+            "\n",
+            "Default model: model-beta\n",
+            "\n",
+            "Available models:\n",
+            "  - model-alpha\n",
+            "  * model-beta (default)\n",
+        ),
+        "models output must preserve the banner, ordering, and default marker"
+    );
+    assert!(
+        server
+            .requests()
+            .iter()
+            .any(|request| request.path == "/v1/models"),
+        "the command must fetch the model catalog through the spawned shell; requests:\n{}",
+        server.request_log_summary()
+    );
+    assert!(
+        !server.has_chat_completion_request() && !server.has_responses_request(),
+        "listing models must not start an inference request; requests:\n{}",
+        server.request_log_summary()
+    );
+}
+
 /// THE critical test. Exercises the full session lifecycle in a git repo:
 /// binary start → agent init → libgit2 init → fs watchers → session create →
 /// model resolve → inference request to mock server → SSE parse → response render → exit.
