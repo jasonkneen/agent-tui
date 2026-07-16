@@ -233,6 +233,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-tui-codex-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "agent-tui-compaction"
 version = "0.1.0"
 dependencies = [

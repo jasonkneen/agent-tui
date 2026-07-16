@@ -18,6 +18,7 @@ members = [
     "crates/codegen/agent-tui-agent",
     "crates/codegen/agent-tui-announcements",
     "crates/codegen/agent-tui-auth",
+    "crates/codegen/agent-tui-codex-runtime",
     "crates/codegen/agent-tui-config",
     "crates/codegen/agent-tui-config-types",
     "crates/codegen/agent-tui-env",
@@ -292,6 +293,7 @@ agent-tui-models = { path = "crates/codegen/agent-tui-models" }
 agent-tui-sampler = { path = "crates/codegen/agent-tui-sampler" }
 agent-tui-secrets = { path = "crates/codegen/agent-tui-secrets" }
 agent-tui-shared = { path = "crates/codegen/agent-tui-shared" }
+agent-tui-codex-runtime = { path = "crates/codegen/agent-tui-codex-runtime" }
 agent-tui-shell = { path = "crates/codegen/agent-tui-shell" }
 agent-tui-shell-base = { path = "crates/codegen/agent-tui-shell-base" }
 agent-tui-shell-session-support = { path = "crates/codegen/agent-tui-shell-session-support" }

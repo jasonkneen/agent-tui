@@ -9,6 +9,23 @@ This repository is a packaging fork of SpaceXAI Grok Build. Product binary is
 - Auth method IDs, `XAI_API_KEY`, model IDs, API endpoints
 - `X-XAI-Token-Auth: xai-grok-cli` header value (proxy rejects renames)
 
+## Multi-vendor runtimes (not raw OAuth)
+
+Prefer **vendor harnesses + local login**, not Agent TUI OAuth:
+
+| Vendor | Runtime | Auth |
+|--------|---------|------|
+| Claude | **Claude Agent SDK** (warm sidecar; stream) | Claude Code login |
+| Codex | **`codex app-server`** (JSON-RPC; stream notifications) | `~/.codex` ChatGPT login |
+| Grok | Existing sampler HTTP SSE | Existing OIDC / API key |
+
+- Detect helpers: `agent_tui_shell::auth::local_cli` (Claude first)
+- Codex app-server client: `agent-tui-codex-runtime` (`CodexRuntimePool`, warm + idle timeout)
+- Full design: [docs/LOCAL_CLI_AUTH.md](docs/LOCAL_CLI_AUTH.md)
+- Do **not** rename ACP method IDs (`xai.api_key`, `grok.com`, …)
+- Do **not** send third-party tokens to the Grok chat proxy
+- Do **not** force Claude/Codex through `SamplerConfig` HTTP — use a runtime bridge
+
 ## Releases & install
 
 Full maintainer procedure: **[RELEASING.md](RELEASING.md)**.
