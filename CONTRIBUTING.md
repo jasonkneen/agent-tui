@@ -36,7 +36,7 @@ Release: [`.github/workflows/release.yml`](.github/workflows/release.yml) (tag `
 2. `git tag vX.Y.Z && git push origin vX.Y.Z`
 3. Wait for the Release workflow; smoke-test `install.sh`.
 
-Do not reintroduce `x.ai/cli` or `@xai-official/grok` as this fork’s default
+Do not reintroduce `x.ai/cli` or `@xai-official/grok` as this fork's default
 distribution — those remain official Grok Build channels.
 
 ## Licensing
