@@ -230,6 +230,54 @@ impl CodexAppServerClient {
         Ok(id)
     }
 
+    /// List available models (`model/list`), following pagination.
+    pub async fn model_list(&self, include_hidden: bool) -> Result<Vec<crate::protocol::CodexModelEntry>> {
+        if !*self.initialized.lock().await {
+            return Err(CodexRuntimeError::NotInitialized);
+        }
+        self.touch().await;
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let params = crate::protocol::ModelListParams {
+                limit: Some(100),
+                cursor: cursor.clone(),
+                include_hidden: Some(include_hidden),
+            };
+            let result = self
+                .request(
+                    "model/list",
+                    Some(serde_json::to_value(params)?),
+                    DEFAULT_REQUEST_TIMEOUT,
+                )
+                .await?;
+            let data = result
+                .get("data")
+                .or_else(|| result.get("models"))
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            for item in data {
+                if let Some(entry) = parse_model_entry(&item) {
+                    out.push(entry);
+                }
+            }
+            cursor = result
+                .get("nextCursor")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            if cursor.is_none() {
+                break;
+            }
+            // Safety: avoid infinite loops on a stuck cursor.
+            if out.len() > 500 {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
     /// Begin a turn and return the initial `turn` object (events stream via [`Self::subscribe`]).
     pub async fn turn_start(&self, params: TurnStartParams) -> Result<Value> {
         if !*self.initialized.lock().await {
@@ -378,6 +426,71 @@ async fn dispatch_inbound(
         let event = map_notification(method, &params);
         let _ = notify_tx.send(event);
     }
+}
+
+fn parse_model_entry(item: &Value) -> Option<crate::protocol::CodexModelEntry> {
+    let id = item
+        .get("id")
+        .or_else(|| item.get("model"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    let display_name = item
+        .get("displayName")
+        .or_else(|| item.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(&id)
+        .to_string();
+    let description = item
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let is_default = item
+        .get("isDefault")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let hidden = item
+        .get("hidden")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let default_reasoning_effort = item
+        .get("defaultReasoningEffort")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let supported_reasoning_efforts = item
+        .get("supportedReasoningEfforts")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| {
+                    e.get("reasoningEffort")
+                        .or_else(|| e.get("id"))
+                        .and_then(|v| v.as_str())
+                        .or_else(|| e.as_str())
+                        .map(str::to_string)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let input_modalities = item
+        .get("inputModalities")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| vec!["text".into(), "image".into()]);
+    Some(crate::protocol::CodexModelEntry {
+        id,
+        display_name,
+        description,
+        is_default,
+        hidden,
+        default_reasoning_effort,
+        supported_reasoning_efforts,
+        input_modalities,
+    })
 }
 
 /// Collect text deltas from a subscription until `TurnCompleted` or channel lag/close.

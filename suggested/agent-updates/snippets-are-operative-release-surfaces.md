@@ -1,0 +1,12 @@
+# Convention: copy-pasteable snippets are operative release surfaces — sweeps update comments, doc one-liners, and skill quotes, not just code defaults
+
+**Rule.** Any string a user is expected to copy and execute verbatim — install one-liners in docs, raw URLs in install-script *comments*, commands quoted in skills — is an operative release surface. A release-identity or version sweep that updates code constants and script defaults but skips these snippets is incomplete, even if every build and test is green.
+
+**Grounding.**
+- `suggested/workflows/change-agent-tui-release-identity.md`, step 2: update install-script "defaults *and comments* (the raw URLs users curl live in doc snippets that embed the branch name)".
+- Same workflow, step 5: skills such as `install-agent-tui.md` "quote the install one-liners verbatim" and are enumerated as a mandatory sweep surface alongside `version.rs` and the installers.
+- `crates/codegen/agent-tui-pager/docs/user-guide/01-getting-started.md` and the npm `README.md` both embed the full raw install URL (`https://raw.githubusercontent.com/jasonkneen/agent-tui/fork/agent-tui/...`) — including the repo id *and* the default branch name — as executable commands.
+
+**Why:** these snippets are run, not read. A user who curls a one-liner from the getting-started guide executes whatever repo id and branch the snippet embeds; if those went stale in a rename, the command fetches from a dead location or — worse — installs the wrong product. Unlike a stale constant in `version.rs`, no compiler, test, or CI job ever evaluates a markdown code fence or a shell comment, so this defect class is invisible to every automated gate. The only defense is treating the snippets as first-class members of the sweep surface.
+
+**How to apply:** when executing any sweep that changes an identity string (repo id, branch, asset prefix, version, install URL base), grep the whole tree for the old value across *all* file types — `.md`, `.sh`/`.ps1` comments, skill files, npm package READMEs — not just source code. Classify each hit: a snippet a user could execute is operative and must be updated; only historical decision records and changelogs may keep the old value. When authoring a new doc or skill, prefer quoting the canonical one-liner exactly as the install scripts' own docs state it, so the next sweep's grep finds it. When reviewing a release-identity PR, a diff that touches installers but no docs or skills is the signature of this incompleteness — send it back.

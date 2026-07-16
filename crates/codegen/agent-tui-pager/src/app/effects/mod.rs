@@ -73,6 +73,19 @@ pub(crate) fn execute(
                     TaskResult::AuthCopiedTimeout
                 });
         }
+        Effect::RefreshCodexModels => {
+            tasks.spawn(async {
+                let result = crate::runtime_backend::refresh_codex_models().await;
+                TaskResult::CodexModelsLoaded { result }
+            });
+        }
+        Effect::RefreshClaudeModels => {
+            tasks.spawn(async {
+                // Sync catalog build (no network) — run on blocking-friendly spawn.
+                let result = crate::runtime_backend::refresh_claude_models();
+                TaskResult::ClaudeModelsLoaded { result }
+            });
+        }
         Effect::Logout => {
             let tx = acp_tx.clone();
             tasks
@@ -1027,118 +1040,190 @@ pub(crate) fn execute(
             prompt_id,
             skill_token_ranges,
         } => {
-            let tx = acp_tx.clone();
-            let screen_mode = session_flags.screen_mode_label;
-            let is_api_key_auth = session_flags.is_api_key_auth;
-            tasks
-                .spawn(async move {
+            let runtime = crate::runtime_backend::active();
+            if runtime != crate::runtime_backend::RuntimeBackend::Grok {
+                // Route to Codex app-server (or Claude when SDK lands).
+                // User prompt is already in scrollback; we only produce the reply.
+                tasks.spawn(async move {
                     ulog::info(
-                        "prompt.acp_send.start",
+                        "prompt.external_runtime.start",
                         Some(&session_id.0),
-                        Some(
-                            serde_json::json!(
-                                { "kind" : "text", "len" : text.len(), "prompt_id" :
-                                prompt_id, }
-                            ),
-                        ),
+                        Some(serde_json::json!({
+                            "runtime": runtime.as_str(),
+                            "len": text.len(),
+                            "prompt_id": prompt_id,
+                        })),
                     );
                     let send_start = std::time::Instant::now();
-                    let prompt = vec![
-                        plain_prompt_content_block(text, & skill_token_ranges)
-                    ];
-                    let req = acp::PromptRequest::new(session_id.clone(), prompt)
-                        .meta(
-                            prompt_request_meta(&prompt_id, screen_mode)
-                                .as_object()
-                                .cloned(),
-                        );
-                    let result = acp_send(req, &tx).await;
+                    let result =
+                        crate::runtime_backend::run_external_turn(runtime, text).await;
                     let send_elapsed_ms = send_start.elapsed().as_millis() as u64;
                     ulog::info(
-                        "prompt.acp_send.done",
+                        "prompt.external_runtime.done",
                         Some(&session_id.0),
-                        Some(
-                            serde_json::json!(
-                                { "kind" : "text", "elapsed_ms" : send_elapsed_ms, "ok" :
-                                result.is_ok(), "prompt_id" : prompt_id, }
-                            ),
-                        ),
+                        Some(serde_json::json!({
+                            "runtime": runtime.as_str(),
+                            "elapsed_ms": send_elapsed_ms,
+                            "ok": result.is_ok(),
+                            "prompt_id": prompt_id,
+                        })),
                     );
-                    log_prompt_result(&session_id, &result);
-                    let http_status = result
-                        .as_ref()
-                        .err()
-                        .and_then(http_status_from_error);
-                    TaskResult::PromptResponse {
+                    TaskResult::ExternalRuntimeTurnDone {
                         agent_id,
-                        result: result
-                            .map_err(|e| format_acp_error(&e, is_api_key_auth)),
-                        http_status,
                         prompt_id: Some(prompt_id),
+                        result,
+                        runtime,
                     }
                 });
+            } else {
+                let tx = acp_tx.clone();
+                let screen_mode = session_flags.screen_mode_label;
+                let is_api_key_auth = session_flags.is_api_key_auth;
+                tasks
+                    .spawn(async move {
+                        ulog::info(
+                            "prompt.acp_send.start",
+                            Some(&session_id.0),
+                            Some(
+                                serde_json::json!(
+                                    { "kind" : "text", "len" : text.len(), "prompt_id" :
+                                    prompt_id, }
+                                ),
+                            ),
+                        );
+                        let send_start = std::time::Instant::now();
+                        let prompt = vec![
+                            plain_prompt_content_block(text, & skill_token_ranges)
+                        ];
+                        let req = acp::PromptRequest::new(session_id.clone(), prompt)
+                            .meta(
+                                prompt_request_meta(&prompt_id, screen_mode)
+                                    .as_object()
+                                    .cloned(),
+                            );
+                        let result = acp_send(req, &tx).await;
+                        let send_elapsed_ms = send_start.elapsed().as_millis() as u64;
+                        ulog::info(
+                            "prompt.acp_send.done",
+                            Some(&session_id.0),
+                            Some(
+                                serde_json::json!(
+                                    { "kind" : "text", "elapsed_ms" : send_elapsed_ms, "ok" :
+                                    result.is_ok(), "prompt_id" : prompt_id, }
+                                ),
+                            ),
+                        );
+                        log_prompt_result(&session_id, &result);
+                        let http_status = result
+                            .as_ref()
+                            .err()
+                            .and_then(http_status_from_error);
+                        TaskResult::PromptResponse {
+                            agent_id,
+                            result: result
+                                .map_err(|e| format_acp_error(&e, is_api_key_auth)),
+                            http_status,
+                            prompt_id: Some(prompt_id),
+                        }
+                    });
+            }
         }
         Effect::SendPromptBlocks { agent_id, session_id, blocks, prompt_id }
         | Effect::SendPromptNow { agent_id, session_id, blocks, prompt_id } => {
             let send_now = effect_is_send_now;
-            let tx = acp_tx.clone();
-            let screen_mode = session_flags.screen_mode_label;
-            let is_api_key_auth = session_flags.is_api_key_auth;
-            tasks
-                .spawn(async move {
-                    ulog::info(
-                        "prompt.acp_send.start",
-                        Some(&session_id.0),
-                        Some(
-                            serde_json::json!(
-                                { "kind" : if send_now { "send_now" } else { "blocks" },
-                                "block_count" : blocks.len(), "prompt_id" : prompt_id, }
-                            ),
-                        ),
-                    );
-                    let send_start = std::time::Instant::now();
-                    let mut meta = prompt_request_meta(&prompt_id, screen_mode);
-                    if send_now && let Some(map) = meta.as_object_mut() {
-                        map.insert("sendNow".into(), serde_json::Value::Bool(true));
-                    }
-                    let requeue_blocks = send_now.then(|| blocks.clone());
-                    let req = acp::PromptRequest::new(session_id.clone(), blocks)
-                        .meta(meta.as_object().cloned());
-                    let result = acp_send(req, &tx).await;
-                    let send_elapsed_ms = send_start.elapsed().as_millis() as u64;
-                    ulog::info(
-                        "prompt.acp_send.done",
-                        Some(&session_id.0),
-                        Some(
-                            serde_json::json!(
-                                { "kind" : if send_now { "send_now" } else { "blocks" },
-                                "elapsed_ms" : send_elapsed_ms, "ok" : result.is_ok(),
-                                "prompt_id" : prompt_id, }
-                            ),
-                        ),
-                    );
-                    log_prompt_result(&session_id, &result);
-                    if let (Some(blocks), Err(e)) = (requeue_blocks, &result) {
-                        return TaskResult::SendPromptNowFailed {
-                            agent_id,
-                            session_id,
-                            prompt_id,
-                            error: format_acp_error(e, is_api_key_auth),
-                            blocks,
-                        };
-                    }
-                    let http_status = result
-                        .as_ref()
-                        .err()
-                        .and_then(http_status_from_error);
-                    TaskResult::PromptResponse {
+            let runtime = crate::runtime_backend::active();
+            if runtime != crate::runtime_backend::RuntimeBackend::Grok {
+                // Flatten text blocks; image/other content not yet supported on
+                // external runtimes.
+                let text = blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        acp::ContentBlock::Text(t) => Some(t.text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let has_non_text = blocks.iter().any(|b| {
+                    !matches!(b, acp::ContentBlock::Text(_))
+                });
+                tasks.spawn(async move {
+                    let result = if text.trim().is_empty() && has_non_text {
+                        Err(format!(
+                            "{} does not yet accept image/binary attachments from Agent TUI. Paste text only, or `/runtime grok`.",
+                            runtime.display_name()
+                        ))
+                    } else if text.trim().is_empty() {
+                        Err("Empty prompt".into())
+                    } else {
+                        crate::runtime_backend::run_external_turn(runtime, text).await
+                    };
+                    TaskResult::ExternalRuntimeTurnDone {
                         agent_id,
-                        result: result
-                            .map_err(|e| format_acp_error(&e, is_api_key_auth)),
-                        http_status,
                         prompt_id: Some(prompt_id),
+                        result,
+                        runtime,
                     }
                 });
+            } else {
+                let tx = acp_tx.clone();
+                let screen_mode = session_flags.screen_mode_label;
+                let is_api_key_auth = session_flags.is_api_key_auth;
+                tasks
+                    .spawn(async move {
+                        ulog::info(
+                            "prompt.acp_send.start",
+                            Some(&session_id.0),
+                            Some(
+                                serde_json::json!(
+                                    { "kind" : if send_now { "send_now" } else { "blocks" },
+                                    "block_count" : blocks.len(), "prompt_id" : prompt_id, }
+                                ),
+                            ),
+                        );
+                        let send_start = std::time::Instant::now();
+                        let mut meta = prompt_request_meta(&prompt_id, screen_mode);
+                        if send_now && let Some(map) = meta.as_object_mut() {
+                            map.insert("sendNow".into(), serde_json::Value::Bool(true));
+                        }
+                        let requeue_blocks = send_now.then(|| blocks.clone());
+                        let req = acp::PromptRequest::new(session_id.clone(), blocks)
+                            .meta(meta.as_object().cloned());
+                        let result = acp_send(req, &tx).await;
+                        let send_elapsed_ms = send_start.elapsed().as_millis() as u64;
+                        ulog::info(
+                            "prompt.acp_send.done",
+                            Some(&session_id.0),
+                            Some(
+                                serde_json::json!(
+                                    { "kind" : if send_now { "send_now" } else { "blocks" },
+                                    "elapsed_ms" : send_elapsed_ms, "ok" : result.is_ok(),
+                                    "prompt_id" : prompt_id, }
+                                ),
+                            ),
+                        );
+                        log_prompt_result(&session_id, &result);
+                        if let (Some(blocks), Err(e)) = (requeue_blocks, &result) {
+                            return TaskResult::SendPromptNowFailed {
+                                agent_id,
+                                session_id,
+                                prompt_id,
+                                error: format_acp_error(e, is_api_key_auth),
+                                blocks,
+                            };
+                        }
+                        let http_status = result
+                            .as_ref()
+                            .err()
+                            .and_then(http_status_from_error);
+                        TaskResult::PromptResponse {
+                            agent_id,
+                            result: result
+                                .map_err(|e| format_acp_error(&e, is_api_key_auth)),
+                            http_status,
+                            prompt_id: Some(prompt_id),
+                        }
+                    });
+            }
         }
         Effect::SendBashCommand { agent_id, session_id, command, prompt_id } => {
             let tx = acp_tx.clone();

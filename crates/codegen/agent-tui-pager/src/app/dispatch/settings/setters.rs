@@ -1473,6 +1473,59 @@ pub(in crate::app::dispatch) fn set_default_model(
     app: &mut AppView,
     new_id: acp::ModelId,
 ) -> Vec<Effect> {
+    // External runtimes: selection is local (runtime.toml), not Grok ACP.
+    let external = crate::runtime_backend::active();
+    if matches!(
+        external,
+        crate::runtime_backend::RuntimeBackend::Codex
+            | crate::runtime_backend::RuntimeBackend::Claude
+    ) {
+        let label = external.as_str();
+        let ActiveView::Agent(aid) = app.active_view else {
+            return vec![];
+        };
+        let display = {
+            let Some(agent) = app.agents.get_mut(&aid) else {
+                return vec![];
+            };
+            if !agent.session.models.available.contains_key(&new_id) {
+                app.show_toast(&format!(
+                    "Unknown {label} model (try /runtime {label} to refresh)"
+                ));
+                return vec![];
+            }
+            if agent.session.models.current.as_ref() == Some(&new_id) {
+                return vec![];
+            }
+            let display = agent.session.models.display_name_for(&new_id);
+            agent.session.models.set_current(new_id.clone(), None);
+            agent.scrollback.push_block(
+                crate::scrollback::block::RenderBlock::system(format!(
+                    "{label} model → {display}"
+                )),
+            );
+            display
+        };
+        if app.models.available.contains_key(&new_id) {
+            app.models.set_current(new_id.clone(), None);
+        }
+        let save = match external {
+            crate::runtime_backend::RuntimeBackend::Codex => {
+                crate::runtime_backend::set_codex_model(new_id.0.as_ref())
+            }
+            crate::runtime_backend::RuntimeBackend::Claude => {
+                crate::runtime_backend::set_claude_model(new_id.0.as_ref())
+            }
+            crate::runtime_backend::RuntimeBackend::Grok => Ok(()),
+        };
+        if let Err(e) = save {
+            app.show_toast(&format!("Couldn't save {label} model: {e}"));
+            return vec![];
+        }
+        app.show_toast(&format!("{label} model: {display}"));
+        return vec![];
+    }
+
     let ActiveView::Agent(aid) = app.active_view else {
         tracing::error!(
             target: "settings",

@@ -44,6 +44,8 @@ struct PoolState {
     client: Option<Arc<CodexAppServerClient>>,
     /// Active thread for quick multi-turn (optional sticky).
     sticky_thread_id: Option<String>,
+    /// Model used when sticky thread was created (reset thread if it changes).
+    sticky_model: Option<String>,
 }
 
 impl CodexRuntimePool {
@@ -53,6 +55,7 @@ impl CodexRuntimePool {
             inner: Mutex::new(PoolState {
                 client: None,
                 sticky_thread_id: None,
+                sticky_model: None,
             }),
         })
     }
@@ -70,6 +73,7 @@ impl CodexRuntimePool {
             c.shutdown().await;
             state.client = None;
             state.sticky_thread_id = None;
+            state.sticky_model = None;
         }
 
         debug!("codex runtime: spawning app-server");
@@ -82,30 +86,48 @@ impl CodexRuntimePool {
         Ok(client)
     }
 
+    /// List models from the warm app-server.
+    pub async fn list_models(&self, include_hidden: bool) -> Result<Vec<crate::protocol::CodexModelEntry>> {
+        let client = self.ensure_ready().await?;
+        client.model_list(include_hidden).await
+    }
+
     /// Start (or reuse sticky) thread and run a text turn. Returns initial turn result JSON.
     ///
     /// Callers that want streaming should [`CodexAppServerClient::subscribe`] **before**
-    /// calling this, or use [`Self::start_text_turn_streaming`].
-    pub async fn start_text_turn(&self, prompt: impl Into<String>) -> Result<(String, Value)> {
+    /// calling this. Pass `model` to pin the thread model; if it differs from the
+    /// sticky thread's model, a new thread is started.
+    pub async fn start_text_turn(
+        &self,
+        prompt: impl Into<String>,
+        model: Option<String>,
+    ) -> Result<(String, Value)> {
         let prompt = prompt.into();
         let client = self.ensure_ready().await?;
+        let model = model.or_else(|| self.config.default_model.clone());
 
         let thread_id = {
             let mut state = self.inner.lock().await;
-            if let Some(id) = state.sticky_thread_id.clone() {
-                id
+            let reuse = state
+                .sticky_thread_id
+                .as_ref()
+                .is_some_and(|_| state.sticky_model == model);
+            if reuse {
+                state.sticky_thread_id.clone().expect("checked")
             } else {
                 let id = client
                     .thread_start(ThreadStartParams {
-                        model: self.config.default_model.clone(),
+                        model: model.clone(),
                         cwd: self.config.cwd.clone(),
                         approval_policy: Some("never".into()),
-                        sandbox: Some("workspaceWrite".into()),
+                        // app-server enum is kebab-case (not camelCase).
+                        sandbox: Some("workspace-write".into()),
                         ephemeral: Some(false),
                         service_name: Some("agent_tui".into()),
                     })
                     .await?;
                 state.sticky_thread_id = Some(id.clone());
+                state.sticky_model = model;
                 id
             }
         };
@@ -127,10 +149,13 @@ impl CodexRuntimePool {
             c.shutdown().await;
         }
         state.sticky_thread_id = None;
+        state.sticky_model = None;
     }
 
     /// Clear sticky thread so the next turn starts a fresh conversation.
     pub async fn reset_thread(&self) {
-        self.inner.lock().await.sticky_thread_id = None;
+        let mut state = self.inner.lock().await;
+        state.sticky_thread_id = None;
+        state.sticky_model = None;
     }
 }

@@ -796,6 +796,14 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         }
         Action::NextModel => vec![],
         Action::SwitchModel { model_id, effort } => {
+            // External runtimes: local selection only (no Grok ACP switch).
+            match crate::runtime_backend::active() {
+                crate::runtime_backend::RuntimeBackend::Codex
+                | crate::runtime_backend::RuntimeBackend::Claude => {
+                    return set_default_model(app, model_id);
+                }
+                crate::runtime_backend::RuntimeBackend::Grok => {}
+            }
             let ActiveView::Agent(id) = app.active_view else {
                 return vec![];
             };
@@ -989,6 +997,53 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             with_active_agent(app, |agent| agent.cycle_highlighted_link(false));
             vec![]
         }
+        Action::SetRuntime(backend) => {
+            match crate::runtime_backend::set_active(backend) {
+                Ok(()) => {
+                    let note = match backend {
+                        crate::runtime_backend::RuntimeBackend::Grok => {
+                            // Restore Grok catalog if we had swapped it for Codex.
+                            if let Some(stashed) =
+                                crate::runtime_backend::take_stashed_grok_catalog()
+                            {
+                                app.models = stashed.clone();
+                                if let Some(agent) = get_active_agent_mut(app) {
+                                    agent.session.models = stashed;
+                                }
+                            }
+                            "Runtime: Grok (xAI) — built-in agent".to_string()
+                        }
+                        crate::runtime_backend::RuntimeBackend::Codex => {
+                            "Runtime: Codex — loading models from app-server…".to_string()
+                        }
+                        crate::runtime_backend::RuntimeBackend::Claude => {
+                            "Runtime: Claude — loading models (Claude Code Agent SDK harness)…".to_string()
+                        }
+                    };
+                    app.show_toast(&note);
+                    if let Some(agent) = get_active_agent_mut(app) {
+                        agent
+                            .scrollback
+                            .push_block(crate::scrollback::block::RenderBlock::system(note));
+                    }
+                    return match backend {
+                        crate::runtime_backend::RuntimeBackend::Codex => {
+                            vec![Effect::RefreshCodexModels]
+                        }
+                        crate::runtime_backend::RuntimeBackend::Claude => {
+                            vec![Effect::RefreshClaudeModels]
+                        }
+                        crate::runtime_backend::RuntimeBackend::Grok => vec![],
+                    };
+                }
+                Err(e) => {
+                    app.show_toast(&format!("Couldn't save runtime: {e}"));
+                }
+            }
+            vec![]
+        }
+        Action::RefreshCodexModels => vec![Effect::RefreshCodexModels],
+        Action::RefreshClaudeModels => vec![Effect::RefreshClaudeModels],
         Action::Login => dispatch_login(app),
         Action::CancelLogin => dispatch_cancel_login(app),
         Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),

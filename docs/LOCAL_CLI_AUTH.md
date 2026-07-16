@@ -3,6 +3,21 @@
 **Goal:** use vendors the way their products do — **not** by reimplementing OAuth
 or raw chat HTTP when a local, already-authenticated harness exists.
 
+## TUI usage (shipped)
+
+| Command | What it does |
+|---------|----------------|
+| `/runtime` | Show Grok / Codex / Claude readiness (local CLI detect) |
+| `/runtime codex` | Route turns through warm `codex app-server` (`~/.codex` auth) |
+| `/runtime grok` | Built-in xAI agent (default) |
+| `/runtime claude` | Select Claude (detect-only until Agent SDK bridge) |
+| `/provider`, `/rt` | Aliases for `/runtime` |
+
+After `/runtime codex` or `/runtime claude`, Agent TUI loads that vendor’s model catalog and **`/model` switches it**. Selection is stored in `~/.agent-tui/runtime.toml` (`codex_model` / `claude_model`).
+
+- **Codex** — `model/list` over warm app-server  
+- **Claude** — Claude Code Agent SDK harness via `claude -p --output-format json` (+ sticky `--resume`)
+
 | Vendor | Runtime | Transport | Auth |
 |--------|---------|-----------|------|
 | **Claude** | [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript) (`@anthropic-ai/claude-agent-sdk`) | Long-lived SDK client / subprocess; stream messages | Reuse Claude Code login (keychain / `~/.claude`) — **no Agent TUI OAuth** |
@@ -232,7 +247,7 @@ use agent_tui_codex_runtime::{CodexRuntimePool, PoolConfig};
 let pool = CodexRuntimePool::new(PoolConfig::default());
 let client = pool.ensure_ready().await?;
 let mut events = client.subscribe();
-let (thread_id, turn) = pool.start_text_turn("hello").await?;
+let (thread_id, turn) = pool.start_text_turn("hello", None).await?;
 ```
 
 Requires `codex` on `PATH` (uses local `~/.codex` auth automatically).

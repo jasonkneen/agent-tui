@@ -1,0 +1,12 @@
+# Convention: a detect-only runtime is announced but never routed — readiness display precedes inference wiring
+
+**Rule.** A vendor runtime may ship in a **detect-only** state: its local-CLI detection is wired, it appears in `/runtime` readiness, and it can even be selected — but no turns route to it until its real runtime bridge (warm pool / SDK client) lands. Claude is currently in this state: "`/runtime claude` — Select Claude (detect-only until Agent SDK bridge)" (`docs/LOCAL_CLI_AUTH.md`). Detect-only is a legitimate shipped state, and the one forbidden move is "completing" it with a shortcut: constructing a one-shot HTTP inference path from the credentials the detector found.
+
+**Grounding.**
+- `docs/LOCAL_CLI_AUTH.md`, TUI usage table: `/runtime` shows readiness for all three vendors while `/runtime claude` is explicitly annotated "detect-only until Agent SDK bridge."
+- Same doc: "Credential **detection** (`auth::local_cli`) only answers 'is this CLI logged in?' and seeds discovery. **Inference** goes through a **warm runtime connection**, not a one-shot `reqwest` to `api.anthropic.com`." Detection shipping ahead of inference is the direct consequence of that split.
+- The integrate-new-vendor-runtime workflow orders its steps the same way: detection helper first (step 1), runtime crate with warm-pool behaviors second (step 2).
+
+**Why:** the detection/inference split means the two halves of a vendor integration can land independently, and shipping detection first is useful — users see the vendor is recognized and logged in before the bridge exists. But that visible gap creates pressure to close it cheaply, and the cheap closure (lift the detected credentials into a direct API call) violates the harness-reuse boundary, re-implements the vendor's auth semantics, and re-pays the full cold-start cost per turn. Naming detect-only as a sanctioned state removes the pressure to fake completion.
+
+**How to apply:** when a vendor's detection lands before its runtime, label it detect-only in every surface that mentions it (the `/runtime` help, `docs/LOCAL_CLI_AUTH.md` table, `AGENTS.md` runtime table) so users and maintainers know selection does not yet route turns. Treat a PR that closes a detect-only gap with anything other than a warm runtime bridge (per the integrate-new-vendor-runtime workflow) as a convention violation. When the bridge lands, remove the detect-only annotations in the same change.

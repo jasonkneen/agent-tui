@@ -198,6 +198,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-tui-claude-runtime"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "agent-tui-codebase-graph"
 version = "0.1.0"
 dependencies = [
@@ -718,6 +730,8 @@ dependencies = [
  "agent-tui-acp-lib",
  "agent-tui-agent",
  "agent-tui-announcements",
+ "agent-tui-claude-runtime",
+ "agent-tui-codex-runtime",
  "agent-tui-config",
  "agent-tui-crash-handler",
  "agent-tui-fast-worktree",

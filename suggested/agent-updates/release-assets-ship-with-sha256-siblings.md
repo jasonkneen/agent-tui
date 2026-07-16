@@ -1,0 +1,13 @@
+# Convention: every release asset ships with a `.sha256` sibling — installers verify it, and a missing checksum is a release defect
+
+**Rule.** Every Agent TUI release asset (`agent-tui-{version}-{os}-{arch}[.exe]`) is uploaded together with a `.sha256` sibling, and the consumers — `install.sh`, `install.ps1`, and the in-app updater — verify it before installing. The sibling is part of the asset-name contract, not an optional extra: a release with a missing or mismatched `.sha256` is defective and must not be promoted or worked around on the consumer side, and any change to the asset-name pattern changes the sibling names with it.
+
+**Grounding.**
+- `RELEASING.md`, under "Release asset names (must match installers)": "Plus a `.sha256` sibling for each asset."
+- `suggested/wiki/agent-tui-release-channels-and-assets.md`: "Every asset ships with a `.sha256` sibling" — stated as part of the asset-name contract that three consumers parse.
+- `suggested/workflows/change-agent-tui-release-identity.md`, Verify: asset names in `.github/workflows/release.yml` must still match what the installers and updater resolve, "including the `.sha256` siblings."
+- `suggested/agent-updates/alpha-channel-proves-release-surface-changes.md`: the end-to-end smoke test explicitly checks that `install.sh` "downloads, verifies `.sha256`, and the installed binary runs."
+
+**Why:** the checksum is the only integrity check between the GitHub Release CDN and the user's machine — installers are piped `curl | bash` one-liners, so a truncated or tampered download would otherwise execute silently. Because the sibling's name is derived from the asset's name, it fails in lockstep with asset-pattern drift: an identity change that renames assets but not the checksum lookup produces installs that fail verification even though every binary is intact. Treating the sibling as contractual makes both failure modes (absent checksum, mismatched name) show up in the alpha smoke test instead of in stable users' terminals.
+
+**How to apply:** when editing `.github/workflows/release.yml`, the install scripts, or updater code, keep asset and sibling handling paired — an upload step, download step, or rename that touches one without the other is a defect. When a smoke test fails at checksum verification, fix the release (re-cut an alpha), never patch the installer to skip verification. When reviewing a release-identity change, confirm the grep-for-old-pattern check covers the `.sha256` names too.

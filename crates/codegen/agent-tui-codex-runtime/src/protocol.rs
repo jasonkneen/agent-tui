@@ -99,6 +99,32 @@ pub struct ThreadStartParams {
     pub service_name: Option<String>,
 }
 
+/// One row from `model/list`.
+#[derive(Debug, Clone)]
+pub struct CodexModelEntry {
+    pub id: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub is_default: bool,
+    pub hidden: bool,
+    pub default_reasoning_effort: Option<String>,
+    /// Effort ids in catalog order (e.g. `low`, `medium`, `high`).
+    pub supported_reasoning_efforts: Vec<String>,
+    pub input_modalities: Vec<String>,
+}
+
+/// Params for `model/list`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelListParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_hidden: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnStartParams {

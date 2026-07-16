@@ -11,7 +11,7 @@
 //! let pool = CodexRuntimePool::new(PoolConfig::default());
 //! let client = pool.ensure_ready().await?;
 //! let mut _events = client.subscribe();
-//! let (_thread_id, _turn) = pool.start_text_turn("Summarize this repo").await?;
+//! let (_thread_id, _turn) = pool.start_text_turn("Summarize this repo", None).await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -29,6 +29,6 @@ pub use client::{
 pub use error::{CodexRuntimeError, Result};
 pub use pool::{CodexRuntimePool, PoolConfig};
 pub use protocol::{
-    ClientInfo, InitializeParams, RuntimeEvent, ThreadStartParams, TurnStartParams, UserInput,
-    map_notification,
+    ClientInfo, CodexModelEntry, InitializeParams, ModelListParams, RuntimeEvent,
+    ThreadStartParams, TurnStartParams, UserInput, map_notification,
 };

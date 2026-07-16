@@ -128,9 +128,20 @@ pub fn detect_all_local_cli_credentials() -> Vec<DetectedCredential> {
     out
 }
 
-/// First non-expired Claude credential, if any.
+/// First Claude credential usable for inference, if any.
+///
+/// Prefers a non-expired access token. If the only harvested token is expired
+/// but Claude Code still has material on disk (refresh is owned by the CLI),
+/// still returns it so UI can report “detected via file:…”. Callers that
+/// spawn `claude` for turns should not gate solely on this — the CLI refreshes.
 pub fn detect_preferred_claude() -> Option<DetectedCredential> {
-    detect_claude().filter(|c| !c.is_expired())
+    let c = detect_claude()?;
+    if !c.is_expired() {
+        return Some(c);
+    }
+    // Expired access token: still useful as a presence signal (Claude Code
+    // refreshes via oauth_refresh_token / keychain on `claude -p`).
+    Some(c)
 }
 
 #[cfg(test)]

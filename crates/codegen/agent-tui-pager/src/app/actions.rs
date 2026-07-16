@@ -132,6 +132,12 @@ pub enum Action {
         parent_cwd: Option<std::path::PathBuf>,
         new_session_id: Option<String>,
     },
+    /// Switch the agent runtime harness (`/runtime grok|codex|claude`).
+    SetRuntime(crate::runtime_backend::RuntimeBackend),
+    /// Refresh Codex `model/list` into the session catalog (after `/runtime codex`).
+    RefreshCodexModels,
+    /// Load Claude model aliases into the session catalog (after `/runtime claude`).
+    RefreshClaudeModels,
     /// Send the current prompt text to the agent.
     SendPrompt(String),
     /// Submit a clicked follow-up suggestion chip as a LITERAL model prompt.
@@ -1883,6 +1889,10 @@ pub enum Effect {
     },
     /// Clear the "copied!" feedback after a delay.
     ScheduleClearAuthCopied,
+    /// Fetch Codex app-server `model/list` and apply to the active catalog.
+    RefreshCodexModels,
+    /// Load Claude known-model catalog into the active session.
+    RefreshClaudeModels,
     /// Register the current session in the active-sessions crash-recovery
     /// registry (`~/.grok/active_sessions.json`).
     RegisterActiveSession {
@@ -2204,6 +2214,24 @@ pub enum TaskResult {
         /// painting them onto the running turn. `None` for synthetic/test
         /// constructions that don't need gating.
         prompt_id: Option<String>,
+    },
+    /// External runtime (Codex app-server / future Claude SDK) finished a turn.
+    /// User prompt is already in scrollback; this injects the assistant text
+    /// (or an error) and closes the turn like [`TaskResult::PromptResponse`].
+    ExternalRuntimeTurnDone {
+        agent_id: AgentId,
+        prompt_id: Option<String>,
+        /// Ok = assistant message body; Err = user-visible failure.
+        result: Result<String, String>,
+        runtime: crate::runtime_backend::RuntimeBackend,
+    },
+    /// Codex `model/list` finished — apply catalog to the active session `/model` list.
+    CodexModelsLoaded {
+        result: Result<crate::acp::model_state::ModelState, String>,
+    },
+    /// Claude model catalog ready — apply to `/model` list.
+    ClaudeModelsLoaded {
+        result: Result<crate::acp::model_state::ModelState, String>,
     },
     /// A send-now `session/prompt` RPC failed at the transport/RPC layer —
     /// the prompt never reached the shell's queue. Carries the payload so
