@@ -1,10 +1,10 @@
 //! Pure conversation-shape helpers, kept crate-neutral so both the session
-//! layer (`xai-grok-shell`) and the `ChatStateActor` can share one definition
+//! layer (`agent-tui-shell`) and the `ChatStateActor` can share one definition
 //! of "align the leading System message with a prompt".
 
 use std::sync::Arc;
 
-use xai_grok_sampling_types::conversation::{ContentPart, ConversationItem, SyntheticReason};
+use agent_tui_sampling_types::conversation::{ContentPart, ConversationItem, SyntheticReason};
 
 /// Equal after trimming trailing `\n`/`\r` from both sides. Used for attach
 /// idempotency so a stored head that differs from a client override only by a
@@ -25,7 +25,7 @@ pub fn has_inference_history(conversation: &[ConversationItem]) -> bool {
         | ConversationItem::ToolResult(_)
         | ConversationItem::BackendToolCall(_)
         | ConversationItem::Reasoning(_) => true,
-        ConversationItem::User(xai_grok_sampling_types::conversation::UserItem {
+        ConversationItem::User(agent_tui_sampling_types::conversation::UserItem {
             synthetic_reason: Some(SyntheticReason::CompactionMeta),
             ..
         }) => true,

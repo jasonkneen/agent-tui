@@ -56,7 +56,7 @@ impl ChatStateActor {
         let mut truncate_at = self.state.conversation.len();
 
         for (i, item) in self.state.conversation.iter().enumerate() {
-            if matches!(item, xai_grok_sampling_types::ConversationItem::User(_)) {
+            if matches!(item, agent_tui_sampling_types::ConversationItem::User(_)) {
                 if user_count == target_prompt_index {
                     truncate_at = i;
                     break;
@@ -110,7 +110,7 @@ impl ChatStateActor {
             .iter()
             .rev()
             .find_map(|item| {
-                if let xai_grok_sampling_types::ConversationItem::Assistant(a) = item {
+                if let agent_tui_sampling_types::ConversationItem::Assistant(a) = item {
                     Some(crate::commands::ModelMetadata {
                         resolved_model_id: a.model_id.clone(),
                         model_fingerprint: a.model_fingerprint.clone(),
@@ -132,7 +132,7 @@ impl ChatStateActor {
     /// Whether the conversation has any assistant tool call without a matching
     /// `ToolResult` (the dangling-tool-call repair would fire on the next build).
     pub(super) fn has_dangling_tool_calls(&self) -> bool {
-        xai_grok_sampling_types::has_dangling_tool_calls(&self.state.conversation)
+        agent_tui_sampling_types::has_dangling_tool_calls(&self.state.conversation)
     }
 
     /// Return the text content of the last assistant message with non-empty text.
@@ -142,7 +142,7 @@ impl ChatStateActor {
     /// no such item exists.
     pub(super) fn get_last_assistant_text(&self) -> Option<String> {
         self.state.conversation.iter().rev().find_map(|item| {
-            if let xai_grok_sampling_types::ConversationItem::Assistant(a) = item
+            if let agent_tui_sampling_types::ConversationItem::Assistant(a) = item
                 && !a.content.trim().is_empty()
             {
                 return Some(a.content.as_ref().to_owned());
@@ -161,11 +161,11 @@ impl ChatStateActor {
     /// should use `get_conversation()` directly.
     pub(super) fn get_first_user_text(&self) -> Option<String> {
         self.state.conversation.iter().find_map(|item| {
-            if let xai_grok_sampling_types::ConversationItem::User(u) = item {
+            if let agent_tui_sampling_types::ConversationItem::User(u) = item {
                 // Only return text if the first part is Text — behaviour-preserving
                 // w.r.t. the original `content.first().and_then(|p| if Text { … })`.
                 u.content.first().and_then(|part| {
-                    if let xai_grok_sampling_types::ContentPart::Text { text } = part {
+                    if let agent_tui_sampling_types::ContentPart::Text { text } = part {
                         Some(text.as_ref().to_owned())
                     } else {
                         None
@@ -181,7 +181,7 @@ impl ChatStateActor {
     pub(super) fn get_conversation_item_at(
         &self,
         index: usize,
-    ) -> Option<xai_grok_sampling_types::ConversationItem> {
+    ) -> Option<agent_tui_sampling_types::ConversationItem> {
         self.state.conversation.get(index).cloned()
     }
 
@@ -201,27 +201,27 @@ impl ChatStateActor {
         };
         for item in &self.state.conversation {
             match item {
-                xai_grok_sampling_types::ConversationItem::User(_) => counts.user += 1,
-                xai_grok_sampling_types::ConversationItem::Assistant(_) => {
+                agent_tui_sampling_types::ConversationItem::User(_) => counts.user += 1,
+                agent_tui_sampling_types::ConversationItem::Assistant(_) => {
                     counts.assistant += 1;
                 }
-                xai_grok_sampling_types::ConversationItem::ToolResult(_) => {
+                agent_tui_sampling_types::ConversationItem::ToolResult(_) => {
                     counts.tool_result += 1;
                 }
-                xai_grok_sampling_types::ConversationItem::System(_) => {}
-                xai_grok_sampling_types::ConversationItem::BackendToolCall(_) => {}
-                xai_grok_sampling_types::ConversationItem::Reasoning(_) => {}
+                agent_tui_sampling_types::ConversationItem::System(_) => {}
+                agent_tui_sampling_types::ConversationItem::BackendToolCall(_) => {}
+                agent_tui_sampling_types::ConversationItem::Reasoning(_) => {}
             }
         }
         counts
     }
 
     /// Return the first `System` message in the conversation, or `None`.
-    pub(super) fn get_system_message(&self) -> Option<xai_grok_sampling_types::ConversationItem> {
+    pub(super) fn get_system_message(&self) -> Option<agent_tui_sampling_types::ConversationItem> {
         self.state
             .conversation
             .iter()
-            .find(|item| matches!(item, xai_grok_sampling_types::ConversationItem::System(_)))
+            .find(|item| matches!(item, agent_tui_sampling_types::ConversationItem::System(_)))
             .cloned()
     }
 }

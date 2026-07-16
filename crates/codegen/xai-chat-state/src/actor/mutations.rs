@@ -1,6 +1,6 @@
 //! Mutation handlers for the ChatStateActor.
 
-use xai_grok_sampling_types::{
+use agent_tui_sampling_types::{
     ContentPart, ConversationItem, DanglingToolCallReason, dedup_duplicate_tool_results,
     repair_dangling_tool_calls,
 };
@@ -299,7 +299,7 @@ impl ChatStateActor {
                 ConversationItem::ToolResult(tr) => tr.content.len(),
                 ConversationItem::BackendToolCall(b) => b.text_summary().len(),
                 ConversationItem::Reasoning(r) => {
-                    xai_grok_sampling_types::reasoning_item_text(r).len()
+                    agent_tui_sampling_types::reasoning_item_text(r).len()
                         + r.encrypted_content.as_deref().map(str::len).unwrap_or(0)
                 }
             })
@@ -318,14 +318,14 @@ impl ChatStateActor {
     /// Stash the per-turn `TokenUsage` from the most recent model response.
     /// No event is emitted — this slot is read on demand at `PromptResponse`
     /// construction time, not pushed to subscribers.
-    pub(super) fn record_last_turn_usage(&mut self, usage: xai_grok_sampling_types::TokenUsage) {
+    pub(super) fn record_last_turn_usage(&mut self, usage: agent_tui_sampling_types::TokenUsage) {
         self.state.last_turn_usage = Some(usage);
     }
 
     pub(super) fn record_model_call_usage(
         &mut self,
         model_id: Option<String>,
-        usage: &xai_grok_sampling_types::TokenUsage,
+        usage: &agent_tui_sampling_types::TokenUsage,
         api_duration_ms: Option<u64>,
         cost_usd_ticks: Option<i64>,
     ) {

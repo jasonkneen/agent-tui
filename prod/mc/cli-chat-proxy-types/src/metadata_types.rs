@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 /// v1.23: Removed `prompt`, `full_prompt`, and `truncated_prompt_local_path`
 ///        from metadata.json (prompt content is no longer uploaded in metadata).
 pub const GCS_SCHEMA_VERSION: &str = "v1.23";
-/// OS-level sandbox state for a trace turn (local `xai-grok-sandbox`, not cloud sandbox).
+/// OS-level sandbox state for a trace turn (local `agent-tui-sandbox`, not cloud sandbox).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LocalSandboxTelemetry {
     /// Resolved profile at process startup (e.g. "off", "workspace", "strict").
@@ -114,7 +114,7 @@ pub struct PromptMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_type: Option<String>,
     /// Version of the grok-shell agent binary that handled this turn
-    /// (`xai_grok_version::VERSION`). Self-reported by the agent, so it reflects
+    /// (`agent_tui_version::VERSION`). Self-reported by the agent, so it reflects
     /// the binary actually running. Distinct from `client_version`, which is the
     /// UI client's version — for the TUI these coincide, but for embedding clients
     /// like grok-desktop the bundled shell differs from the app version.

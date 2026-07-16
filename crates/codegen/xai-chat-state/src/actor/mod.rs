@@ -23,7 +23,7 @@ use crate::persistence::ChatPersistence;
 use crate::types::{PruningConfig, TurnCapture};
 
 use state::ChatState;
-use xai_grok_sampling_types::{ConversationItem, SamplingConfig};
+use agent_tui_sampling_types::{ConversationItem, SamplingConfig};
 
 /// The actor that owns all chat state.
 /// Runs in a dedicated tokio task and processes commands sequentially.

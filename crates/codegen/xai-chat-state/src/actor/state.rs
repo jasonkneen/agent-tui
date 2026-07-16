@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use xai_grok_sampling_types::{
+use agent_tui_sampling_types::{
     ConversationItem, DanglingToolCallReason, SamplingConfig, TokenUsage,
     dedup_duplicate_tool_results, repair_dangling_tool_calls,
 };
@@ -22,7 +22,7 @@ pub fn estimate_system_message_tokens(item: &ConversationItem) -> u64 {
 
 /// Bytes/4 estimate of one tool definition (name + description + the
 /// JSON-serialized parameters).
-pub fn estimate_tool_definition_tokens(td: &xai_grok_sampling_types::ToolDefinition) -> u64 {
+pub fn estimate_tool_definition_tokens(td: &agent_tui_sampling_types::ToolDefinition) -> u64 {
     let name_len = td.function.name.len();
     let desc_len = td.function.description.as_deref().map_or(0, |d| d.len());
     let params_len = td.function.parameters.to_string().len();
@@ -30,7 +30,7 @@ pub fn estimate_tool_definition_tokens(td: &xai_grok_sampling_types::ToolDefinit
 }
 
 /// Sum [`estimate_tool_definition_tokens`] across a slice.
-pub fn estimate_tool_definitions_tokens(tds: &[xai_grok_sampling_types::ToolDefinition]) -> u64 {
+pub fn estimate_tool_definitions_tokens(tds: &[agent_tui_sampling_types::ToolDefinition]) -> u64 {
     tds.iter().map(estimate_tool_definition_tokens).sum()
 }
 
@@ -40,7 +40,7 @@ pub fn estimate_tool_definitions_tokens(tds: &[xai_grok_sampling_types::ToolDefi
 /// Shared by [`estimate_conversation_tokens`] and [`estimate_messages_tokens`]
 /// so the per-variant arithmetic stays in one place.
 pub fn estimate_item_tokens(item: &ConversationItem) -> u64 {
-    use xai_grok_sampling_types::ContentPart;
+    use agent_tui_sampling_types::ContentPart;
     match item {
         ConversationItem::System(s) => xai_token_estimation::estimate_tokens(&s.content),
         ConversationItem::User(u) => {
@@ -71,7 +71,7 @@ pub fn estimate_item_tokens(item: &ConversationItem) -> u64 {
             // Summary + content text follow the standard bytes-per-token
             // estimate; encrypted blobs are base64 and don't survive
             // tokenization 1:1, so estimate at len/4 as well.
-            let text_bytes = xai_grok_sampling_types::reasoning_item_text(r).len();
+            let text_bytes = agent_tui_sampling_types::reasoning_item_text(r).len();
             let enc_bytes = r.encrypted_content.as_deref().map(str::len).unwrap_or(0);
             ((text_bytes + enc_bytes) as u64) / xai_token_estimation::BYTES_PER_TOKEN
         }
@@ -84,7 +84,7 @@ pub fn estimate_conversation_tokens(items: &[ConversationItem]) -> u64 {
     items.iter().map(estimate_item_tokens).sum()
 }
 
-/// grok-build's [`ItemTokenCounter`](xai_grok_compaction::ItemTokenCounter)
+/// grok-build's [`ItemTokenCounter`](agent_tui_compaction::ItemTokenCounter)
 /// for the shared compaction engine: the bytes/4 estimate grok-build already
 /// uses to drive its compaction triggers, exposed through the seam so the
 /// shared budgeting math gets the *same* trusted count.
@@ -95,7 +95,7 @@ pub fn estimate_conversation_tokens(items: &[ConversationItem]) -> u64 {
 /// one place.
 pub struct EstimatedItemTokenCounter;
 
-impl xai_grok_compaction::ItemTokenCounter<ConversationItem> for EstimatedItemTokenCounter {
+impl agent_tui_compaction::ItemTokenCounter<ConversationItem> for EstimatedItemTokenCounter {
     fn count_item_tokens(&self, item: &ConversationItem) -> u32 {
         // The estimate is a `u64`; a single item never approaches `u32::MAX`
         // tokens, but saturate rather than wrap if one somehow does.
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn estimated_item_token_counter_matches_estimate_item_tokens() {
-        use xai_grok_compaction::ItemTokenCounter;
+        use agent_tui_compaction::ItemTokenCounter;
 
         let counter = EstimatedItemTokenCounter;
         let items = vec![
@@ -350,7 +350,7 @@ mod tests {
     #[test]
     fn estimate_tool_definition_tokens_counts_name_desc_params() {
         // Empty parameters serialize to "null" (4 bytes) in the JSON-string len
-        let td = xai_grok_sampling_types::ToolDefinition::function(
+        let td = agent_tui_sampling_types::ToolDefinition::function(
             "search",
             Some("find a file"),
             serde_json::json!({}),
@@ -386,12 +386,12 @@ mod tests {
 
     #[test]
     fn estimate_tool_definitions_tokens_sums_across_slice() {
-        let a = xai_grok_sampling_types::ToolDefinition::function(
+        let a = agent_tui_sampling_types::ToolDefinition::function(
             "a",
             None::<&str>,
             serde_json::json!({}),
         );
-        let b = xai_grok_sampling_types::ToolDefinition::function(
+        let b = agent_tui_sampling_types::ToolDefinition::function(
             "b",
             None::<&str>,
             serde_json::json!({}),

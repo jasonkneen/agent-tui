@@ -83,7 +83,7 @@ pub enum Event {
     },
     /// Runtime TodoGate nudged the model because a content-only turn ended
     /// with pending or unbacked in_progress todos. `reason` is the
-    /// `TODO_GATE_*` discriminator constant in `xai-grok-shell::session::events`.
+    /// `TODO_GATE_*` discriminator constant in `agent-tui-shell::session::events`.
     TodoGateFired {
         fires: u32,
         pending: usize,
@@ -99,7 +99,7 @@ pub enum Event {
     /// Fires even in observation-only mode (`max_nudges_per_session = 0`)
     /// so dashboards can validate classification quality before any nudges
     /// are injected. `category` is one of the `LAZINESS_*` discriminator
-    /// constants in `xai-grok-shell::session::events`.
+    /// constants in `agent-tui-shell::session::events`.
     LazinessClassifierFired {
         model_id: String,
         category: &'static str,
@@ -115,7 +115,7 @@ pub enum Event {
     },
     /// Layer-3 LazinessDetector terminated without producing a verdict.
     /// `reason` is one of the `LAZINESS_ABORT_*` discriminator constants
-    /// in `xai-grok-shell::session::events`.
+    /// in `agent-tui-shell::session::events`.
     LazinessClassifierAborted {
         reason: &'static str,
     },
@@ -192,7 +192,7 @@ pub enum Event {
     },
     /// Planner subagent failed and the harness paused the goal
     /// fail-closed. `reason` is one of the `GOAL_PLANNER_FAIL_CLOSED_*`
-    /// discriminator constants in `xai-grok-shell::session::events`.
+    /// discriminator constants in `agent-tui-shell::session::events`.
     GoalPlannerFailClosed {
         reason: &'static str,
         attempt: u32,
@@ -221,7 +221,7 @@ pub enum Event {
     /// Strategist subagent failed; the harness logged it and continued
     /// the normal loop (fail-OPEN — the goal is NOT paused). `reason` is
     /// one of the `GOAL_STRATEGIST_FAILED_*` discriminator constants in
-    /// `xai-grok-shell::session::events`.
+    /// `agent-tui-shell::session::events`.
     GoalStrategistFailed {
         reason: &'static str,
         attempt: u32,
@@ -233,7 +233,7 @@ pub enum Event {
     /// symlink was planted at the path). The contract may be corrupted —
     /// surfaced so it is observable rather than a silent `warn!`. `reason`
     /// is one of the `GOAL_STRATEGIST_RESTORE_*` discriminator constants in
-    /// `xai-grok-shell::session::events`.
+    /// `agent-tui-shell::session::events`.
     GoalStrategistContractRestoreFailed {
         reason: &'static str,
         attempt: u32,
@@ -259,7 +259,7 @@ pub enum Event {
     /// harness skipped the closing summary and completed the goal normally
     /// (fail-OPEN — completion is never blocked). `reason` is one of the
     /// `GOAL_SUMMARIZER_FAIL_OPEN_*` discriminator constants in
-    /// `xai-grok-shell::session::events`.
+    /// `agent-tui-shell::session::events`.
     GoalSummarizerFailOpen {
         reason: &'static str,
         attempt: u32,
@@ -287,7 +287,7 @@ pub enum Event {
     /// `planner|strategist|skeptic`; `skeptic_idx` is set only for the
     /// skeptic panel. `reason` is one of the
     /// `GOAL_ROLE_MODEL_FAIL_OPEN_*` discriminator constants in
-    /// `xai-grok-shell::session::events`. Fail-open never pauses the goal.
+    /// `agent-tui-shell::session::events`. Fail-open never pauses the goal.
     GoalRoleModelFailOpen {
         role: &'static str,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -326,7 +326,7 @@ pub enum Event {
     /// label so dashboards can audit precision/recall of the regex
     /// panel. `pattern` is one of the stable labels
     /// enumerated by
-    /// `xai-grok-shell::session::goal_stop_detector::PATTERN_LABELS`;
+    /// `agent-tui-shell::session::goal_stop_detector::PATTERN_LABELS`;
     /// the source-string provenance for each label is pinned by the
     /// adjacent `STOP_REGEX_SOURCES` table.
     ///
@@ -506,9 +506,9 @@ pub struct McpConfigServer {
     pub source: String,
 }
 
-/// Telemetry mirror of `xai-grok-shell`'s `GoalClassifierVerdict`. Two
+/// Telemetry mirror of `agent-tui-shell`'s `GoalClassifierVerdict`. Two
 /// crates due to the orphan rule; the conversion lives in
-/// `xai-grok-shell/src/session/events.rs`.
+/// `agent-tui-shell/src/session/events.rs`.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalClassifierVerdictTelemetry {
@@ -516,9 +516,9 @@ pub enum GoalClassifierVerdictTelemetry {
     NotAchieved,
 }
 
-/// Telemetry mirror of `xai-grok-shell`'s `GoalPauseReason`. The two types
+/// Telemetry mirror of `agent-tui-shell`'s `GoalPauseReason`. The two types
 /// live in separate crates (orphan rule); the conversion lives in
-/// `xai-grok-shell/src/session/events.rs`.
+/// `agent-tui-shell/src/session/events.rs`.
 ///
 /// **Invariant:** when adding a new variant to either side, add the
 /// matching variant here so the compiler-enforced `From` impl on the
@@ -613,7 +613,7 @@ pub enum CancellationCategory {
 
 // Note: `From<&permission::Decision> for PermissionDecision` crosses the
 // crate boundary (orphan rule) and lives in
-// `xai-grok-shell/src/session/events.rs`.
+// `agent-tui-shell/src/session/events.rs`.
 
 #[cfg(test)]
 mod tests {

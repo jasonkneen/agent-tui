@@ -182,7 +182,7 @@ pub struct WorkspaceBindMetadata {
         deserialize_with = "ok_or_default",
         skip_serializing_if = "Vec::is_empty"
     )]
-    pub tools: Vec<xai_grok_tools_api::ToolConfigEntry>,
+    pub tools: Vec<agent_tui_tools_api::ToolConfigEntry>,
     #[serde(
         default,
         deserialize_with = "ok_or_default",
@@ -252,7 +252,7 @@ mod bind_metadata_tests {
         let md = WorkspaceBindMetadata {
             preset: Some("explore".to_owned()),
             capability_mode: Some("read_only".to_owned()),
-            tools: vec![xai_grok_tools_api::ToolConfigEntry {
+            tools: vec![agent_tui_tools_api::ToolConfigEntry {
                 id: "GrokBuild:grep".to_owned(),
                 ..Default::default()
             }],

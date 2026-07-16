@@ -23,7 +23,7 @@ re-vendoring.
 Dependency shape:
 
 ```text
-xai-grok-mermaid
+agent-tui-mermaid
   └── mermaid-to-svg          (MIT)
         ├── dagre_rust        (Apache-2.0)
         │     ├── graphlib_rust

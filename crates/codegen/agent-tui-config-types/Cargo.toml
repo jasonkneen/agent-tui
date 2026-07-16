@@ -1,0 +1,23 @@
+[package]
+license = "Apache-2.0"
+name = "agent-tui-config-types"
+version = "0.1.0"
+edition.workspace = true
+description = "Leaf configuration value types for the grok CLI, extracted from agent-tui-shell for dependency inversion."
+
+[dependencies]
+agent-client-protocol = { workspace = true }
+indexmap = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+strum = { workspace = true }
+tracing = { workspace = true }
+agent-tui-announcements = { workspace = true }
+agent-tui-config = { workspace = true }
+agent-tui-mcp = { workspace = true }
+
+[features]
+default-bazel = []
+
+[lints]
+workspace = true
