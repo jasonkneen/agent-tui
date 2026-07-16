@@ -34,6 +34,7 @@ fn resolve_idle_notification_delay(raw: Option<String>) -> Duration {
 struct IdlePromptExtension {
     notification_event_sink: Rc<dyn NotificationEventSink>,
     timer: TaskSlot<()>,
+    delay: Duration,
     /// Only a completed turn earns a ping; aborted and errored turns do not (matching the old
     /// end_turn-only arming).
     last_turn_completed: std::cell::Cell<bool>,
@@ -65,7 +66,7 @@ impl LocalSessionLifecycleContributor for IdlePromptExtension {
             return;
         }
         let notification_event_sink = Rc::clone(&self.notification_event_sink);
-        let delay = idle_notification_delay();
+        let delay = self.delay;
         let handle = tokio::task::spawn_local(async move {
             tokio::time::sleep(delay).await;
             notification_event_sink.emit(NotificationEvent {
@@ -86,6 +87,7 @@ pub(super) fn install(
     let extension = Rc::new(IdlePromptExtension {
         notification_event_sink,
         timer: TaskSlot::new(),
+        delay: idle_notification_delay(),
         last_turn_completed: std::cell::Cell::new(false),
     });
     builder.turn_lifecycle_contributor(extension.clone());
@@ -93,9 +95,37 @@ pub(super) fn install(
 }
 
 #[cfg(test)]
-mod idle_notification_delay_tests {
-    use super::{DEFAULT_IDLE_NOTIFICATION_DELAY, resolve_idle_notification_delay};
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
     use std::time::Duration;
+
+    #[derive(Default)]
+    struct RecordingSink {
+        events: RefCell<Vec<NotificationEvent>>,
+    }
+
+    impl NotificationEventSink for RecordingSink {
+        fn emit(&self, event: NotificationEvent) {
+            self.events.borrow_mut().push(event);
+        }
+    }
+
+    fn extension(delay: Duration) -> (IdlePromptExtension, Rc<RecordingSink>) {
+        let sink = Rc::new(RecordingSink::default());
+        let extension = IdlePromptExtension {
+            notification_event_sink: sink.clone(),
+            timer: TaskSlot::new(),
+            delay,
+            last_turn_completed: std::cell::Cell::new(false),
+        };
+        (extension, sink)
+    }
+
+    async fn advance(duration: Duration) {
+        tokio::time::advance(duration).await;
+        tokio::task::yield_now().await;
+    }
 
     /// Missing env var → 60s default.
     #[test]
@@ -126,5 +156,90 @@ mod idle_notification_delay_tests {
             resolve_idle_notification_delay(Some("not-a-number".into())),
             DEFAULT_IDLE_NOTIFICATION_DELAY
         );
+    }
+
+    #[tokio::test(start_paused = true, flavor = "current_thread")]
+    async fn completed_turn_emits_once_only_after_full_idle_delay() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let delay = Duration::from_millis(100);
+                let (extension, sink) = extension(delay);
+                extension.on_turn_done(&TurnDoneInput).await;
+                extension.on_session_idle(&SessionIdleInput).await;
+                tokio::task::yield_now().await;
+
+                advance(delay - Duration::from_millis(1)).await;
+                assert!(sink.events.borrow().is_empty());
+                advance(Duration::from_millis(1)).await;
+
+                let events = sink.events.borrow();
+                assert_eq!(events.len(), 1);
+                assert_eq!(events[0].notification_type, "idle_prompt");
+                assert_eq!(events[0].message.as_deref(), Some("Turn complete"));
+                assert_eq!(events[0].title, None);
+                assert_eq!(events[0].level.as_deref(), Some("info"));
+                drop(events);
+
+                advance(delay).await;
+                assert_eq!(sink.events.borrow().len(), 1, "timer must fire only once");
+            })
+            .await;
+    }
+
+    #[tokio::test(start_paused = true, flavor = "current_thread")]
+    async fn turn_start_cancels_pending_notification_and_next_completion_rearms() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let delay = Duration::from_millis(100);
+                let (extension, sink) = extension(delay);
+                extension.on_turn_done(&TurnDoneInput).await;
+                extension.on_session_idle(&SessionIdleInput).await;
+                tokio::task::yield_now().await;
+                advance(Duration::from_millis(50)).await;
+
+                extension.on_turn_start(&TurnStartInput::new(true)).await;
+                advance(delay).await;
+                assert!(
+                    sink.events.borrow().is_empty(),
+                    "synthetic turn start must cancel the earned idle notification"
+                );
+
+                extension.on_turn_done(&TurnDoneInput).await;
+                extension.on_session_idle(&SessionIdleInput).await;
+                tokio::task::yield_now().await;
+                advance(delay).await;
+                assert_eq!(sink.events.borrow().len(), 1);
+            })
+            .await;
+    }
+
+    #[tokio::test(start_paused = true, flavor = "current_thread")]
+    async fn aborted_and_errored_turns_never_arm_idle_notification() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let delay = Duration::from_millis(100);
+                let (extension, sink) = extension(delay);
+
+                extension.on_turn_done(&TurnDoneInput).await;
+                extension
+                    .on_turn_abort(&TurnAbortInput::new(
+                        xai_agent_lifecycle::TurnAbortReason::Interrupted,
+                    ))
+                    .await;
+                extension.on_session_idle(&SessionIdleInput).await;
+                advance(delay).await;
+                assert!(sink.events.borrow().is_empty());
+
+                extension.on_turn_done(&TurnDoneInput).await;
+                extension
+                    .on_turn_error(&TurnErrorInput {
+                        message: "sampler failed",
+                    })
+                    .await;
+                extension.on_session_idle(&SessionIdleInput).await;
+                advance(delay).await;
+                assert!(sink.events.borrow().is_empty());
+            })
+            .await;
     }
 }
