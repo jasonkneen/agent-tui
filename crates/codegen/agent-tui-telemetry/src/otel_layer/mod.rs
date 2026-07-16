@@ -28,7 +28,7 @@ pub struct OtelLayerConfig {
     /// Live credential source. Read on every batch export to obtain a fresh
     /// bearer token for the OTLP `Authorization` header.
     pub credentials: Arc<dyn AuthCredentialProvider>,
-    /// Value for the `X-XAI-Token-Auth` header (typically `"agent-tui-cli"`).
+    /// Value for the `X-XAI-Token-Auth` header (typically `"xai-grok-cli"`).
     pub token_header_value: String,
     /// Optional extra access key for traces. Injection is honored only when
     /// the crate's optional non-production feature is enabled and only for
@@ -562,7 +562,7 @@ mod tests {
             ))
             .expect("test OTLP HTTP client must build"),
             resource: parking_lot::Mutex::new(opentelemetry_sdk::Resource::builder().build()),
-            token_header_value: Arc::from("agent-tui-cli"),
+            token_header_value: Arc::from("xai-grok-cli"),
             extra_headers: Arc::new(Vec::new()),
         }
     }

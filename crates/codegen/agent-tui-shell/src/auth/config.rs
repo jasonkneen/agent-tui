@@ -285,7 +285,7 @@ impl Default for GrokComConfig {
                 .unwrap_or_else(|_| PROD_WS_ORIGIN.to_owned()),
             grok_ws_url: std::env::var("GROK_WS_URL")
                 .unwrap_or_else(|_| PROD_RELAY_WS_URL.to_owned()),
-            token_header: "agent-tui-cli".to_owned(),
+            token_header: "xai-grok-cli".to_owned(),
             oidc,
             oauth2,
             auth_provider_command: std::env::var("GROK_AUTH_PROVIDER_COMMAND").ok(),

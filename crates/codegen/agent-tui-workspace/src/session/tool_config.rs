@@ -498,7 +498,7 @@ fn build_proxy_headers(base_url: &str) -> indexmap::IndexMap<String, String> {
     );
     headers.insert("x-grok-client-version".to_string(), version.to_string());
     if base_url.contains("cli-chat-proxy") || base_url.contains("chat-proxy") {
-        headers.insert("X-XAI-Token-Auth".to_string(), "agent-tui-cli".to_string());
+        headers.insert("X-XAI-Token-Auth".to_string(), "xai-grok-cli".to_string());
         headers.insert(
             "x-authenticateresponse".to_string(),
             "authenticate-response".to_string(),

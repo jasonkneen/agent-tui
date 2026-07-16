@@ -139,7 +139,7 @@ impl EmbeddingProvider for ApiEmbeddingProvider {
                 let request = agent_tui_http::shared_client()
                     .post(format!("{}/embeddings", self.api_base))
                     .json(&body_json)
-                    .header("X-XAI-Token-Auth", "agent-tui-cli")
+                    .header("X-XAI-Token-Auth", "xai-grok-cli")
                     .header("x-grok-client-version", agent_tui_version::VERSION);
 
                 let req = match request.build() {

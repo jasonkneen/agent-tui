@@ -4660,7 +4660,7 @@ pub fn inject_url_derived_headers(
     if crate::util::is_cli_chat_proxy_url(base_url) {
         headers
             .entry("X-XAI-Token-Auth".to_string())
-            .or_insert_with(|| "agent-tui-cli".to_string());
+            .or_insert_with(|| "xai-grok-cli".to_string());
         headers
             .entry("x-authenticateresponse".to_string())
             .or_insert_with(|| "authenticate-response".to_string());

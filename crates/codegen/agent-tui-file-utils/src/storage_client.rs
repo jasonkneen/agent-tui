@@ -381,7 +381,7 @@ impl agent_tui_auth::HttpAuth for StaticGrokAuth {
         } else if let Some(ref token) = self.user_token {
             builder
                 .header("Authorization", format!("Bearer {}", token))
-                .header("X-XAI-Token-Auth", "agent-tui-cli")
+                .header("X-XAI-Token-Auth", "xai-grok-cli")
         } else {
             builder
         }

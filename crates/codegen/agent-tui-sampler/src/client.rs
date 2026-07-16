@@ -2192,7 +2192,7 @@ mod tests {
         cfg.extra_headers
             .insert("x-test-header".to_string(), "test-value".to_string());
         cfg.extra_headers
-            .insert("x-XAI-token-auth".to_string(), "agent-tui-cli".to_string());
+            .insert("x-XAI-token-auth".to_string(), "xai-grok-cli".to_string());
         let _client = SamplingClient::new(cfg).expect("client with extra headers should construct");
     }
 

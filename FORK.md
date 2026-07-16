@@ -25,6 +25,7 @@ These remain stable so auth, models, and backends keep working:
 - **Model IDs** in the xAI/Grok catalog, including **Grok** models (`grok-build`, …) and **Composer** models (`composer-2-fast`, …) — Composer is a model name, not a separate product or provider
 - Production API endpoints (`*.grok.com`, etc.)
 - API User-Agent shape for xAI services (still `grok-shell/...` where required for server dashboards)
+- **`X-XAI-Token-Auth` header value** must stay `xai-grok-cli` (proxy rejects unknown values → 401 / paywall loop). Do **not** rename this to the product name.
 - Leaf utility crates were also renamed from `xai-*` → `agent-tui-*` (worktree, ACP client lib, tools protocol, etc.). Only **provider wire contracts** stay xAI-named — not crate packages.
 
 > Note: pager source also uses the English word “composer” for the **prompt input box**. That is unrelated to the Composer model family and is left alone.

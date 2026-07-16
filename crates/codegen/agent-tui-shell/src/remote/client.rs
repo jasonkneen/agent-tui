@@ -742,7 +742,7 @@ pub(crate) fn fetch_models_blocking(
             })?;
             request = request
                 .header("Authorization", format!("Bearer {}", &auth.key))
-                .header("X-XAI-Token-Auth", "agent-tui-cli")
+                .header("X-XAI-Token-Auth", "xai-grok-cli")
                 .header("x-userid", &auth.user_id)
                 .header("x-grok-client-version", agent_tui_version::VERSION)
                 .header(
@@ -1337,7 +1337,7 @@ mod tests {
         let headers = seen_headers.lock().unwrap();
         let headers = headers.last().unwrap();
         assert_eq!(headers.authorization.as_deref(), Some("Bearer token"));
-        assert_eq!(headers.token_auth.as_deref(), Some("agent-tui-cli"));
+        assert_eq!(headers.token_auth.as_deref(), Some("xai-grok-cli"));
         assert_eq!(headers.user_id.as_deref(), Some("user-1"));
         assert_eq!(headers.email.as_deref(), Some("test@example.com"));
         assert_eq!(headers.alpha_test_key, None);

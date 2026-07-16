@@ -160,7 +160,7 @@ fn inject_url_derived_headers_adds_proxy_headers_for_cli_chat_proxy_url() {
     inject_url_derived_headers(&mut headers, None, crate::env::PROD_CLI_CHAT_PROXY_BASE_URL);
     assert_eq!(
         headers.get("X-XAI-Token-Auth").map(String::as_str),
-        Some("agent-tui-cli")
+        Some("xai-grok-cli")
     );
     assert_eq!(
         headers.get("x-authenticateresponse").map(String::as_str),
@@ -185,7 +185,7 @@ fn inject_url_derived_headers_preserves_caller_extra_headers() {
     );
     assert_eq!(
         headers.get("X-XAI-Token-Auth").map(String::as_str),
-        Some("agent-tui-cli")
+        Some("xai-grok-cli")
     );
 }
 #[test]
@@ -853,7 +853,7 @@ fn proxy_messages_models_use_bearer_auth_scheme() {
             .extra_headers
             .get("X-XAI-Token-Auth")
             .map(String::as_str),
-        Some("agent-tui-cli")
+        Some("xai-grok-cli")
     );
 }
 /// Regression: without a session key, `resolve_credentials` falls through

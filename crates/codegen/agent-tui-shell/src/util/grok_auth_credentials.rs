@@ -9,7 +9,7 @@ use std::sync::Arc;
 ///   an `AuthManager` (visibility checks, bundle fetches, tests).
 ///
 /// Deployment key (enterprise) sends bare `Bearer`, routed to management key auth.
-/// User token (xAI users) sends `Bearer` + `X-XAI-Token-Auth: agent-tui-cli`.
+/// User token (xAI users) sends `Bearer` + `X-XAI-Token-Auth: xai-grok-cli`.
 /// Deployment key takes precedence when both are present.
 #[derive(Clone)]
 pub struct GrokAuthCredentials {
@@ -124,7 +124,7 @@ impl GrokAuthCredentials {
                 .header("Authorization", format!("Bearer {}", token))
                 .header(
                     obfstr::obfstr!("X-XAI-Token-Auth"),
-                    obfstr::obfstr!("agent-tui-cli"),
+                    obfstr::obfstr!("xai-grok-cli"),
                 )
         } else {
             builder
