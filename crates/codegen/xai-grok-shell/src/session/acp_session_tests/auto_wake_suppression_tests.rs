@@ -689,6 +689,7 @@ async fn handle_bridge_tool_success_runs_consumed_completion_sweep() {
             let result = ToolRunResult {
                 output,
                 prompt_text: "ok".into(),
+                reminder_starts: Vec::new(),
                 effective_tool_name: None,
             };
             let parsed_args = serde_json::json!({});
@@ -716,6 +717,127 @@ async fn handle_bridge_tool_success_runs_consumed_completion_sweep() {
                 "handle_bridge_tool_success must run the Fix 1 sweep — the matching \
                      synthetic prompt for bg-foo should be gone"
             );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn oversized_bridge_result_is_bounded_with_structural_reminders_and_exact_spill() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            actor.session_info.id =
+                acp::SessionId::new(format!("tool-bound-test-{}", uuid::Uuid::now_v7()));
+
+            let body = format!(
+                "ordinary output\n\n<not-a-reminder>tool data</not-a-reminder>\n{}",
+                "body".repeat(8_000)
+            );
+            let reminder = concat!(
+                "\n\n<system-reminder>\nIMPORTANT FIRST REMINDER\n",
+                "real reminder body\nLATE TASK REMINDER\n</system-reminder>"
+            );
+            let full = format!("{body}{reminder}");
+            let result = ToolRunResult {
+                output: ToolOutput::Text(TextOutput::from("clean output")),
+                prompt_text: full.clone(),
+                reminder_starts: vec![body.len()],
+                effective_tool_name: None,
+            };
+            actor
+                .handle_bridge_tool_success(
+                    &acp::ToolCallId::new("bounded-success"),
+                    "bounded-success",
+                    "test_tool",
+                    "test_tool",
+                    result,
+                    0,
+                    "test-model",
+                    &serde_json::json!({}),
+                )
+                .await
+                .unwrap();
+
+            let conversation = actor.chat_state_handle.get_conversation().await;
+            let text = conversation
+                .iter()
+                .rev()
+                .find_map(|item| match item {
+                    ConversationItem::ToolResult(result)
+                        if result.tool_call_id == "bounded-success" =>
+                    {
+                        Some(result.content.to_string())
+                    }
+                    _ => None,
+                })
+                .expect("bounded tool result");
+            assert!(text.len() <= 10_000);
+            assert!(text.contains("IMPORTANT FIRST REMINDER"));
+            assert!(text.contains("LATE TASK REMINDER"));
+
+            let output_dir =
+                crate::session::persistence::session_dir(&actor.session_info).join("tool-results");
+            let artifacts = std::fs::read_dir(&output_dir)
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(artifacts.len(), 1);
+            assert_eq!(std::fs::read_to_string(artifacts[0].path()).unwrap(), full);
+            std::fs::remove_dir_all(crate::session::persistence::session_dir(
+                &actor.session_info,
+            ))
+            .unwrap();
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn oversized_denial_stays_bounded_when_spill_persistence_fails() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _) =
+                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            actor.session_info.id =
+                acp::SessionId::new(format!("tool-bound-failure-test-{}", uuid::Uuid::now_v7()));
+            let session_dir = crate::session::persistence::session_dir(&actor.session_info);
+            std::fs::create_dir_all(&session_dir).unwrap();
+            std::fs::write(
+                session_dir.join("tool-results"),
+                "blocks directory creation",
+            )
+            .unwrap();
+
+            actor
+                .handle_tool_not_executed(
+                    "bounded-denial",
+                    &acp::ToolCallId::new("bounded-denial"),
+                    "denied".repeat(4_000),
+                )
+                .await
+                .unwrap();
+            let conversation = actor.chat_state_handle.get_conversation().await;
+            let text = conversation
+                .iter()
+                .rev()
+                .find_map(|item| match item {
+                    ConversationItem::ToolResult(result)
+                        if result.tool_call_id == "bounded-denial" =>
+                    {
+                        Some(result.content.to_string())
+                    }
+                    _ => None,
+                })
+                .expect("bounded denial result");
+            assert!(text.len() <= 10_000);
+            assert!(text.contains("full output could not be persisted"));
+            std::fs::remove_dir_all(session_dir).unwrap();
         })
         .await;
 }

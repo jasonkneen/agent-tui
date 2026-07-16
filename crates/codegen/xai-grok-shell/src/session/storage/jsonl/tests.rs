@@ -1200,6 +1200,67 @@ async fn test_copy_session_data_copies_tool_state() {
         .unwrap();
     assert_eq!(copied_content, tool_state_json);
 }
+
+#[tokio::test]
+async fn copy_session_data_copies_and_rewrites_tool_result_artifacts() {
+    let temp_dir = TempDir::new().unwrap();
+    let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
+    let source_info = Info {
+        id: acp::SessionId::new("source-with-tool-results"),
+        cwd: "/source/project".to_string(),
+    };
+    adapter
+        .init_session(&source_info, default_model_id())
+        .await
+        .unwrap();
+    let source_results = adapter.session_dir(&source_info).join("tool-results");
+    std::fs::create_dir_all(&source_results).unwrap();
+    let source_artifact = source_results.join("result.txt");
+    crate::util::secure_file::write_secure_file(&source_artifact, b"exact full output").unwrap();
+    adapter
+        .append_chat_message(
+            &source_info,
+            &ConversationItem::tool_result(
+                "call-1",
+                format!("truncated; full output: {}", source_artifact.display()),
+            ),
+        )
+        .await
+        .unwrap();
+
+    let target_info = Info {
+        id: acp::SessionId::new("fork-with-tool-results"),
+        cwd: "/target/project".to_string(),
+    };
+    adapter
+        .copy_session_data(&source_info, &target_info, Default::default())
+        .await
+        .unwrap();
+
+    let target_artifact = adapter
+        .session_dir(&target_info)
+        .join("tool-results/result.txt");
+    assert_eq!(
+        std::fs::read_to_string(&target_artifact).unwrap(),
+        "exact full output"
+    );
+    let copied = adapter.load_session(&target_info).await.unwrap();
+    let text = copied.chat_history[0].text_content();
+    assert!(text.contains(&target_artifact.to_string_lossy().to_string()));
+    assert!(!text.contains(&source_artifact.to_string_lossy().to_string()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(target_artifact)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+}
 #[tokio::test]
 async fn test_copy_session_data_without_tool_state() {
     let temp_dir = TempDir::new().unwrap();

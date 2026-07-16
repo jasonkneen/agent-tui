@@ -7,6 +7,267 @@
 //! the parent module's private helpers.
 use super::*;
 use futures::StreamExt;
+
+// One byte cannot encode more than one model token, so this conservative byte
+// ceiling also guarantees the context contract's 10,000-token maximum without
+// coupling session assembly to a model-specific tokenizer.
+const MAX_CONTEXT_TOOL_RESULT_BYTES: usize = 10_000;
+
+fn utf8_prefix_at_most(text: &str, max_bytes: usize) -> &str {
+    let mut end = text.len().min(max_bytes);
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+fn utf8_suffix_at_most(text: &str, max_bytes: usize) -> &str {
+    let mut start = text.len().saturating_sub(max_bytes);
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    &text[start..]
+}
+
+fn valid_reminder_starts(full: &str, starts: &[usize]) -> bool {
+    !starts.is_empty()
+        && starts
+            .iter()
+            .all(|&start| start <= full.len() && full.is_char_boundary(start))
+        && starts.windows(2).all(|pair| pair[0] < pair[1])
+}
+
+fn split_structured_reminders(mut full: String, starts: &[usize]) -> (String, Vec<String>) {
+    if !valid_reminder_starts(&full, starts) {
+        return (full, Vec::new());
+    }
+    let mut reminders = Vec::with_capacity(starts.len());
+    for &start in starts.iter().rev() {
+        reminders.push(full.split_off(start));
+    }
+    reminders.reverse();
+    (full, reminders)
+}
+
+fn escaped_segment_with_budget(segment: &str, budget: usize) -> String {
+    let plain = segment.replace('<', "‹").replace('>', "›");
+    if plain.len() <= budget {
+        return plain;
+    }
+    const OMISSION: &str = "\n[… reminder truncated …]\n";
+    if budget <= OMISSION.len() {
+        return utf8_prefix_at_most(&plain, budget).to_owned();
+    }
+    let content_budget = budget - OMISSION.len();
+    let head_budget = content_budget / 2;
+    let tail_budget = content_budget - head_budget;
+    format!(
+        "{}{}{}",
+        utf8_prefix_at_most(&plain, head_budget),
+        OMISSION,
+        utf8_suffix_at_most(&plain, tail_budget)
+    )
+}
+
+fn bounded_reminder_segments(reminders: &[&str], budget: usize) -> String {
+    let exact_len: usize = reminders.iter().map(|segment| segment.len()).sum();
+    if exact_len <= budget {
+        return reminders.concat();
+    }
+    const WRAPPER_START: &str = "<system-reminder>\n[Appended reminders truncated; exact text is in the full output artifact.]\n";
+    const WRAPPER_END: &str = "\n</system-reminder>";
+    let separator_bytes = reminders.len().saturating_sub(1);
+    if WRAPPER_START.len() + WRAPPER_END.len() + separator_bytes > budget {
+        return "<system-reminder>\n[Too many appended reminders to retain in context; exact text is in the full output artifact.]\n</system-reminder>"
+            .to_string();
+    }
+    let content_budget = budget
+        .saturating_sub(WRAPPER_START.len())
+        .saturating_sub(WRAPPER_END.len())
+        .saturating_sub(separator_bytes);
+    let per_segment = content_budget / reminders.len().max(1);
+    let mut bounded = String::with_capacity(budget);
+    bounded.push_str(WRAPPER_START);
+    for (index, reminder) in reminders.iter().enumerate() {
+        if index > 0 {
+            bounded.push('\n');
+        }
+        bounded.push_str(&escaped_segment_with_budget(reminder, per_segment));
+    }
+    bounded.push_str(WRAPPER_END);
+    bounded
+}
+
+fn bounded_tool_result_preview(
+    full: &str,
+    output_path: Option<&std::path::Path>,
+    reminder_starts: &[usize],
+) -> String {
+    if full.len() <= MAX_CONTEXT_TOOL_RESULT_BYTES {
+        return full.to_owned();
+    }
+    let mut notice = output_path.map_or_else(
+        || "\n\n[Tool result truncated; full output could not be persisted.]\n\n".to_string(),
+        |path| {
+            format!(
+                "\n\n[Tool result truncated at {} bytes. Full output: {}]\n\n",
+                MAX_CONTEXT_TOOL_RESULT_BYTES,
+                path.display()
+            )
+        },
+    );
+    if notice.len() > 4 * 1024 {
+        let artifact = output_path
+            .and_then(std::path::Path::file_name)
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("tool-result");
+        let artifact = utf8_prefix_at_most(artifact, 255);
+        notice = format!("\n\n[Tool result truncated. Full session artifact: {artifact}]\n\n");
+    }
+    let available = MAX_CONTEXT_TOOL_RESULT_BYTES.saturating_sub(notice.len());
+    let bounded = if valid_reminder_starts(full, reminder_starts) {
+        let body = &full[..reminder_starts[0]];
+        let reminders: Vec<&str> = reminder_starts
+            .iter()
+            .enumerate()
+            .map(|(index, &start)| {
+                let end = reminder_starts
+                    .get(index + 1)
+                    .copied()
+                    .unwrap_or(full.len());
+                &full[start..end]
+            })
+            .collect();
+        let reminder_budget = available / 2;
+        let reminder_text = bounded_reminder_segments(&reminders, reminder_budget);
+        let body_budget = available.saturating_sub(reminder_text.len());
+        format!(
+            "{}{}{}",
+            utf8_prefix_at_most(body, body_budget),
+            notice,
+            reminder_text
+        )
+    } else {
+        // No structured reminder tail: retain useful context from both ends.
+        let head_budget = available.saturating_mul(3) / 4;
+        let tail_budget = available.saturating_sub(head_budget);
+        format!(
+            "{}{}{}",
+            utf8_prefix_at_most(full, head_budget),
+            notice,
+            utf8_suffix_at_most(full, tail_budget)
+        )
+    };
+    debug_assert!(bounded.len() <= MAX_CONTEXT_TOOL_RESULT_BYTES);
+    bounded
+}
+
+fn persist_tool_result_file(
+    output_dir: &std::path::Path,
+    full: &str,
+) -> std::io::Result<std::path::PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700).create(output_dir)?;
+        std::fs::set_permissions(output_dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(output_dir)?;
+
+    let output_path = output_dir.join(format!("{}.txt", uuid::Uuid::now_v7()));
+    let write_result = crate::util::secure_file::write_secure_file(&output_path, full.as_bytes());
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&output_path);
+        return Err(error);
+    }
+    Ok(output_path)
+}
+
+#[cfg(test)]
+mod final_tool_result_bound_tests {
+    use super::*;
+
+    #[test]
+    fn preview_is_utf8_safe_and_preserves_tail_reminder() {
+        let reminder = "<system-reminder>keep this instruction</system-reminder>";
+        let full = format!(
+            "{}{}{}",
+            "é".repeat(MAX_CONTEXT_TOOL_RESULT_BYTES),
+            "middle",
+            reminder
+        );
+        let bounded = bounded_tool_result_preview(
+            &full,
+            Some(std::path::Path::new(
+                "/private/session/tool-results/result.txt",
+            )),
+            &[full.len() - reminder.len()],
+        );
+        assert!(bounded.len() <= MAX_CONTEXT_TOOL_RESULT_BYTES);
+        assert!(bounded.ends_with(reminder));
+        assert!(bounded.contains("Full output:"));
+    }
+
+    #[test]
+    fn oversized_reminders_preserve_each_structured_segment() {
+        let body = "output".repeat(20_000);
+        let first = format!(
+            "\n\n<system-reminder>\nIMPORTANT FIRST REMINDER\n{}\n</system-reminder>",
+            "first-detail".repeat(10_000)
+        );
+        let middle =
+            "\n\n<system-reminder>\nMIDDLE TASK COMPLETION\n</system-reminder>".to_string();
+        let last = format!(
+            "\n\n<system-reminder>\n{}\nLATE SKILL REMINDER\n</system-reminder>",
+            "last-detail".repeat(10_000)
+        );
+        let starts = vec![
+            body.len(),
+            body.len() + first.len(),
+            body.len() + first.len() + middle.len(),
+        ];
+        let full = format!("{body}{first}{middle}{last}");
+        let bounded = bounded_tool_result_preview(&full, None, &starts);
+        assert!(bounded.len() <= MAX_CONTEXT_TOOL_RESULT_BYTES);
+        assert!(bounded.contains("IMPORTANT FIRST REMINDER"));
+        assert!(bounded.contains("MIDDLE TASK COMPLETION"));
+        assert!(bounded.contains("LATE SKILL REMINDER"));
+        assert_eq!(bounded.matches("<system-reminder>").count(), 1);
+        assert_eq!(bounded.matches("</system-reminder>").count(), 1);
+    }
+
+    #[test]
+    fn path_notice_cannot_exceed_absolute_ceiling() {
+        let huge_path = std::path::PathBuf::from(format!("/{}", "p".repeat(70_000)));
+        let full = "x".repeat(MAX_CONTEXT_TOOL_RESULT_BYTES + 1);
+        let bounded = bounded_tool_result_preview(&full, Some(&huge_path), &[]);
+        assert!(bounded.len() <= MAX_CONTEXT_TOOL_RESULT_BYTES);
+        assert!(bounded.contains("Full session artifact:"));
+    }
+
+    #[test]
+    fn spill_file_is_exact_and_private() {
+        let temp = tempfile::tempdir().unwrap();
+        let output_dir = temp.path().join("tool-results");
+        let full = "sensitive output";
+        let path = persist_tool_result_file(&output_dir, full).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), full);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(output_dir).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+    }
+}
 /// Whether a tool name is an MCP `create_pull_request` (qualified
 /// `server__create_pull_request` or bare).
 fn is_mcp_create_pull_request(tool_name: &str) -> bool {
@@ -68,6 +329,7 @@ fn interrupted_wait_tool_result_with_msg(args: &serde_json::Value, msg: &str) ->
     ToolRunResult {
         output: ToolsToolOutput::TaskOutput(TaskOutputOutput::Result(result)),
         prompt_text: msg.to_string(),
+        reminder_starts: Vec::new(),
         effective_tool_name: None,
     }
 }
@@ -255,6 +517,58 @@ fn resume_action_for(outcome: PlanApprovalOutcome, feedback: Option<String>) -> 
     }
 }
 impl SessionActor {
+    async fn bound_tool_result_for_context(
+        &self,
+        full: String,
+        reminder_starts: Vec<usize>,
+    ) -> String {
+        if full.len() <= MAX_CONTEXT_TOOL_RESULT_BYTES {
+            return full;
+        }
+        let full = std::sync::Arc::new(full);
+        let output_dir =
+            crate::session::persistence::session_dir(&self.session_info).join("tool-results");
+        let persisted = tokio::task::spawn_blocking({
+            let output_dir = output_dir.clone();
+            let full = std::sync::Arc::clone(&full);
+            move || persist_tool_result_file(&output_dir, &full)
+        })
+        .await;
+        let output_path = match persisted {
+            Ok(Ok(path)) => Some(path),
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "failed to persist oversized tool result");
+                None
+            }
+            Err(error) => {
+                tracing::warn!(%error, "oversized tool-result persistence task failed");
+                None
+            }
+        };
+        bounded_tool_result_preview(&full, output_path.as_deref(), &reminder_starts)
+    }
+
+    pub(super) async fn bounded_tool_result_item(
+        &self,
+        call_id: impl Into<String>,
+        text: impl Into<String>,
+    ) -> ConversationItem {
+        ConversationItem::tool_result(
+            call_id.into(),
+            self.bound_tool_result_for_context(text.into(), Vec::new())
+                .await,
+        )
+    }
+
+    pub(super) async fn push_bounded_tool_result(
+        &self,
+        call_id: impl Into<String>,
+        text: impl Into<String>,
+    ) {
+        let item = self.bounded_tool_result_item(call_id, text).await;
+        self.chat_state_handle.push_tool_result(item);
+    }
+
     /// Merge the canonical `x.ai/tool` identity envelope into a tool-call
     /// event's `_meta`, resolving the tool from the live toolset by wire name.
     pub(super) fn stamp_tool_meta(
@@ -316,8 +630,8 @@ impl SessionActor {
                         format!("Tool execution cancelled for tool `{}`", call.function.name)
                     }
                 };
-                self.chat_state_handle
-                    .push_tool_result(ConversationItem::tool_result(call.id.clone(), message));
+                self.push_bounded_tool_result(call.id.clone(), message)
+                    .await;
                 continue;
             }
             self.emit_event(crate::session::events::Event::ToolStarted {
@@ -1259,7 +1573,9 @@ impl SessionActor {
                         );
                         self.send_update(acp::SessionUpdate::ToolCallUpdate(tool_update), None)
                             .await;
-                        let tool_chat = ConversationItem::tool_result(call.id.clone(), message);
+                        let tool_chat = self
+                            .bounded_tool_result_item(call.id.clone(), message)
+                            .await;
                         self.chat_state_handle.push_tool_result(tool_chat);
                         return Ok(Err(ToolLoop::Continue));
                     }
@@ -1281,7 +1597,9 @@ impl SessionActor {
                         );
                         self.send_update(acp::SessionUpdate::ToolCallUpdate(tool_update), None)
                             .await;
-                        let tool_chat = ConversationItem::tool_result(call.id.clone(), message);
+                        let tool_chat = self
+                            .bounded_tool_result_item(call.id.clone(), message)
+                            .await;
                         self.chat_state_handle.push_tool_result(tool_chat);
                         return Ok(Err(ToolLoop::Continue));
                     }
@@ -1873,7 +2191,9 @@ impl SessionActor {
             None,
         )
         .await;
-        let tool_chat = ConversationItem::tool_result(call_id.to_string(), message);
+        let tool_chat = self
+            .bounded_tool_result_item(call_id.to_string(), message)
+            .await;
         self.chat_state_handle.push_tool_result(tool_chat);
         Ok(())
     }
@@ -2084,25 +2404,23 @@ impl SessionActor {
             self.send_update(acp::SessionUpdate::Plan(acp_plan), None)
                 .await;
         }
-        #[allow(unused_mut)]
-        let mut prompt_text = if concatenated_json_count > 0 && !self.is_cursor_harness() {
+        let (mut prompt_text, mut reminder_texts) =
+            split_structured_reminders(result.prompt_text, &result.reminder_starts);
+        if concatenated_json_count > 0 && !self.is_cursor_harness() {
             let remaining = concatenated_json_count - 1;
-            format!(
-                "{}\n\n<system-reminder>\nIMPORTANT: Your tool call contained {} concatenated JSON \
+            reminder_texts.push(format!(
+                "\n\n<system-reminder>\nIMPORTANT: Your tool call contained {} concatenated JSON \
                  objects, but only the best-matching one was executed. The remaining {} \
                  were ignored. You MUST use separate tool calls (one per operation) \
                  instead of concatenating multiple JSON objects in a single call's \
                  arguments. Make {} individual tool call{} for the remaining \
                  operations.\n</system-reminder>",
-                result.prompt_text,
                 concatenated_json_count,
                 remaining,
                 remaining,
                 if remaining == 1 { "" } else { "s" },
-            )
-        } else {
-            result.prompt_text
-        };
+            ));
+        }
         let mut inline_images: Vec<ContentPart> = Vec::new();
         let extraction = if !self.is_cursor_harness()
             && !matches!(
@@ -2125,6 +2443,9 @@ impl SessionActor {
             extracted_images.extend(fc.extracted_images.iter().cloned());
         }
         let mut prompt_text = maybe_rewrite(path_rewriter.as_ref(), prompt_text);
+        for reminder in &mut reminder_texts {
+            *reminder = maybe_rewrite(path_rewriter.as_ref(), std::mem::take(reminder));
+        }
         if !self.is_cursor_harness()
             && let ToolsToolOutput::ReadFile(ReadFileOutput::ImageContent(ref image_content)) =
                 result.output
@@ -2178,6 +2499,14 @@ impl SessionActor {
                 pdf.total_pages,
             );
         }
+        let mut reminder_starts = Vec::with_capacity(reminder_texts.len());
+        for reminder in reminder_texts {
+            reminder_starts.push(prompt_text.len());
+            prompt_text.push_str(&reminder);
+        }
+        let prompt_text = self
+            .bound_tool_result_for_context(prompt_text, reminder_starts)
+            .await;
         let tool_chat = if inline_images.is_empty() {
             ConversationItem::tool_result(call_id.to_string(), prompt_text)
         } else {
@@ -2263,6 +2592,9 @@ impl SessionActor {
             }
             _ => format!("Tool `{requested_tool_name}` failed: {err_str}"),
         };
+        let message = self
+            .bound_tool_result_for_context(message, Vec::new())
+            .await;
         self.send_update(
             acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
                 tool_call_id.clone(),
@@ -2582,7 +2914,9 @@ impl SessionActor {
         );
         self.send_update(acp::SessionUpdate::ToolCallUpdate(tool_update), None)
             .await;
-        let tool_chat = ConversationItem::tool_result(model_call_id.to_owned(), reason);
+        let tool_chat = self
+            .bounded_tool_result_item(model_call_id.to_owned(), reason)
+            .await;
         self.chat_state_handle.push_tool_result(tool_chat);
         Ok(())
     }
