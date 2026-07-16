@@ -2906,6 +2906,55 @@ fn chat_session_spawn_options_matches_thin_profile() {
         "K10 thin profile must use PersistenceHandle::noop()"
     );
 }
+/// `remove_session` releases the workspace binding and drains the
+/// per-session side maps. Test agents default to `workspace_ops = None`,
+/// so no other test reaches the release.
+#[tokio::test]
+async fn remove_session_releases_workspace_binding_and_side_maps() {
+    let agent = build_minimal_agent_for_tests();
+    let sid = acp::SessionId::new("test-session-workspace-release");
+    let ops = xai_grok_workspace::WorkspaceOps::for_test();
+    let toolset =
+        std::sync::Arc::new(xai_grok_tools::registry::types::FinalizedToolset::empty_for_test());
+    let toolset_weak = std::sync::Arc::downgrade(&toolset);
+    ops.bind_local_session(
+        sid.0.as_ref(),
+        std::env::temp_dir(),
+        xai_hunk_tracker::HunkTrackerHandle::noop(),
+        toolset,
+        None,
+    )
+    .expect("bind_local_session must succeed");
+    assert!(toolset_weak.upgrade().is_some());
+    *agent.workspace_ops.borrow_mut() = Some(ops);
+    agent.model_unavailable_sessions.borrow_mut().insert(
+        sid.0.to_string(),
+        acp::ModelId::new(std::sync::Arc::from("gone-model")),
+    );
+    agent
+        .session_turn_numbers
+        .borrow_mut()
+        .insert(sid.clone(), 3);
+    let (_permission_tx, permission_rx) =
+        tokio::sync::mpsc::unbounded_channel::<xai_grok_workspace::permission::PermissionEvent>();
+    agent
+        .permission_event_receivers
+        .borrow_mut()
+        .insert(sid.clone(), permission_rx);
+    agent.remove_session(&sid);
+    assert!(
+        toolset_weak.upgrade().is_none(),
+        "the workspace binding must release the toolset"
+    );
+    assert!(
+        !agent
+            .model_unavailable_sessions
+            .borrow()
+            .contains_key(sid.0.as_ref())
+    );
+    assert!(!agent.session_turn_numbers.borrow().contains_key(&sid));
+    assert!(!agent.permission_event_receivers.borrow().contains_key(&sid));
+}
 /// Without a bridge, `ext_method` falls through to the unchanged local
 /// dispatch (`rewind::handle`), which reports the missing session — proving
 /// the routing hook is skipped in local mode.

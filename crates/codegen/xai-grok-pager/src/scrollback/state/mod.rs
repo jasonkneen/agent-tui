@@ -181,8 +181,8 @@ pub struct ScrollbackState {
     expanded_groups: HashSet<EntryId>,
 
     // Link map
-    /// Monotonically increasing counter, bumped on scroll, viewport, or
-    /// content changes. Used by `VisibleLinkMap::is_stale()` to skip rebuilds.
+    /// Monotonically increasing counter, bumped when visible link positions or
+    /// policy inputs change. Used by `VisibleLinkMap::is_stale()` to skip rebuilds.
     generation: u64,
 
     /// Bumped only when entries are added/removed or an entry's content changes
@@ -255,7 +255,7 @@ impl ScrollbackState {
         self.cwd.as_deref()
     }
 
-    /// Update session cwd; invalidates entry paint caches when it changes.
+    /// Update session cwd; invalidates cwd-dependent paint, layout, and link maps.
     pub fn set_cwd(&mut self, cwd: Option<std::path::PathBuf>) {
         if self.cwd == cwd {
             return;
@@ -267,6 +267,7 @@ impl ScrollbackState {
         self.dirty_heights = self.entries.keys().copied().collect();
         self.layout_cache = None;
         self.gaps_may_be_dirty = true;
+        self.bump_generation();
     }
 
     /// Create an empty state that continues this one's identity: same
@@ -502,8 +503,8 @@ impl ScrollbackState {
 
     // Link map generation
 
-    /// Current link-map generation. Incremented whenever content, scroll,
-    /// or viewport changes invalidate the visible link positions.
+    /// Current link-map generation. Incremented when positions or link-policy
+    /// inputs change and invalidate the visible link map.
     pub fn generation(&self) -> u64 {
         self.generation
     }

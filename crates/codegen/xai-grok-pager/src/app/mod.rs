@@ -112,7 +112,7 @@ static MINIMAL_SHOW_SWITCH_BACK_TO_FULLSCREEN: AtomicBool = AtomicBool::new(fals
 pub fn minimal_show_switch_back_to_fullscreen() -> bool {
     MINIMAL_SHOW_SWITCH_BACK_TO_FULLSCREEN.load(Ordering::Acquire)
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn set_minimal_show_switch_back_to_fullscreen_for_test(on: bool) {
     MINIMAL_SHOW_SWITCH_BACK_TO_FULLSCREEN.store(on, Ordering::Release);
 }

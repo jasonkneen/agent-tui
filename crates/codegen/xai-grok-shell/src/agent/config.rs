@@ -115,10 +115,10 @@ impl EnvKeys {
         mut getenv: impl FnMut(&str) -> Option<String>,
     ) -> Option<String> {
         for name in self.names() {
-            if let Some(value) = getenv(name) {
-                if !value.trim().is_empty() {
-                    return Some(value);
-                }
+            if let Some(value) = getenv(name)
+                && !value.trim().is_empty()
+            {
+                return Some(value);
             }
         }
         None
@@ -285,7 +285,8 @@ impl EndpointsConfig {
     }
     /// Layer the `[endpoints]` table from `config` over the env/default base.
     /// No field is derived from another — defaulting is done by the resolvers.
-    pub(crate) fn from_config_value(config: &toml::Value) -> Self {
+    /// `pub`: the pager resolves the voice STT base through this same path.
+    pub fn from_config_value(config: &toml::Value) -> Self {
         let default = Self::default();
         let external_otel_master_switch = default.external_otel_master_switch;
         let mut base = match toml::Value::try_from(default) {

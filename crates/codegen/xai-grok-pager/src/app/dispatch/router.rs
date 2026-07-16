@@ -5,7 +5,7 @@ use super::auth::{
 };
 use super::billing::dispatch_open_supergrok_url;
 use super::ctx::{
-    active_agent_session_id, get_active_agent_mut, navigate_clearing_selection,
+    active_agent_session_id, get_active_agent_mut, navigate_clearing_selection, open_url_or_show,
     sync_sleep_inhibitor, with_active_agent, with_scrollback,
 };
 use super::dashboard::{
@@ -583,10 +583,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                     surface: xai_grok_telemetry::events::CreditLimitUpsellSurface::InlineCard,
                     choice,
                 });
-                crate::app::link_opener::open_url_if_safe(
-                    &url,
-                    crate::terminal::hyperlinks::SchemeFilter::Standard,
-                );
+                open_url_or_show(app, &url);
             } else {
                 dispatch_open_block_viewer(app);
             }
@@ -849,16 +846,17 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             }
         }
         Action::AnnouncementsOpenCta(surface) => {
-            use crate::terminal::hyperlinks::SchemeFilter;
             if let Some((promo, url)) = crate::views::announcements::promo_cta_target(
                 &app.active_announcements,
                 &app.hidden_announcement_ids,
             ) {
+                let url = url.to_owned();
+                let promo_id = promo.id.clone();
                 log_event(xai_grok_telemetry::events::AnnouncementCtaClicked {
-                    id: promo.id.clone(),
+                    id: promo_id,
                     source: surface,
                 });
-                crate::app::link_opener::open_url_if_safe(url, SchemeFilter::Standard);
+                open_url_or_show(app, &url);
             }
             vec![]
         }
@@ -962,7 +960,6 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::CheckSubscription => vec![Effect::CheckSubscription { verify: None }],
         Action::OpenSupergrokUrl => dispatch_open_supergrok_url(app),
         Action::OpenUrl(url) => {
-            use crate::terminal::hyperlinks::SchemeFilter;
             if url.starts_with("file://") {
                 let opened = url::Url::parse(&url)
                     .ok()
@@ -974,14 +971,31 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                     "Could not open file"
                 });
             } else {
-                crate::app::link_opener::open_url_if_safe(&url, SchemeFilter::Standard);
+                open_url_or_show(app, &url);
+            }
+            vec![]
+        }
+        Action::OpenLink(target) => {
+            use crate::render::osc8::LinkTarget;
+            match crate::render::osc8::resolve_link_open_target(&target) {
+                Some(LinkTarget::File(path)) => {
+                    let opened = crate::app::link_opener::open_path(&path);
+                    app.show_toast(if opened {
+                        "Opening in default app\u{2026}"
+                    } else {
+                        "Could not open file"
+                    });
+                }
+                Some(LinkTarget::Url(url)) => {
+                    crate::app::link_opener::open_url(&url);
+                }
+                None => {}
             }
             vec![]
         }
         Action::OpenManagedConnectors => {
-            use crate::terminal::hyperlinks::SchemeFilter;
             let url = crate::views::mcps_modal::managed_connectors_url(app.team_id.as_deref());
-            crate::app::link_opener::open_url_if_safe(&url, SchemeFilter::Standard);
+            open_url_or_show(app, &url);
             vec![]
         }
         Action::OpenNextLink => {

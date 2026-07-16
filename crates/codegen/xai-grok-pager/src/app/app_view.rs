@@ -5653,7 +5653,8 @@ pub(crate) mod tests {
                 screen_row: 2,
                 col_start: 0,
                 col_end: 10,
-                url: Arc::from("https://example.com"),
+                target: crate::render::osc8::LinkTarget::Url(Arc::from("https://example.com")),
+                presentation: crate::render::osc8::LinkPresentation::Opaque,
                 id: Some(1),
             });
             agent.visible_link_map.rebuild(1, &overlay, vec![]);
