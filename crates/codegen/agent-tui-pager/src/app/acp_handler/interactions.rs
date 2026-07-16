@@ -10,7 +10,7 @@ use super::*;
 /// If a question is already active, the old one is cancelled first
 /// (`Cancelled` is sent on its stashed `response_tx`).
 pub(crate) fn handle_ask_user_question(
-    ext: xai_acp_lib::AcpArgs<acp::ExtRequest>,
+    ext: agent_tui_acp_lib::AcpArgs<acp::ExtRequest>,
     app: &mut AppView,
 ) -> bool {
     use crate::views::question_view::QuestionViewState;
@@ -128,7 +128,7 @@ pub(crate) fn handle_ask_user_question(
 /// Follows the `handle_ask_user_question` pattern: parse → guard → cancel old
 /// → stash prompt → create state → clear prompt → return true.
 pub(super) fn handle_exit_plan_mode(
-    ext: xai_acp_lib::AcpArgs<acp::ExtRequest>,
+    ext: agent_tui_acp_lib::AcpArgs<acp::ExtRequest>,
     app: &mut AppView,
 ) -> bool {
     use crate::views::plan_approval_view::{ExitPlanModeExtRequest, PlanApprovalViewState};

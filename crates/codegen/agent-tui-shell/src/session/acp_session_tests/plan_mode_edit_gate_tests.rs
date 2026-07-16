@@ -14,7 +14,7 @@ async fn build_gate_actor() -> SessionActor {
     use agent_tui_tools::implementations::grok_build::exit_plan_mode::ExitPlanModeTool;
     use agent_tui_tools::registry::types::ToolConfig;
     let (gateway_tx, mut gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
     let (persistence_tx, _persistence_rx) =
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -27,7 +27,7 @@ async fn build_gate_actor() -> SessionActor {
     .await;
     tokio::task::spawn_local(async move {
         while let Some(msg) = gateway_rx.recv().await {
-            if let xai_acp_lib::AcpClientMessage::SessionNotification(args) = msg {
+            if let agent_tui_acp_lib::AcpClientMessage::SessionNotification(args) = msg {
                 let _ = args.response_tx.send(Ok(()));
             }
         }

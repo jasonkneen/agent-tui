@@ -63,7 +63,7 @@ async fn storage_upload_parks_on_401_and_drains_after_recovery() {
     // Bounded-probe check, not strict quiescence (that's unit-tested with the
     // production probe interval).
     //
-    // Accounting (xai-file-utils upload queue):
+    // Accounting (agent-tui-file-utils upload queue):
     // - `DEFAULT_MAX_CONCURRENT` = 8 workers
     // - each post-park wire attempt may do a probe + credential refresh retry
     //   → 2 storage requests per wake

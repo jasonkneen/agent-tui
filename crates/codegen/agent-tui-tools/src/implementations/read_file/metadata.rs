@@ -24,10 +24,10 @@ pub(crate) fn is_pdf_magic(bytes: &[u8]) -> bool {
 }
 
 /// Infer file metadata (MIME type, extension) from raw bytes using magic-byte inspection.
-pub fn bytes_to_metadata(file_bytes: &[u8]) -> Result<FileMetadata, xai_tool_runtime::ToolError> {
+pub fn bytes_to_metadata(file_bytes: &[u8]) -> Result<FileMetadata, agent_tui_tool_runtime::ToolError> {
     let size = file_bytes.len();
     let data = infer::get(file_bytes).ok_or_else(|| {
-        xai_tool_runtime::ToolError::invalid_arguments("failed to infer file type from magic bytes")
+        agent_tui_tool_runtime::ToolError::invalid_arguments("failed to infer file type from magic bytes")
     })?;
 
     Ok(FileMetadata {

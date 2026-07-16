@@ -14,7 +14,7 @@ pub(super) async fn dispatch_tool(
     workspace_ops: &agent_tui_workspace::WorkspaceOps,
     prepared: &PreparedToolCall,
     session_id: &str,
-) -> Result<ToolRunResult, xai_tool_runtime::ToolError> {
+) -> Result<ToolRunResult, agent_tui_tool_runtime::ToolError> {
     tracing::debug!(
         tool = %prepared.tool_name,
         call_id = %prepared.tool_call_id.0,
@@ -59,15 +59,15 @@ pub(super) fn lock_path_for_args(args: &serde_json::Value) -> Option<&str> {
 
 /// Pull the path a read/list tool targets and classify it against the store.
 /// Keys span harnesses: `read_file`=`target_file`, grep=`path`,
-/// `list_dir`=`target_directory`. Grammar lives in `xai_chat_state`.
+/// `list_dir`=`target_directory`. Grammar lives in `agent_tui_chat_state`.
 pub(super) fn compaction_artifact_read(
     args: &serde_json::Value,
-) -> Option<xai_chat_state::compaction_transcript::CompactionArtifact> {
+) -> Option<agent_tui_chat_state::compaction_transcript::CompactionArtifact> {
     let path = str_arg(
         args,
         &["target_file", "file_path", "path", "target_directory"],
     )?;
-    xai_chat_state::compaction_transcript::classify_compaction_path(path)
+    agent_tui_chat_state::compaction_transcript::classify_compaction_path(path)
 }
 
 /// Map a backend-hosted tool name to a user-facing title, ACP ToolKind,
@@ -378,7 +378,7 @@ pub(crate) const MAX_ARGS_IN_ERROR: usize = 2_000;
 ///    thousand-line file.
 pub(super) fn build_tool_parse_error_message(
     function_name: &str,
-    err: &xai_tool_runtime::ToolError,
+    err: &agent_tui_tool_runtime::ToolError,
     raw_arguments: &str,
 ) -> String {
     let mut msg = format!("Failed to parse arguments for tool `{function_name}`: {err}");

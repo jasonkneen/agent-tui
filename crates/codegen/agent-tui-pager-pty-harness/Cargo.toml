@@ -50,7 +50,7 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 image = { workspace = true, features = ["png"] }
 tempfile = { workspace = true }
-xai-tty-utils = { workspace = true }
+agent-tui-tty-utils = { workspace = true }
 
 clap = { workspace = true, features = ["derive"] }
 

@@ -240,17 +240,17 @@ fn open_block_viewer_opens_image_only_blocks_natively() {
 
 // -- Plugins tab: group-collapse seeding on PluginsListLoaded --------------
 
-fn plugins_list_response() -> xai_hooks_plugins_types::PluginsListResponse {
+fn plugins_list_response() -> agent_tui_hooks_plugins_types::PluginsListResponse {
     use crate::views::extensions_modal::test_plugin_info;
-    xai_hooks_plugins_types::PluginsListResponse {
+    agent_tui_hooks_plugins_types::PluginsListResponse {
         plugins: vec![
             test_plugin_info(
                 "user-tool",
-                Some(xai_hooks_plugins_types::PluginOrigin::UserGrok),
+                Some(agent_tui_hooks_plugins_types::PluginOrigin::UserGrok),
             ),
             test_plugin_info(
                 "claude-tool",
-                Some(xai_hooks_plugins_types::PluginOrigin::UserClaude),
+                Some(agent_tui_hooks_plugins_types::PluginOrigin::UserClaude),
             ),
         ],
     }

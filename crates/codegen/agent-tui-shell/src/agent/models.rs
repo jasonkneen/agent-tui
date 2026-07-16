@@ -118,7 +118,7 @@ struct Inner {
     auth_manager: Arc<AuthManager>,
     cfg: RwLock<config::Config>,
     fetch_auth: RwLock<ModelFetchAuth>,
-    gateway: RwLock<Option<xai_acp_lib::AcpAgentGatewaySender>>,
+    gateway: RwLock<Option<agent_tui_acp_lib::AcpAgentGatewaySender>>,
     cache: ModelsCacheManager,
     /// Guard to prevent overlapping retry loops.
     retry_in_flight: AtomicBool,
@@ -267,7 +267,7 @@ impl ModelsManager {
         Ok(mgr)
     }
 
-    pub(crate) fn set_gateway(&self, gateway: xai_acp_lib::AcpAgentGatewaySender) {
+    pub(crate) fn set_gateway(&self, gateway: agent_tui_acp_lib::AcpAgentGatewaySender) {
         *self.inner.gateway.write() = Some(gateway);
     }
 

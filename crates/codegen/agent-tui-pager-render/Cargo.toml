@@ -7,7 +7,7 @@ license = "Apache-2.0"
 [dependencies]
 # TTY safety
 dunce = { workspace = true }
-xai-tty-utils = { workspace = true }
+agent-tui-tty-utils = { workspace = true }
 
 # Rendering
 ratatui = { workspace = true, features = [
@@ -57,8 +57,8 @@ tokio = { workspace = true, features = [
 tracing = { workspace = true }
 
 # Prompt text input
-xai-ratatui-textarea = { workspace = true }
-xai-ratatui-inline = { workspace = true }
+agent-tui-ratatui-textarea = { workspace = true }
+agent-tui-ratatui-inline = { workspace = true }
 
 # ACP
 agent-client-protocol = { workspace = true }

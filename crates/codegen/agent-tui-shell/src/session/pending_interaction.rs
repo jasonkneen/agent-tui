@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol as acp;
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 use crate::extensions::notification::{SessionNotification, SessionUpdate as XaiSessionUpdate};
 

@@ -12,7 +12,7 @@ use crate::types::tool::{ToolKind, ToolNamespace};
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct LspToolOutput(pub String);
 
-impl xai_tool_runtime::ToolOutput for LspToolOutput {}
+impl agent_tui_tool_runtime::ToolOutput for LspToolOutput {}
 
 impl From<LspToolOutput> for ToolOutput {
     fn from(o: LspToolOutput) -> Self {
@@ -49,28 +49,28 @@ Requires file_path + line + character for position-based operations."#
     }
 }
 
-impl xai_tool_runtime::Tool for LspTool {
+impl agent_tui_tool_runtime::Tool for LspTool {
     type Args = LspToolInput;
     type Output = LspToolOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("lsp").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("lsp").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "lsp",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: true,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Read),
             ..Default::default()
         }
     }
@@ -82,9 +82,9 @@ impl xai_tool_runtime::Tool for LspTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: LspToolInput,
-    ) -> Result<LspToolOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<LspToolOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -94,7 +94,7 @@ impl xai_tool_runtime::Tool for LspTool {
             handle = res
                 .get::<Arc<dyn LspBackend>>()
                 .ok_or_else(|| {
-                    xai_tool_runtime::ToolError::custom(
+                    agent_tui_tool_runtime::ToolError::custom(
                         "process_manager",
                         "LSP tool is unavailable. Configure ~/.grok/lsp.json or <cwd>/.grok/lsp.json and ensure the language server can start.",
                     )
@@ -104,7 +104,7 @@ impl xai_tool_runtime::Tool for LspTool {
 
         let result = handle.dispatch(&input).await;
         if result.is_error {
-            Err(xai_tool_runtime::ToolError::custom(
+            Err(agent_tui_tool_runtime::ToolError::custom(
                 "process_manager",
                 result.text,
             ))

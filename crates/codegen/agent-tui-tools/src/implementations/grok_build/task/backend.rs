@@ -21,7 +21,7 @@ use super::types::{
     SubagentSnapshot, SubagentValidateTypeOutcome, SubagentValidateTypeRequest,
 };
 use crate::register_resource;
-use xai_tool_runtime::ToolError;
+use agent_tui_tool_runtime::ToolError;
 
 /// Abstraction over the mechanism used to spawn, query, and cancel subagents.
 ///

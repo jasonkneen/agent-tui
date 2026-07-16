@@ -63,7 +63,7 @@ pub fn open_url(url: &str) {
 
 /// Build the `open`/`xdg-open` opener command (macOS / Linux / BSD).
 ///
-/// The returned command is TTY-guarded via [`xai_tty_utils::detach_std_command`]
+/// The returned command is TTY-guarded via [`agent_tui_tty_utils::detach_std_command`]
 /// (`setsid`/`setpgid`) so the spawned GUI helper and its children can't grab
 /// the TUI's `/dev/tty`, with stdio fully redirected to null. Split from
 /// [`open_path`] so it can be unit-tested without spawning. The path is a single
@@ -80,7 +80,7 @@ fn build_open_path_command(path: &std::path::Path) -> std::process::Command {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    xai_tty_utils::detach_std_command(&mut command);
+    agent_tui_tty_utils::detach_std_command(&mut command);
     command
 }
 
@@ -163,7 +163,7 @@ fn reveal_in_explorer(path: &std::path::Path) -> bool {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    xai_tty_utils::detach_std_command(&mut command);
+    agent_tui_tty_utils::detach_std_command(&mut command);
     // explorer.exe returns exit code 1 even on success, so a successful spawn
     // is the best signal we have.
     match command.spawn() {

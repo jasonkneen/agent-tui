@@ -21,7 +21,7 @@ tokio-tungstenite = { workspace = true }
 tokio-util = { workspace = true, features = ["compat"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
-xai-acp-lib = { workspace = true }
+agent-tui-acp-lib = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true }

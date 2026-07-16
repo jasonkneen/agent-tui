@@ -60,7 +60,7 @@ pub use upload::environment::{WorkspaceEnvironment, WorkspaceIdentity};
 pub use workspace_ops::{WorkspaceOp, WorkspaceOps};
 pub use agent_tui_workspace_client::WorkspaceClient;
 pub use agent_tui_workspace_types::WorkspaceEvent;
-pub use xai_hunk_tracker::HunkTrackerHandle;
+pub use agent_tui_hunk_tracker::HunkTrackerHandle;
 /// Zero-init every workspace metric family so idle panels render a `0` baseline
 /// instead of "No data". Idempotent; call once at workspace-server startup.
 pub fn init_metrics() {

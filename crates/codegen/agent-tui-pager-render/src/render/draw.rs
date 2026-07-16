@@ -32,7 +32,7 @@
 //! - **Idle (no draw calls)**: nothing sent → blink runs undisturbed
 //!
 //! The "no cell changes" optimization is possible because we use
-//! [`xai_ratatui_inline::Terminal`] whose `flush()` returns `bool` indicating
+//! [`agent_tui_ratatui_inline::Terminal`] whose `flush()` returns `bool` indicating
 //! whether any cells were written. When animated entries are off-screen, the
 //! buffer diff is empty and we skip all cursor commands.
 //!
@@ -48,11 +48,11 @@ use ratatui::backend::CrosstermBackend;
 use std::io::Write;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-use xai_ratatui_inline::LinkSpan;
+use agent_tui_ratatui_inline::LinkSpan;
 /// Terminal type for the pager. Defined here (beside [`TermWriter`]) so the
 /// `render` module does not depend on `app`. Re-exported from `app` as
 /// `crate::app::PagerTerminal` for existing call sites.
-pub type PagerTerminal = xai_ratatui_inline::Terminal<CrosstermBackend<TermWriter>>;
+pub type PagerTerminal = agent_tui_ratatui_inline::Terminal<CrosstermBackend<TermWriter>>;
 /// Shared queued/written frame counters linking [`TermWriter`] to the writer
 /// thread, so callers can wait for the output pipeline to drain.
 ///
@@ -211,7 +211,7 @@ pub fn spawn_writer_thread() -> (mpsc::Sender<Vec<u8>>, WriterSync, WriterThread
         .spawn(move || {
             #[cfg(not(windows))]
             let mut writer: Box<dyn std::io::Write> = {
-                let tui_out = xai_tty_utils::dup_tui_stderr().unwrap_or_else(|_| {
+                let tui_out = agent_tui_tty_utils::dup_tui_stderr().unwrap_or_else(|_| {
                     use std::os::unix::io::{AsRawFd, FromRawFd};
                     let fd = unsafe { libc::dup(std::io::stderr().as_raw_fd()) };
                     unsafe { std::fs::File::from_raw_fd(fd) }
@@ -388,7 +388,7 @@ mod tests {
         }
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         let backend = CrosstermBackend::new(TermWriter::new(tx, WriterSync::new()));
-        let mut terminal = xai_ratatui_inline::Terminal::with_options(
+        let mut terminal = agent_tui_ratatui_inline::Terminal::with_options(
             backend,
             TerminalOptions {
                 viewport: Viewport::Fixed(Rect::new(0, 0, 80, 24)),

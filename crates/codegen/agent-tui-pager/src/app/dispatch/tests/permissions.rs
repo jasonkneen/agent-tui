@@ -81,7 +81,7 @@ fn set_yolo_mode_on_drains_permission_queue_with_allow_once() {
     );
     let options = request.options.clone();
     agent.permission_queue.push_back(PermissionViewState {
-        request: xai_acp_lib::AcpArgs {
+        request: agent_tui_acp_lib::AcpArgs {
             request,
             response_tx,
         },

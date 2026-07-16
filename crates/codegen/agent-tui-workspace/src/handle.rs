@@ -7,9 +7,9 @@ use prometheus::{
 };
 use std::path::PathBuf;
 use std::sync::Arc;
-use xai_hunk_tracker::{HunkTrackerActor, HunkTrackerHandle, TrackingMode};
-use xai_tool_protocol::ToolServerStatusPayload;
-use xai_tool_protocol::turn_hook::TurnHookOutcome;
+use agent_tui_hunk_tracker::{HunkTrackerActor, HunkTrackerHandle, TrackingMode};
+use agent_tui_tool_protocol::ToolServerStatusPayload;
+use agent_tui_tool_protocol::turn_hook::TurnHookOutcome;
 /// Default SIGTERM drain budget (ms); override via
 /// `GROK_WORKSPACE_TERMINATION_GRACE_MS`. 45s fits under the K8s grace period.
 const DEFAULT_TERMINATION_GRACE_MS: u64 = 45_000;
@@ -144,10 +144,10 @@ use crate::telemetry::dc_log;
 use crate::workspace_ops::{
     GetFileEntry, GetFileResult, GetFilesRes, PutFileEntry, PutFileResult, PutFilesRes,
 };
-use xai_file_utils::events::types::CancellationCategory;
-use xai_file_utils::events::{Event, SessionRelationship, TurnOutcomeLabel};
-use xai_file_utils::queue::EnqueueOutcome;
-use xai_tool_protocol::turn_hook::{AfterTurnAckPayload, AfterTurnAckStatus};
+use agent_tui_file_utils::events::types::CancellationCategory;
+use agent_tui_file_utils::events::{Event, SessionRelationship, TurnOutcomeLabel};
+use agent_tui_file_utils::queue::EnqueueOutcome;
+use agent_tui_tool_protocol::turn_hook::{AfterTurnAckPayload, AfterTurnAckStatus};
 /// Per-domain checkpoint captures, by domain and turn outcome.
 pub(crate) static REWIND_CHECKPOINT_CAPTURE_TOTAL: std::sync::LazyLock<IntCounterVec> =
     std::sync::LazyLock::new(|| {
@@ -377,8 +377,8 @@ impl WorkspaceHandle {
         &self,
         service_name: &str,
     ) -> Option<(
-        xai_computer_hub_sdk::HubDonatingReporter,
-        xai_computer_hub_sdk::TraceDonationPump,
+        agent_tui_computer_hub_sdk::HubDonatingReporter,
+        agent_tui_computer_hub_sdk::TraceDonationPump,
     )> {
         self.shared
             .hub_handle
@@ -395,13 +395,13 @@ impl WorkspaceHandle {
     /// Never hands out an owned `ToolServer` — a clone-drop begins server
     /// teardown.
     ///
-    /// [`LogDonationSender`]: xai_computer_hub_sdk::LogDonationSender
+    /// [`LogDonationSender`]: agent_tui_computer_hub_sdk::LogDonationSender
     pub async fn log_donation_layer(
         &self,
         service_name: &str,
     ) -> Option<(
-        xai_computer_hub_sdk::LogDonationSender,
-        xai_computer_hub_sdk::LogDonationPump,
+        agent_tui_computer_hub_sdk::LogDonationSender,
+        agent_tui_computer_hub_sdk::LogDonationPump,
     )> {
         self.shared
             .hub_handle
@@ -419,7 +419,7 @@ impl WorkspaceHandle {
     pub async fn metric_donation_reporter(
         &self,
         service_name: &str,
-    ) -> Option<xai_computer_hub_sdk::MetricDonationPump> {
+    ) -> Option<agent_tui_computer_hub_sdk::MetricDonationPump> {
         self.shared
             .hub_handle
             .lock()
@@ -450,7 +450,7 @@ impl WorkspaceHandle {
         )
     }
     /// Construct a handle with an explicit `$GROK_WORKSPACE_HOME` and a
-    /// pre-spawned [`UploadQueue`](xai_file_utils::queue::UploadQueue).
+    /// pre-spawned [`UploadQueue`](agent_tui_file_utils::queue::UploadQueue).
     ///
     /// [`connect_local_workspace`] calls this so the queue is backed by the
     /// proxy storage config; [`Self::new`] takes the queue-less path for tests
@@ -461,7 +461,7 @@ impl WorkspaceHandle {
     pub(crate) fn new_with_data_collection(
         config: WorkspaceConfig,
         workspace_home: std::path::PathBuf,
-        upload_queue: Arc<xai_file_utils::queue::UploadQueue>,
+        upload_queue: Arc<agent_tui_file_utils::queue::UploadQueue>,
         upload_queue_enabled: bool,
         data_collection_disabled: bool,
         identity: crate::upload::environment::WorkspaceIdentity,
@@ -481,7 +481,7 @@ impl WorkspaceHandle {
     fn build(
         config: WorkspaceConfig,
         workspace_home: std::path::PathBuf,
-        upload_queue: Option<Arc<xai_file_utils::queue::UploadQueue>>,
+        upload_queue: Option<Arc<agent_tui_file_utils::queue::UploadQueue>>,
         _upload_queue_enabled: bool,
         data_collection_disabled: bool,
         events_enabled: bool,
@@ -490,7 +490,7 @@ impl WorkspaceHandle {
         identity: crate::upload::environment::WorkspaceIdentity,
     ) -> WorkspaceResult<Self> {
         let sessions = std::collections::HashMap::new();
-        let local_registry = xai_computer_hub_sdk::LocalRegistry::new();
+        let local_registry = agent_tui_computer_hub_sdk::LocalRegistry::new();
         let capacity = if config.event_buffer_capacity == 0 {
             DEFAULT_EVENT_BUFFER_CAPACITY
         } else {
@@ -558,7 +558,7 @@ impl WorkspaceHandle {
             }
         };
         let session_event_writers: Arc<
-            dashmap::DashMap<String, xai_file_utils::events::EventWriter>,
+            dashmap::DashMap<String, agent_tui_file_utils::events::EventWriter>,
         > = Arc::new(dashmap::DashMap::new());
         let activity_tracker = Arc::new(
             crate::activity::ActivityTracker::with_prune_window(
@@ -636,19 +636,19 @@ impl WorkspaceHandle {
     pub fn activity_tracker(&self) -> &std::sync::Arc<crate::activity::ActivityTracker> {
         &self.shared.activity_tracker
     }
-    /// The [`ToolServer`](xai_computer_hub_sdk::ToolServer) for this
+    /// The [`ToolServer`](agent_tui_computer_hub_sdk::ToolServer) for this
     /// workspace, if a server connection is active.
     ///
     /// Non-blocking: returns `None` both when no server is connected and when the
     /// handle is momentarily locked (e.g. a concurrent connect), so callers
     /// must treat `None` as "no server available right now" and degrade gracefully.
-    pub fn hub_server(&self) -> Option<xai_computer_hub_sdk::ToolServer> {
+    pub fn hub_server(&self) -> Option<agent_tui_computer_hub_sdk::ToolServer> {
         self.shared.hub_server()
     }
     /// Like [`Self::hub_server`] but awaits the connection lock instead of returning
     /// `None` on contention, so a transient `connect_hub` lock is not mistaken
     /// for "no server". `None` means no server is connected. Use from async callers.
-    pub async fn hub_server_blocking(&self) -> Option<xai_computer_hub_sdk::ToolServer> {
+    pub async fn hub_server_blocking(&self) -> Option<agent_tui_computer_hub_sdk::ToolServer> {
         self.shared.hub_server_blocking().await
     }
     /// Get the workspace root directory.
@@ -688,7 +688,7 @@ impl WorkspaceHandle {
         cwd: Option<std::path::PathBuf>,
         tool_config: Option<agent_tui_tools::registry::types::ToolServerConfig>,
         capability: CapabilityMode,
-        viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
+        viewer_ctx: Option<agent_tui_tool_runtime::WorkspaceViewerContext>,
         system_notifications: bool,
     ) -> WorkspaceResult<Arc<WorkspaceSession>> {
         let session_id = session_id.into();
@@ -746,7 +746,7 @@ impl WorkspaceHandle {
         hunk_tracker: HunkTrackerHandle,
         tool_config: Option<agent_tui_tools::registry::types::ToolServerConfig>,
         capability: CapabilityMode,
-        viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
+        viewer_ctx: Option<agent_tui_tool_runtime::WorkspaceViewerContext>,
         system_notifications: bool,
     ) -> WorkspaceResult<Arc<WorkspaceSession>> {
         let session_id = session_id.into();
@@ -1131,7 +1131,7 @@ impl WorkspaceHandle {
     pub async fn on_before_turn(
         &self,
         session_id: &str,
-        payload: &xai_tool_protocol::turn_hook::BeforeTurnPayload,
+        payload: &agent_tui_tool_protocol::turn_hook::BeforeTurnPayload,
     ) {
         self.sync_session_yolo_mode(session_id, payload.yolo_mode);
         let before_handle = self
@@ -1168,14 +1168,14 @@ impl WorkspaceHandle {
     pub async fn on_after_turn(
         &self,
         session_id: &str,
-        payload: &xai_tool_protocol::turn_hook::AfterTurnPayload,
+        payload: &agent_tui_tool_protocol::turn_hook::AfterTurnPayload,
     ) {
         let _ = self.process_after_turn(session_id, payload).await;
     }
     async fn process_after_turn(
         &self,
         session_id: &str,
-        payload: &xai_tool_protocol::turn_hook::AfterTurnPayload,
+        payload: &agent_tui_tool_protocol::turn_hook::AfterTurnPayload,
     ) -> (
         Option<tokio::task::JoinHandle<EnqueueOutcome>>,
         Option<tokio::task::JoinHandle<EnqueueOutcome>>,
@@ -1228,9 +1228,9 @@ impl WorkspaceHandle {
     pub async fn compute_turn_injections(
         &self,
         session_id: &str,
-        request: &xai_tool_protocol::turn_hook::TurnHookRequest,
-    ) -> xai_tool_protocol::turn_hook::HookReply {
-        use xai_tool_protocol::turn_hook::{HookReply, TurnHookRequest};
+        request: &agent_tui_tool_protocol::turn_hook::TurnHookRequest,
+    ) -> agent_tui_tool_protocol::turn_hook::HookReply {
+        use agent_tui_tool_protocol::turn_hook::{HookReply, TurnHookRequest};
         match request {
             TurnHookRequest::Before(payload) => {
                 self.on_before_turn(session_id, payload).await;
@@ -1565,7 +1565,7 @@ impl WorkspaceHandle {
         self.shared.activity_tracker.tool_call_completed(
             call_id,
             Some(session_id),
-            xai_file_utils::events::ToolOutcome::Cancelled,
+            agent_tui_file_utils::events::ToolOutcome::Cancelled,
         );
         tracing::info!(% session_id, % call_id, "cancel_tool_call: marked as completed");
     }
@@ -2242,13 +2242,13 @@ impl WorkspaceHandle {
     pub fn get_or_create_codebase_index(
         &self,
         cwd: std::path::PathBuf,
-    ) -> (Arc<xai_codebase_graph::IndexManagerHandle>, bool) {
+    ) -> (Arc<agent_tui_codebase_graph::IndexManagerHandle>, bool) {
         self.shared.codebase_indexes.lock().get_or_create(cwd)
     }
     pub fn get_codebase_index(
         &self,
         cwd: &std::path::Path,
-    ) -> Option<Arc<xai_codebase_graph::IndexManagerHandle>> {
+    ) -> Option<Arc<agent_tui_codebase_graph::IndexManagerHandle>> {
         self.shared.codebase_indexes.lock().get(cwd)
     }
     fn spawn_codebase_index_event_forwarder(&self) -> tokio::task::JoinHandle<()> {
@@ -2376,7 +2376,7 @@ impl WorkspaceHandle {
         session_id: &str,
         cwd: &std::path::Path,
         trace_parent: Option<fastrace::collector::SpanContext>,
-    ) -> Option<xai_file_utils::queue::EnqueueOutcome> {
+    ) -> Option<agent_tui_file_utils::queue::EnqueueOutcome> {
         let upload_queue = self.shared.upload_queue.clone()?;
         if !is_safe_object_segment(session_id) {
             tracing::warn!(% session_id, "environment: unsafe session id, skipping");
@@ -2400,7 +2400,7 @@ impl WorkspaceHandle {
             .in_span(
                 fastrace::Span::root(
                     "tool_server.session_bind.environment_capture",
-                    trace_parent.unwrap_or_else(xai_tracing::local_or_random_span_ctx),
+                    trace_parent.unwrap_or_else(agent_tui_tracing::local_or_random_span_ctx),
                 )
                 .with_properties(|| {
                     [
@@ -2454,7 +2454,7 @@ impl WorkspaceHandle {
             )
             .await;
         match &outcome {
-            xai_file_utils::queue::EnqueueOutcome::Failed { reason: _ } => {
+            agent_tui_file_utils::queue::EnqueueOutcome::Failed { reason: _ } => {
                 dc_log!(
                     warn, session_id = % session_id, error_category = "enqueue_failed",
                     "workspace: environment artifact enqueue failed"
@@ -2482,10 +2482,10 @@ impl WorkspaceHandle {
             McpClientTransportAdapter, McpStartFailure, McpStartResult, QualifiedMcpToolHandler,
             make_bridge_config, server_name_from_mcp_error,
         };
-        use xai_computer_hub_mcp_adapter::McpBridge;
-        use xai_computer_hub_sdk::ToolServerHandler as _;
+        use agent_tui_computer_hub_mcp_adapter::McpBridge;
+        use agent_tui_computer_hub_sdk::ToolServerHandler as _;
         use agent_tui_mcp::servers::MCP_TOOL_NAME_DELIMITER;
-        use xai_tool_protocol::SessionId;
+        use agent_tui_tool_protocol::SessionId;
         let tool_server = {
             let hub_guard = self.shared.hub_handle.lock().await;
             let hub = hub_guard
@@ -2548,7 +2548,7 @@ impl WorkspaceHandle {
                             .owned_clients
                             .insert(server_name.clone(), Arc::clone(&client));
                     }
-                    let transport: Arc<dyn xai_computer_hub_mcp_adapter::McpTransport> =
+                    let transport: Arc<dyn agent_tui_computer_hub_mcp_adapter::McpTransport> =
                         Arc::new(McpClientTransportAdapter::new(Arc::clone(&client)));
                     let bridge_config = make_bridge_config(sid.clone(), &server_name);
                     match McpBridge::connect(transport, &bridge_config).await {
@@ -2576,7 +2576,7 @@ impl WorkspaceHandle {
                                         e, "failed to register MCP tool on hub"
                                     );
                                 } else if let Ok(tid) =
-                                    xai_tool_protocol::ToolId::new(&qualified_name)
+                                    agent_tui_tool_protocol::ToolId::new(&qualified_name)
                                 {
                                     registered_tool_ids.push(tid);
                                 }
@@ -2647,7 +2647,7 @@ impl WorkspaceHandle {
             Some(s) => s,
             None => return,
         };
-        let sid = match xai_tool_protocol::SessionId::new(session_id) {
+        let sid = match agent_tui_tool_protocol::SessionId::new(session_id) {
             Ok(s) => s,
             Err(_) => return,
         };
@@ -2823,12 +2823,12 @@ impl WorkspaceHandle {
     /// drive the full bind path without a hub connection.
     pub(crate) fn session_bind_resolver(
         &self,
-        catalog: Arc<Vec<Arc<dyn xai_computer_hub_sdk::ToolServerHandler>>>,
-        rpc_tool_id: xai_tool_protocol::ToolId,
-    ) -> xai_computer_hub_sdk::SessionHandlerResolver {
+        catalog: Arc<Vec<Arc<dyn agent_tui_computer_hub_sdk::ToolServerHandler>>>,
+        rpc_tool_id: agent_tui_tool_protocol::ToolId,
+    ) -> agent_tui_computer_hub_sdk::SessionHandlerResolver {
         let weak_shared = Arc::downgrade(&self.shared);
         Arc::new(
-            move |sid: xai_tool_protocol::SessionId, params: Option<serde_json::Value>| {
+            move |sid: agent_tui_tool_protocol::SessionId, params: Option<serde_json::Value>| {
                 let catalog = catalog.clone();
                 let rpc_tool_id = rpc_tool_id.clone();
                 let weak_shared = weak_shared.clone();
@@ -2837,7 +2837,7 @@ impl WorkspaceHandle {
                     .and_then(|p| p.pointer("/trace_context"))
                     .and_then(serde_json::Value::as_str)
                     .and_then(fastrace::collector::SpanContext::decode_w3c_traceparent)
-                    .unwrap_or_else(xai_tracing::local_or_random_span_ctx);
+                    .unwrap_or_else(agent_tui_tracing::local_or_random_span_ctx);
                 let bind_span = fastrace::Span::root("tool_server.session_bind", bind_parent)
                     .with_properties(|| {
                         [
@@ -2852,7 +2852,7 @@ impl WorkspaceHandle {
                             .with_label_values(&["workspace_shutdown"])
                             .inc();
                         return Err(
-                            xai_tool_runtime::ToolError::service_unavailable(
+                            agent_tui_tool_runtime::ToolError::service_unavailable(
                                 "workspace is shutting down; cannot bind session",
                             ),
                         );
@@ -3005,7 +3005,7 @@ impl WorkspaceHandle {
                                         .with_label_values(&["session_lookup_failed"])
                                         .inc();
                                     return Err(
-                                        xai_tool_runtime::ToolError::service_unavailable(
+                                        agent_tui_tool_runtime::ToolError::service_unavailable(
                                             format!(
                                                 "session rebind raced teardown for `{sid_str}`; retry"
                                             ),
@@ -3023,7 +3023,7 @@ impl WorkspaceHandle {
                                 .with_label_values(&["session_error"])
                                 .inc();
                             return Err(
-                                xai_tool_runtime::ToolError::service_unavailable(
+                                agent_tui_tool_runtime::ToolError::service_unavailable(
                                     format!("failed to create workspace session: {e}"),
                                 ),
                             );
@@ -3080,7 +3080,7 @@ impl WorkspaceHandle {
                         advertised, unserved = ? unserved_tool_ids,
                         "session.bind: advertising finalized session toolset"
                     );
-                    Ok(xai_computer_hub_sdk::ResolvedSessionHandlers {
+                    Ok(agent_tui_computer_hub_sdk::ResolvedSessionHandlers {
                         handlers,
                         unserved_tool_ids,
                         resolve_error,
@@ -3145,7 +3145,7 @@ impl WorkspaceHandle {
                 .iter()
                 .map(|h| h.tool_id().as_str().to_owned())
                 .collect();
-            let rpc_handler: Arc<dyn xai_computer_hub_sdk::ToolServerHandler> =
+            let rpc_handler: Arc<dyn agent_tui_computer_hub_sdk::ToolServerHandler> =
                 Arc::new(crate::hub_server::WorkspaceRpcHandler::new(self.clone()));
             let rpc_tool_id = rpc_handler.tool_id();
             handlers.push(rpc_handler);
@@ -3155,7 +3155,7 @@ impl WorkspaceHandle {
             );
             (handlers, rpc_tool_id)
         };
-        let catalog: Arc<Vec<Arc<dyn xai_computer_hub_sdk::ToolServerHandler>>> =
+        let catalog: Arc<Vec<Arc<dyn agent_tui_computer_hub_sdk::ToolServerHandler>>> =
             Arc::new(template_handlers.clone());
         let resolver = self.session_bind_resolver(catalog, rpc_tool_id);
         let mut handle = hub_result(
@@ -3194,7 +3194,7 @@ impl WorkspaceHandle {
         let listener_task = tokio::spawn(async move {
             while let Some(notification) = notification_rx.recv().await {
                 match notification {
-                    xai_computer_hub_sdk::HubNotification::ToolsChanged {
+                    agent_tui_computer_hub_sdk::HubNotification::ToolsChanged {
                         added,
                         removed,
                         updated,
@@ -3231,8 +3231,8 @@ impl WorkspaceHandle {
                     Ok(event) => {
                         let payload =
                             serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
-                        let frame = xai_tool_protocol::ToolNotificationFrame::custom(
-                            xai_tool_protocol::ToolId::new(
+                        let frame = agent_tui_tool_protocol::ToolNotificationFrame::custom(
+                            agent_tui_tool_protocol::ToolId::new(
                                 crate::hub_ids::WORKSPACE_EVENTS_TOOL_ID,
                             )
                             .expect("constant tool id"),
@@ -3278,7 +3278,7 @@ impl WorkspaceHandle {
             /// skipped due to a local error (serialization, id allocation)
             /// that does not indicate a dead connection.
             async fn send_status(
-                conn: &xai_computer_hub_sdk::HubConnection,
+                conn: &agent_tui_computer_hub_sdk::HubConnection,
                 payload: ToolServerStatusPayload,
             ) -> Option<bool> {
                 let params = match serde_json::to_value(&payload) {
@@ -3299,11 +3299,11 @@ impl WorkspaceHandle {
                         return None;
                     }
                 };
-                let req = xai_tool_protocol::JsonRpcRequest {
-                    jsonrpc: xai_tool_protocol::JsonRpcVersion,
-                    id: xai_tool_protocol::JsonRpcId::from_request_id(&request_id),
+                let req = agent_tui_tool_protocol::JsonRpcRequest {
+                    jsonrpc: agent_tui_tool_protocol::JsonRpcVersion,
+                    id: agent_tui_tool_protocol::JsonRpcId::from_request_id(&request_id),
                     session_id: None,
-                    method: xai_tool_protocol::Method::ToolServerStatus
+                    method: agent_tui_tool_protocol::Method::ToolServerStatus
                         .as_wire_str()
                         .to_owned(),
                     params,
@@ -3402,8 +3402,8 @@ impl WorkspaceHandle {
             let server_for_ext = handle.server.clone();
             let ext_task = tokio::spawn(async move {
                 while let Some((method, params)) = ext_rx.recv().await {
-                    let frame = xai_tool_protocol::ToolNotificationFrame::custom(
-                        xai_tool_protocol::ToolId::new(
+                    let frame = agent_tui_tool_protocol::ToolNotificationFrame::custom(
+                        agent_tui_tool_protocol::ToolId::new(
                             crate::hub_ids::WORKSPACE_CLIENT_EXT_NOTIFICATIONS_TOOL_ID,
                         )
                         .expect("constant tool id"),
@@ -3445,7 +3445,7 @@ impl WorkspaceHandle {
 fn build_session_routed_handlers(
     toolset: &agent_tui_tools::registry::types::FinalizedToolset,
     ws: &WorkspaceHandle,
-) -> Vec<Arc<dyn xai_computer_hub_sdk::ToolServerHandler>> {
+) -> Vec<Arc<dyn agent_tui_computer_hub_sdk::ToolServerHandler>> {
     let tool_kinds = toolset.tool_kinds();
     let mut seen = std::collections::HashSet::new();
     let mut handlers = Vec::new();
@@ -3457,7 +3457,7 @@ fn build_session_routed_handlers(
             );
             continue;
         }
-        let mut desc = xai_tool_types::ToolDescription::new(
+        let mut desc = agent_tui_tool_types::ToolDescription::new(
             def.function.name.clone(),
             def.function.description.clone().unwrap_or_default(),
         );
@@ -3470,7 +3470,7 @@ fn build_session_routed_handlers(
             ws.clone(),
         ) {
             Ok(handler) => {
-                handlers.push(Arc::new(handler) as Arc<dyn xai_computer_hub_sdk::ToolServerHandler>)
+                handlers.push(Arc::new(handler) as Arc<dyn agent_tui_computer_hub_sdk::ToolServerHandler>)
             }
             Err(e) => {
                 tracing::warn!(
@@ -3714,7 +3714,7 @@ pub(crate) async fn stream_hash_and_range(
 pub async fn connect_local_workspace(
     cwd: std::path::PathBuf,
     hub_url: url::Url,
-    auth: xai_computer_hub_sdk::SharedAuthProvider,
+    auth: agent_tui_computer_hub_sdk::SharedAuthProvider,
     metadata: Option<serde_json::Value>,
     server_id: Option<String>,
     alpha_test_key: Option<String>,
@@ -3788,13 +3788,13 @@ pub async fn connect_local_workspace(
         api_base_url.clone(),
         identity.clone(),
     ));
-    let trace_source: Arc<dyn xai_file_utils::queue::TraceExportSource> = Arc::new(
+    let trace_source: Arc<dyn agent_tui_file_utils::queue::TraceExportSource> = Arc::new(
         crate::upload::WorkspaceTraceExportSource::new(proxy_storage.clone()),
     );
-    let upload_queue = Arc::new(xai_file_utils::queue::UploadQueue::spawn(
+    let upload_queue = Arc::new(agent_tui_file_utils::queue::UploadQueue::spawn(
         &workspace_home,
         trace_source,
-        xai_file_utils::queue::UploadRetryPolicy::default(),
+        agent_tui_file_utils::queue::UploadRetryPolicy::default(),
     ));
     if data_collection_disabled {
         crate::recovery::purge_spilled_items(&workspace_home);
@@ -3802,7 +3802,7 @@ pub async fn connect_local_workspace(
         let report = crate::recovery::run_startup_recovery(&workspace_home, &upload_queue).await;
         tracing::info!(?report, "workspace startup restart-recovery scan complete");
     }
-    upload_queue.cleanup_orphans(xai_file_utils::queue::DEFAULT_MAX_AGE);
+    upload_queue.cleanup_orphans(agent_tui_file_utils::queue::DEFAULT_MAX_AGE);
     crate::upload::spawn_queue_stats_sampler(
         upload_queue.clone(),
         std::time::Duration::from_secs(15),
@@ -3884,7 +3884,7 @@ fn bundled_allowlist_ignore_dirs(dir: &str, allowlist: Option<&str>) -> Vec<Stri
 /// Whether per-session `events.jsonl` recording is enabled
 /// (`GROK_WORKSPACE_EVENTS_ENABLED=true`). Any other value — including unset —
 /// keeps the legacy behaviour: [`WorkspaceShared::session_event_writer`] hands
-/// back [`EventWriter::noop()`](xai_file_utils::events::EventWriter::noop)
+/// back [`EventWriter::noop()`](agent_tui_file_utils::events::EventWriter::noop)
 /// and no `events.jsonl` is ever opened.
 fn events_enabled() -> bool {
     std::env::var("GROK_WORKSPACE_EVENTS_ENABLED").as_deref() == Ok("true")
@@ -3960,12 +3960,12 @@ fn tool_defs_reemit_gate(
 /// outcome to a log line. Shared by `emit_workspace_tool_definitions` (which
 /// spawns it) and the unit tests (which await it).
 async fn enqueue_workspace_tool_definitions(
-    upload_queue: &xai_file_utils::queue::UploadQueue,
+    upload_queue: &agent_tui_file_utils::queue::UploadQueue,
     session_id: &str,
     object_path: &str,
     bytes: &[u8],
-) -> xai_file_utils::queue::EnqueueOutcome {
-    use xai_file_utils::queue::EnqueueOutcome;
+) -> agent_tui_file_utils::queue::EnqueueOutcome {
+    use agent_tui_file_utils::queue::EnqueueOutcome;
     let outcome = upload_queue
         .enqueue_bytes_blocking(
             bytes,
@@ -3997,8 +3997,8 @@ async fn enqueue_workspace_tool_definitions(
 /// Single source of truth for mapping a turn-hook outcome to the `events.jsonl`
 /// [`TurnOutcomeLabel`]. Kept as one `match` so the two enums cannot drift and
 /// the mapping is never duplicated across call sites.
-fn turn_outcome_label(outcome: xai_tool_protocol::turn_hook::TurnHookOutcome) -> TurnOutcomeLabel {
-    use xai_tool_protocol::turn_hook::TurnHookOutcome;
+fn turn_outcome_label(outcome: agent_tui_tool_protocol::turn_hook::TurnHookOutcome) -> TurnOutcomeLabel {
+    use agent_tui_tool_protocol::turn_hook::TurnHookOutcome;
     match outcome {
         TurnHookOutcome::Completed => TurnOutcomeLabel::Completed,
         TurnHookOutcome::Cancelled => TurnOutcomeLabel::Cancelled,
@@ -4107,7 +4107,7 @@ async fn persist_and_enqueue_tool_state(
     session: Arc<crate::session::WorkspaceSession>,
     session_id: String,
     turn_number: u64,
-    upload_queue: Arc<xai_file_utils::queue::UploadQueue>,
+    upload_queue: Arc<agent_tui_file_utils::queue::UploadQueue>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let toolset = session.toolset();
     let state_path = toolset.save_and_flush_persistence().await.to_path_buf();
@@ -4127,20 +4127,20 @@ async fn persist_and_enqueue_tool_state(
 /// `hub.rs`, but implements `ToolHandle` (for `LocalRegistry`) instead
 /// of `ToolServerHandler` (for `ToolServer`).
 struct SessionToolHandle {
-    tool_id: xai_tool_protocol::ToolId,
-    desc: xai_tool_types::ToolDescription,
+    tool_id: agent_tui_tool_protocol::ToolId,
+    desc: agent_tui_tool_types::ToolDescription,
     workspace: WorkspaceHandle,
     session_id: String,
 }
 impl SessionToolHandle {
     fn new(
         tool_name: String,
-        desc: xai_tool_types::ToolDescription,
+        desc: agent_tui_tool_types::ToolDescription,
         workspace: WorkspaceHandle,
         session_id: String,
-    ) -> Result<Self, xai_tool_protocol::IdError> {
+    ) -> Result<Self, agent_tui_tool_protocol::IdError> {
         Ok(Self {
-            tool_id: xai_tool_protocol::ToolId::new(tool_name)?,
+            tool_id: agent_tui_tool_protocol::ToolId::new(tool_name)?,
             desc,
             workspace,
             session_id,
@@ -4159,22 +4159,22 @@ impl std::fmt::Debug for SessionToolHandle {
     }
 }
 #[async_trait::async_trait]
-impl xai_tool_runtime::ToolDyn for SessionToolHandle {
-    fn id(&self) -> xai_tool_protocol::ToolId {
+impl agent_tui_tool_runtime::ToolDyn for SessionToolHandle {
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
         self.tool_id.clone()
     }
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
         self.desc.clone()
     }
     async fn execute(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         args: serde_json::Value,
-    ) -> xai_tool_runtime::ToolStream<xai_tool_runtime::TypedToolOutput> {
-        use xai_tool_runtime::{ToolError, ToolErrorKind, ToolStreamItem, terminal_only};
+    ) -> agent_tui_tool_runtime::ToolStream<agent_tui_tool_runtime::TypedToolOutput> {
+        use agent_tui_tool_runtime::{ToolError, ToolErrorKind, ToolStreamItem, terminal_only};
         let session = match self.workspace.session(&self.session_id) {
             Some(s) => s,
             None => {
@@ -4221,21 +4221,21 @@ impl WorkspaceHandle {
     pub fn create_local_harness(
         &self,
         session_id: &str,
-    ) -> WorkspaceResult<xai_computer_hub_sdk::ToolHarness> {
+    ) -> WorkspaceResult<agent_tui_computer_hub_sdk::ToolHarness> {
         let session = self
             .session(session_id)
             .ok_or_else(|| WorkspaceError::SessionNotFound(session_id.to_string()))?;
         let toolset = session.toolset();
-        let registry = xai_computer_hub_sdk::LocalRegistry::new();
+        let registry = agent_tui_computer_hub_sdk::LocalRegistry::new();
         for def in toolset.tool_definitions() {
             let tool_name = def.function.name.clone();
-            let desc = xai_tool_types::ToolDescription::new(
+            let desc = agent_tui_tool_types::ToolDescription::new(
                 tool_name.clone(),
                 def.function.description.clone().unwrap_or_default(),
             );
             match SessionToolHandle::new(tool_name, desc, self.clone(), session_id.to_string()) {
                 Ok(tool) => {
-                    registry.register_dyn(Arc::new(tool) as Arc<dyn xai_tool_runtime::ToolDyn>);
+                    registry.register_dyn(Arc::new(tool) as Arc<dyn agent_tui_tool_runtime::ToolDyn>);
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -4245,12 +4245,12 @@ impl WorkspaceHandle {
                 }
             }
         }
-        let session_id = xai_tool_protocol::SessionId::new(session_id.to_string())
+        let session_id = agent_tui_tool_protocol::SessionId::new(session_id.to_string())
             .map_err(|e| WorkspaceError::HubError(format!("invalid session id: {e}")))?;
-        Ok(xai_computer_hub_sdk::ToolHarness::local_only_with(
+        Ok(agent_tui_computer_hub_sdk::ToolHarness::local_only_with(
             registry,
             session_id,
-            xai_tool_runtime::TypedExtensions::default(),
+            agent_tui_tool_runtime::TypedExtensions::default(),
         ))
     }
 }
@@ -4407,7 +4407,7 @@ pub(crate) mod tests {
             skills_config: Default::default(),
             plugin_discovery_config: Default::default(),
             hub_config: None,
-            auth_provider: Some(Arc::new(xai_computer_hub_sdk::AuthCredential::bearer(
+            auth_provider: Some(Arc::new(agent_tui_computer_hub_sdk::AuthCredential::bearer(
                 "test-token",
             ))),
             server_metadata: None,
@@ -4448,23 +4448,23 @@ pub(crate) mod tests {
             "bash cco stub"
         }
     }
-    impl xai_tool_runtime::Tool for BashCcoStub {
+    impl agent_tui_tool_runtime::Tool for BashCcoStub {
         type Args = serde_json::Value;
         type Output = agent_tui_tools::types::output::ToolOutput;
-        fn id(&self) -> xai_tool_protocol::ToolId {
-            xai_tool_protocol::ToolId::new(BASH_CCO_STUB_NAME).expect("valid tool id")
+        fn id(&self) -> agent_tui_tool_protocol::ToolId {
+            agent_tui_tool_protocol::ToolId::new(BASH_CCO_STUB_NAME).expect("valid tool id")
         }
         fn description(
             &self,
-            _ctx: &::xai_tool_runtime::ListToolsContext,
-        ) -> xai_tool_types::ToolDescription {
-            xai_tool_types::ToolDescription::new(BASH_CCO_STUB_NAME, "bash cco stub")
+            _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+        ) -> agent_tui_tool_types::ToolDescription {
+            agent_tui_tool_types::ToolDescription::new(BASH_CCO_STUB_NAME, "bash cco stub")
         }
         async fn run(
             &self,
-            _ctx: xai_tool_runtime::ToolCallContext,
+            _ctx: agent_tui_tool_runtime::ToolCallContext,
             _input: serde_json::Value,
-        ) -> Result<agent_tui_tools::types::output::ToolOutput, xai_tool_runtime::ToolError>
+        ) -> Result<agent_tui_tools::types::output::ToolOutput, agent_tui_tool_runtime::ToolError>
         {
             let output = BASH_CCO_STUB_STDOUT.as_bytes();
             Ok(agent_tui_tools::types::output::ToolOutput::Bash(
@@ -4500,8 +4500,8 @@ pub(crate) mod tests {
             )
             .expect("register bash_cco_stub");
     }
-    pub(crate) fn assert_bash_cco_terminal(typed: &xai_tool_runtime::TypedToolOutput) {
-        use xai_tool_runtime::ToolOutput as _;
+    pub(crate) fn assert_bash_cco_terminal(typed: &agent_tui_tool_runtime::TypedToolOutput) {
+        use agent_tui_tool_runtime::ToolOutput as _;
         let resp = typed
             .chat_completion_output()
             .expect("bash chat_completion_output must be preserved");
@@ -4516,11 +4516,11 @@ pub(crate) mod tests {
     }
     pub(crate) async fn drain_terminal_ok(
         mut stream: impl futures::Stream<
-            Item = xai_tool_runtime::ToolStreamItem<xai_tool_runtime::TypedToolOutput>,
+            Item = agent_tui_tool_runtime::ToolStreamItem<agent_tui_tool_runtime::TypedToolOutput>,
         > + Unpin,
-    ) -> xai_tool_runtime::TypedToolOutput {
+    ) -> agent_tui_tool_runtime::TypedToolOutput {
         use futures::StreamExt;
-        use xai_tool_runtime::ToolStreamItem;
+        use agent_tui_tool_runtime::ToolStreamItem;
         while let Some(item) = stream.next().await {
             match item {
                 ToolStreamItem::Terminal(Ok(t)) => return t,
@@ -4534,11 +4534,11 @@ pub(crate) mod tests {
     }
     #[tokio::test]
     async fn local_harness_preserves_bash_chat_completion_output() {
-        use xai_tool_runtime::ToolCallContext;
+        use agent_tui_tool_runtime::ToolCallContext;
         let handle = make_handle();
         register_bash_cco_stub(&handle);
         let harness = handle.create_local_harness("main").expect("local harness");
-        let tool_id = xai_tool_protocol::ToolId::new(BASH_CCO_STUB_NAME).expect("valid tool id");
+        let tool_id = agent_tui_tool_protocol::ToolId::new(BASH_CCO_STUB_NAME).expect("valid tool id");
         let stream = harness
             .call(tool_id, serde_json::json!({}), ToolCallContext::default())
             .await;
@@ -4672,7 +4672,7 @@ pub(crate) mod tests {
             .expect("main session exists")
             .toolset();
         let mut catalog = build_session_routed_handlers(&catalog_toolset, &handle);
-        let rpc_handler: Arc<dyn xai_computer_hub_sdk::ToolServerHandler> =
+        let rpc_handler: Arc<dyn agent_tui_computer_hub_sdk::ToolServerHandler> =
             Arc::new(crate::hub_server::WorkspaceRpcHandler::new(handle.clone()));
         let rpc_tool_id = rpc_handler.tool_id();
         catalog.push(rpc_handler);
@@ -4907,7 +4907,7 @@ pub(crate) mod tests {
     /// call completes, a later rebind applies the correction.
     #[tokio::test]
     async fn rebind_explicit_to_explicit_with_in_flight_call_defers_then_corrects() {
-        use xai_file_utils::events::ToolOutcome;
+        use agent_tui_file_utils::events::ToolOutcome;
         let rejected_before = swap_rejected_count("in_flight", "owner_rebind");
         let handle = make_handle();
         let cfg_a = explicit_cfg("read_a");
@@ -4956,7 +4956,7 @@ pub(crate) mod tests {
     /// without the marker, defer in-flight, rebuild + clear once idle.
     #[tokio::test]
     async fn rebind_identical_reapply_repairs_stale_resolve() {
-        use xai_file_utils::events::ToolOutcome;
+        use agent_tui_file_utils::events::ToolOutcome;
         let handle = make_handle();
         let cfg = explicit_cfg("renamed_read");
         let fingerprint = serde_json::to_value(&cfg).ok();
@@ -5782,7 +5782,7 @@ pub(crate) mod tests {
             .await
             .expect("get_task_output must answer, not error");
         let agent_tui_tools::types::output::ToolOutput::TaskOutput(
-            xai_tool_types::TaskOutputOutput::TaskNotFound(msg),
+            agent_tui_tool_types::TaskOutputOutput::TaskNotFound(msg),
         ) = &result.output
         else {
             panic!("expected TaskNotFound, got: {:?}", result.output);
@@ -5962,8 +5962,8 @@ pub(crate) mod tests {
     /// with truthful field content.
     #[tokio::test]
     async fn events_jsonl_captures_turn_tool_toggle_and_mcp_variants() {
-        use xai_file_utils::events::ToolOutcome;
-        use xai_tool_protocol::turn_hook::{AfterTurnPayload, BeforeTurnPayload, TurnHookOutcome};
+        use agent_tui_file_utils::events::ToolOutcome;
+        use agent_tui_tool_protocol::turn_hook::{AfterTurnPayload, BeforeTurnPayload, TurnHookOutcome};
         let (handle, home) = make_handle_with_events();
         let sid = "sess-int";
         handle
@@ -5985,7 +5985,7 @@ pub(crate) mod tests {
         handle.on_yolo_toggled(sid, true);
         handle.on_mcp_server_toggled(sid, "linear", false);
         handle.shared().session_event_writer(sid).emit(
-            xai_file_utils::events::Event::McpToolCallStarted {
+            agent_tui_file_utils::events::Event::McpToolCallStarted {
                 server_name: "linear".into(),
                 tool_name: "list_issues".into(),
                 call_id: "mcp-1".into(),
@@ -6053,7 +6053,7 @@ pub(crate) mod tests {
     /// Both before-turn hook delivery styles sync YOLO state into the session.
     #[tokio::test]
     async fn before_turn_hooks_sync_session_yolo_mode() {
-        use xai_tool_protocol::turn_hook::{BeforeTurnPayload, TurnHookRequest};
+        use agent_tui_tool_protocol::turn_hook::{BeforeTurnPayload, TurnHookRequest};
         let handle = make_handle();
         let session = handle.session("main").expect("main session");
         assert!(!session.yolo_mode(), "fail-closed default");
@@ -6082,7 +6082,7 @@ pub(crate) mod tests {
             .await;
         assert_eq!(
             reply,
-            xai_tool_protocol::turn_hook::HookReply::default(),
+            agent_tui_tool_protocol::turn_hook::HookReply::default(),
             "reply stays a behavior-neutral no-op"
         );
         assert!(
@@ -6104,7 +6104,7 @@ pub(crate) mod tests {
     /// YOLO transitions emit `yolo_toggled` in events.jsonl; repeats don't.
     #[tokio::test]
     async fn before_turn_yolo_transition_emits_yolo_toggled_event() {
-        use xai_tool_protocol::turn_hook::BeforeTurnPayload;
+        use agent_tui_tool_protocol::turn_hook::BeforeTurnPayload;
         let (handle, home) = make_handle_with_events();
         let sid = "sess-yolo";
         let _session = handle
@@ -6155,8 +6155,8 @@ pub(crate) mod tests {
     /// no session writers cached, no `sessions/` dir created.
     #[tokio::test]
     async fn events_disabled_keeps_noop_and_writes_nothing() {
-        use xai_file_utils::events::ToolOutcome;
-        use xai_tool_protocol::turn_hook::{AfterTurnPayload, BeforeTurnPayload, TurnHookOutcome};
+        use agent_tui_file_utils::events::ToolOutcome;
+        use agent_tui_tool_protocol::turn_hook::{AfterTurnPayload, BeforeTurnPayload, TurnHookOutcome};
         let handle = make_handle();
         assert!(
             !handle.shared().events_enabled,
@@ -6211,7 +6211,7 @@ pub(crate) mod tests {
     /// already written to disk.
     #[tokio::test]
     async fn session_end_evicts_event_writer_without_data_loss() {
-        use xai_tool_protocol::turn_hook::BeforeTurnPayload;
+        use agent_tui_tool_protocol::turn_hook::BeforeTurnPayload;
         let (handle, home) = make_handle_with_events();
         let sid = "sess-evict";
         handle
@@ -6343,8 +6343,8 @@ pub(crate) mod tests {
     /// `on_after_turn` must be exhaustive and stable.
     #[test]
     fn turn_outcome_label_maps_every_variant() {
-        use xai_file_utils::events::TurnOutcomeLabel;
-        use xai_tool_protocol::turn_hook::TurnHookOutcome;
+        use agent_tui_file_utils::events::TurnOutcomeLabel;
+        use agent_tui_tool_protocol::turn_hook::TurnHookOutcome;
         assert!(matches!(
             turn_outcome_label(TurnHookOutcome::Completed),
             TurnOutcomeLabel::Completed
@@ -6373,12 +6373,12 @@ pub(crate) mod tests {
     /// Resolver pointing at a never-listening port; tests assert only on the
     /// synchronous enqueue bookkeeping, never on upload completion.
     struct UnreachableSource;
-    impl xai_file_utils::queue::TraceExportSource for UnreachableSource {
-        fn resolve(&self) -> xai_file_utils::TraceExportConfig {
-            xai_file_utils::TraceExportConfig {
+    impl agent_tui_file_utils::queue::TraceExportSource for UnreachableSource {
+        fn resolve(&self) -> agent_tui_file_utils::TraceExportConfig {
+            agent_tui_file_utils::TraceExportConfig {
                 bucket_url: None,
                 service_account_key: None,
-                upload_method: xai_file_utils::UploadMethod::Proxy {
+                upload_method: agent_tui_file_utils::UploadMethod::Proxy {
                     proxy_base_url: "http://127.0.0.1:1/v1".to_string(),
                     user_token: String::new(),
                     deployment_key: None,
@@ -6393,12 +6393,12 @@ pub(crate) mod tests {
     }
     /// Upload queue whose worker never deletes an enqueued item mid-test
     /// (1h backoff after the first fast failure).
-    fn spawn_test_queue(home: &std::path::Path) -> Arc<xai_file_utils::queue::UploadQueue> {
-        let policy = xai_file_utils::queue::UploadRetryPolicy {
+    fn spawn_test_queue(home: &std::path::Path) -> Arc<agent_tui_file_utils::queue::UploadQueue> {
+        let policy = agent_tui_file_utils::queue::UploadRetryPolicy {
             initial_delay: std::time::Duration::from_secs(3600),
             ..Default::default()
         };
-        Arc::new(xai_file_utils::queue::UploadQueue::spawn(
+        Arc::new(agent_tui_file_utils::queue::UploadQueue::spawn(
             home,
             Arc::new(UnreachableSource),
             policy,
@@ -6572,21 +6572,21 @@ pub(crate) mod tests {
             confine_fs_to_workspace_root: false,
         };
         let home = tempfile::tempdir().expect("workspace home tempdir");
-        let auth: xai_computer_hub_sdk::SharedAuthProvider = Arc::new(
-            xai_computer_hub_sdk::auth::AuthCredential::bearer("test-token"),
+        let auth: agent_tui_computer_hub_sdk::SharedAuthProvider = Arc::new(
+            agent_tui_computer_hub_sdk::auth::AuthCredential::bearer("test-token"),
         );
         let proxy = Arc::new(crate::upload::ProxyStorageConfig::new(
             auth,
             "http://127.0.0.1:1/v1".to_string(),
             identity.clone(),
         ));
-        let source: Arc<dyn xai_file_utils::queue::TraceExportSource> =
+        let source: Arc<dyn agent_tui_file_utils::queue::TraceExportSource> =
             Arc::new(crate::upload::WorkspaceTraceExportSource::new(proxy));
-        let policy = xai_file_utils::queue::UploadRetryPolicy {
+        let policy = agent_tui_file_utils::queue::UploadRetryPolicy {
             max_attempts: 1,
             ..Default::default()
         };
-        let queue = Arc::new(xai_file_utils::queue::UploadQueue::spawn(
+        let queue = Arc::new(agent_tui_file_utils::queue::UploadQueue::spawn(
             home.path(),
             source,
             policy,
@@ -6650,7 +6650,7 @@ pub(crate) mod tests {
         assert!(
             matches!(
                 outcome,
-                Some(xai_file_utils::queue::EnqueueOutcome::Enqueued)
+                Some(agent_tui_file_utils::queue::EnqueueOutcome::Enqueued)
             ),
             "expected Enqueued, got {outcome:?}"
         );
@@ -7493,11 +7493,11 @@ pub(crate) mod tests {
     #[test]
     fn workspace_shared_auth_provider_uses_workspace_config() {
         let temp = tempfile::tempdir().unwrap();
-        let service_auth: xai_computer_hub_sdk::SharedAuthProvider = Arc::new(
-            xai_computer_hub_sdk::auth::AuthCredential::bearer("xai-service-token"),
+        let service_auth: agent_tui_computer_hub_sdk::SharedAuthProvider = Arc::new(
+            agent_tui_computer_hub_sdk::auth::AuthCredential::bearer("xai-service-token"),
         );
-        let hub_auth: xai_computer_hub_sdk::SharedAuthProvider = Arc::new(
-            xai_computer_hub_sdk::auth::AuthCredential::bearer("hub-token"),
+        let hub_auth: agent_tui_computer_hub_sdk::SharedAuthProvider = Arc::new(
+            agent_tui_computer_hub_sdk::auth::AuthCredential::bearer("hub-token"),
         );
         let hub_cfg = crate::hub::HubConfig {
             url: url::Url::parse("ws://127.0.0.1:9/ws").unwrap(),
@@ -7910,10 +7910,10 @@ pub(crate) mod tests {
             .create_session_with_tracker_and_viewer_ctx(
                 "main",
                 handle.root_cwd().unwrap(),
-                xai_hunk_tracker::HunkTrackerHandle::noop(),
+                agent_tui_hunk_tracker::HunkTrackerHandle::noop(),
                 None,
                 CapabilityMode::All,
-                Some(xai_tool_runtime::WorkspaceViewerContext {
+                Some(agent_tui_tool_runtime::WorkspaceViewerContext {
                     stream_tool_progress: true,
                 }),
                 false,
@@ -7939,16 +7939,16 @@ pub(crate) mod tests {
     /// handlers + the workspace RPC handler.
     fn bind_resolver_fixture(
         handle: &WorkspaceHandle,
-    ) -> xai_computer_hub_sdk::SessionHandlerResolver {
+    ) -> agent_tui_computer_hub_sdk::SessionHandlerResolver {
         let catalog_toolset = handle.session("main").expect("main session").toolset();
         let mut catalog = build_session_routed_handlers(&catalog_toolset, handle);
-        let rpc_handler: Arc<dyn xai_computer_hub_sdk::ToolServerHandler> =
+        let rpc_handler: Arc<dyn agent_tui_computer_hub_sdk::ToolServerHandler> =
             Arc::new(crate::hub_server::WorkspaceRpcHandler::new(handle.clone()));
         let rpc_tool_id = rpc_handler.tool_id();
         catalog.push(rpc_handler);
         handle.session_bind_resolver(Arc::new(catalog), rpc_tool_id)
     }
-    fn handler_names(resolved: &xai_computer_hub_sdk::ResolvedSessionHandlers) -> Vec<String> {
+    fn handler_names(resolved: &agent_tui_computer_hub_sdk::ResolvedSessionHandlers) -> Vec<String> {
         resolved
             .handlers
             .iter()
@@ -7962,7 +7962,7 @@ pub(crate) mod tests {
         let handle = make_strict_handle();
         let resolver = bind_resolver_fixture(&handle);
         let resolved = resolver(
-            xai_tool_protocol::SessionId::new("bind-e2e-strict").unwrap(),
+            agent_tui_tool_protocol::SessionId::new("bind-e2e-strict").unwrap(),
             Some(serde_json::json!(
                 { "metadata" : { "preset" : "grok-computer", "capability_mode" :
                 "all" }, }
@@ -7990,7 +7990,7 @@ pub(crate) mod tests {
         let handle = make_strict_handle();
         let resolver = bind_resolver_fixture(&handle);
         let resolved = resolver(
-            xai_tool_protocol::SessionId::new("bind-e2e-rpc-only").unwrap(),
+            agent_tui_tool_protocol::SessionId::new("bind-e2e-rpc-only").unwrap(),
             Some(serde_json::json!(
                 { "metadata" : { "capability_mode" : "read_write", "rpc_only" :
                 true, "system_notifications" : true, }, }
@@ -8012,7 +8012,7 @@ pub(crate) mod tests {
         let handle = make_strict_handle();
         let resolver = bind_resolver_fixture(&handle);
         let resolved = resolver(
-            xai_tool_protocol::SessionId::new("bind-e2e-tools").unwrap(),
+            agent_tui_tool_protocol::SessionId::new("bind-e2e-tools").unwrap(),
             Some(serde_json::json!(
                 { "metadata" : { "tools" : [{ "id" : "GrokBuild:read_file" }] },
                 }
@@ -8035,7 +8035,7 @@ pub(crate) mod tests {
         let handle = make_handle();
         let resolver = bind_resolver_fixture(&handle);
         let resolved = resolver(
-            xai_tool_protocol::SessionId::new("bind-e2e-lax").unwrap(),
+            agent_tui_tool_protocol::SessionId::new("bind-e2e-lax").unwrap(),
             None,
         )
         .await
@@ -8054,7 +8054,7 @@ pub(crate) mod tests {
     async fn rejected_rebind_config_keeps_resolve_error_end_to_end() {
         let handle = make_strict_handle();
         let resolver = bind_resolver_fixture(&handle);
-        let sid = xai_tool_protocol::SessionId::new("bind-e2e-rejected").unwrap();
+        let sid = agent_tui_tool_protocol::SessionId::new("bind-e2e-rejected").unwrap();
         let first = resolver(
             sid.clone(),
             Some(serde_json::json!(
@@ -8089,7 +8089,7 @@ pub(crate) mod tests {
     async fn explicit_empty_toolset_rebind_never_swaps_session_tools() {
         let handle = make_strict_handle();
         let resolver = bind_resolver_fixture(&handle);
-        let sid = xai_tool_protocol::SessionId::new("bind-e2e-rpc-only").unwrap();
+        let sid = agent_tui_tool_protocol::SessionId::new("bind-e2e-rpc-only").unwrap();
         let first = resolver(
             sid.clone(),
             Some(serde_json::json!(
@@ -8121,7 +8121,7 @@ pub(crate) mod tests {
     async fn strict_rebind_with_corrected_toolset_heals_end_to_end() {
         let handle = make_strict_handle();
         let resolver = bind_resolver_fixture(&handle);
-        let sid = xai_tool_protocol::SessionId::new("bind-e2e-heal").unwrap();
+        let sid = agent_tui_tool_protocol::SessionId::new("bind-e2e-heal").unwrap();
         let first = resolver(
             sid.clone(),
             Some(serde_json::json!({ "metadata" : { "preset" : "grok-computer" } })),
@@ -8173,7 +8173,7 @@ pub(crate) mod tests {
     async fn owner_toolset_survives_concurrent_consumer_shaped_rebinds() {
         let handle = make_strict_handle();
         let resolver = bind_resolver_fixture(&handle);
-        let sid = xai_tool_protocol::SessionId::new("bind-e2e-consumer-storm").unwrap();
+        let sid = agent_tui_tool_protocol::SessionId::new("bind-e2e-consumer-storm").unwrap();
         let owner = resolver(sid.clone(), Some(owner_full_bind_metadata()))
             .await
             .expect("owner bind");
@@ -8236,7 +8236,7 @@ pub(crate) mod tests {
     async fn restored_server_first_bind_ordering_decides_capability_and_toolset() {
         let handle = make_strict_handle();
         let resolver = bind_resolver_fixture(&handle);
-        let sid = xai_tool_protocol::SessionId::new("bind-e2e-restore-read-first").unwrap();
+        let sid = agent_tui_tool_protocol::SessionId::new("bind-e2e-restore-read-first").unwrap();
         let read_first = resolver(
             sid.clone(),
             Some(serde_json::json!(
@@ -8273,7 +8273,7 @@ pub(crate) mod tests {
         );
         let handle = make_strict_handle();
         let resolver = bind_resolver_fixture(&handle);
-        let sid = xai_tool_protocol::SessionId::new("bind-e2e-restore-write-first").unwrap();
+        let sid = agent_tui_tool_protocol::SessionId::new("bind-e2e-restore-write-first").unwrap();
         resolver(
             sid.clone(),
             Some(serde_json::json!(
@@ -8297,7 +8297,7 @@ pub(crate) mod tests {
         );
         let handle = make_strict_handle();
         let resolver = bind_resolver_fixture(&handle);
-        let sid = xai_tool_protocol::SessionId::new("bind-e2e-restore-owner-first").unwrap();
+        let sid = agent_tui_tool_protocol::SessionId::new("bind-e2e-restore-owner-first").unwrap();
         let owner = resolver(sid, Some(owner_full_bind_metadata()))
             .await
             .expect("owner bind resolves");
@@ -8330,7 +8330,7 @@ pub(crate) mod tests {
         let orphaned_before = orphaned_swap_count();
         let handle = make_handle();
         let resolver = bind_resolver_fixture(&handle);
-        let sid = xai_tool_protocol::SessionId::new("bind-e2e-bg").unwrap();
+        let sid = agent_tui_tool_protocol::SessionId::new("bind-e2e-bg").unwrap();
         let bg_metadata = serde_json::json!(
             { "metadata" : { "tools" : [{ "id" : "GrokBuild:read_file" }, { "id" :
             "GrokBuild:run_terminal_cmd" }, { "id" : "GrokBuild:get_task_output" }, {
@@ -8420,10 +8420,10 @@ pub(crate) mod tests {
             .create_session_with_tracker_and_viewer_ctx(
                 "main",
                 handle.root_cwd().unwrap(),
-                xai_hunk_tracker::HunkTrackerHandle::noop(),
+                agent_tui_hunk_tracker::HunkTrackerHandle::noop(),
                 None,
                 CapabilityMode::All,
-                Some(xai_tool_runtime::WorkspaceViewerContext {
+                Some(agent_tui_tool_runtime::WorkspaceViewerContext {
                     stream_tool_progress: true,
                 }),
                 false,
@@ -8435,10 +8435,10 @@ pub(crate) mod tests {
             .create_session_with_tracker_and_viewer_ctx(
                 "main",
                 handle.root_cwd().unwrap(),
-                xai_hunk_tracker::HunkTrackerHandle::noop(),
+                agent_tui_hunk_tracker::HunkTrackerHandle::noop(),
                 None,
                 CapabilityMode::All,
-                Some(xai_tool_runtime::WorkspaceViewerContext {
+                Some(agent_tui_tool_runtime::WorkspaceViewerContext {
                     stream_tool_progress: false,
                 }),
                 false,
@@ -8615,7 +8615,7 @@ pub(crate) mod tests {
     /// `inflight_enqueues` and the ack machinery has nothing to await.
     #[tokio::test]
     async fn no_upload_queue_registers_no_inflight_enqueue() {
-        use xai_tool_protocol::turn_hook::BeforeTurnPayload;
+        use agent_tui_tool_protocol::turn_hook::BeforeTurnPayload;
         let handle = make_handle();
         handle
             .on_before_turn(
@@ -8641,7 +8641,7 @@ pub(crate) mod tests {
     /// entry is evicted by the turn-end path.
     #[tokio::test]
     async fn compute_turn_injections_after_returns_skipped_ack_without_queue() {
-        use xai_tool_protocol::turn_hook::{AfterTurnPayload, TurnHookOutcome, TurnHookRequest};
+        use agent_tui_tool_protocol::turn_hook::{AfterTurnPayload, TurnHookOutcome, TurnHookRequest};
         let handle = make_handle();
         handle.shared().inflight_enqueues.insert(
             ("main".to_owned(), 3),
@@ -8703,7 +8703,7 @@ pub(crate) mod tests {
     /// channel is the only turn signal the server-side sampler sends.
     #[tokio::test]
     async fn compute_turn_injections_before_runs_turn_start_and_replies_noop() {
-        use xai_tool_protocol::turn_hook::{BeforeTurnPayload, HookReply, TurnHookRequest};
+        use agent_tui_tool_protocol::turn_hook::{BeforeTurnPayload, HookReply, TurnHookRequest};
         let handle = make_handle();
         let reply = handle
             .compute_turn_injections(
@@ -8729,7 +8729,7 @@ pub(crate) mod tests {
     /// and the context object passes through verbatim.
     #[tokio::test]
     async fn after_turn_decodes_cancellation_fields_into_events_jsonl() {
-        use xai_tool_protocol::turn_hook::{AfterTurnPayload, BeforeTurnPayload, TurnHookOutcome};
+        use agent_tui_tool_protocol::turn_hook::{AfterTurnPayload, BeforeTurnPayload, TurnHookOutcome};
         let (handle, home) = make_handle_with_events();
         let sid = "sess-cancel";
         handle
@@ -9018,10 +9018,10 @@ pub(crate) mod tests {
         upload_queue_enabled: bool,
     ) -> (
         WorkspaceHandle,
-        Arc<xai_file_utils::queue::UploadQueue>,
+        Arc<agent_tui_file_utils::queue::UploadQueue>,
         tempfile::TempDir,
     ) {
-        use xai_computer_hub_sdk::auth::{AuthCredential, AuthProvider};
+        use agent_tui_computer_hub_sdk::auth::{AuthCredential, AuthProvider};
         let factory = Arc::new(TestSessionContextFactory::new());
         let cwd = factory.temp.path().to_path_buf();
         let config = WorkspaceConfig {
@@ -9050,12 +9050,12 @@ pub(crate) mod tests {
             "https://proxy.example/v1".to_string(),
             crate::upload::environment::WorkspaceIdentity::default(),
         ));
-        let source: Arc<dyn xai_file_utils::queue::TraceExportSource> =
+        let source: Arc<dyn agent_tui_file_utils::queue::TraceExportSource> =
             Arc::new(crate::upload::WorkspaceTraceExportSource::new(proxy));
-        let queue = Arc::new(xai_file_utils::queue::UploadQueue::spawn(
+        let queue = Arc::new(agent_tui_file_utils::queue::UploadQueue::spawn(
             home.path(),
             source,
-            xai_file_utils::queue::UploadRetryPolicy::default(),
+            agent_tui_file_utils::queue::UploadRetryPolicy::default(),
         ));
         let handle = WorkspaceHandle::build(
             config,
@@ -9078,12 +9078,12 @@ pub(crate) mod tests {
         tool_defs_enabled: bool,
     ) -> (
         WorkspaceHandle,
-        Arc<xai_file_utils::queue::UploadQueue>,
+        Arc<agent_tui_file_utils::queue::UploadQueue>,
         tempfile::TempDir,
     ) {
         make_handle_with_queue_routing(tool_defs_enabled, false)
     }
-    async fn wait_enqueued(queue: &xai_file_utils::queue::UploadQueue, want: u64) {
+    async fn wait_enqueued(queue: &agent_tui_file_utils::queue::UploadQueue, want: u64) {
         use std::sync::atomic::Ordering;
         for _ in 0..200 {
             if queue.stats().enqueued.load(Ordering::Relaxed) >= want {
@@ -9132,7 +9132,7 @@ pub(crate) mod tests {
             .expect("payload for an existing session");
         assert_eq!(path, "main/workspace_tool_definitions.json");
         let outcome = enqueue_workspace_tool_definitions(&queue, "main", &path, &bytes).await;
-        assert_eq!(outcome, xai_file_utils::queue::EnqueueOutcome::Enqueued);
+        assert_eq!(outcome, agent_tui_file_utils::queue::EnqueueOutcome::Enqueued);
         assert_eq!(
             queue
                 .stats()
@@ -9245,7 +9245,7 @@ pub(crate) mod tests {
         let snap = tracker.snapshot();
         assert_eq!(
             snap.status,
-            xai_tool_protocol::ToolServerLifecycleStatus::Draining
+            agent_tui_tool_protocol::ToolServerLifecycleStatus::Draining
         );
         assert!(
             snap.drain_started_ms.is_some(),
@@ -9437,7 +9437,7 @@ pub(crate) mod tests {
         .expect("queue-backed handle construction");
         let outcome =
             enqueue_workspace_tool_definitions(&queue, "main", "main/pre.json", b"{}").await;
-        assert_eq!(outcome, xai_file_utils::queue::EnqueueOutcome::Enqueued);
+        assert_eq!(outcome, agent_tui_file_utils::queue::EnqueueOutcome::Enqueued);
         let _join = handle.spawn_producer(std::future::pending::<()>());
         let before = DRAIN_COMPLETED_TOTAL
             .with_label_values(&[DrainOutcome::ProducersTimeout.as_str()])

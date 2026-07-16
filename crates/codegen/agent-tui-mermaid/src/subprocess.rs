@@ -9,7 +9,7 @@
 //! parent kills and reaps it.
 //!
 //! The caller builds the [`Command`] (stdio, env, and the sanctioned
-//! TTY/console detach via `xai_tty_utils::detach_std_command`); this module only
+//! TTY/console detach via `agent_tui_tty_utils::detach_std_command`); this module only
 //! owns the spawn → feed-stdin → wait → reap lifecycle so neither call site
 //! re-implements process-group teardown.
 
@@ -161,9 +161,9 @@ fn reap(child: &mut Child) {
 /// SIGKILL the child's process group so grandchildren are reaped, not just the
 /// direct child.
 ///
-/// `xai_tty_utils::detach_std_command` runs `setsid` (EPERM fallback
+/// `agent_tui_tty_utils::detach_std_command` runs `setsid` (EPERM fallback
 /// `setpgid(0,0)`), so the child is its own group leader and its pgid equals its
-/// pid. We send the signal directly because `xai_tty_utils::ProcessGroup` only
+/// pid. We send the signal directly because `agent_tui_tty_utils::ProcessGroup` only
 /// wraps tokio children.
 #[cfg(unix)]
 fn reap_process_group(child: &Child) {
@@ -190,7 +190,7 @@ mod tests {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        xai_tty_utils::detach_std_command(&mut cmd);
+        agent_tui_tty_utils::detach_std_command(&mut cmd);
         cmd
     }
 
@@ -244,7 +244,7 @@ mod tests {
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::from(sink_file))
             .stderr(Stdio::null());
-        xai_tty_utils::detach_std_command(&mut cmd);
+        agent_tui_tty_utils::detach_std_command(&mut cmd);
 
         let start = Instant::now();
         let r = run_with_timeout(cmd, Some(&payload), Duration::from_secs(10));

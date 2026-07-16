@@ -619,7 +619,7 @@ impl CtaPhase {
 #[derive(Default)]
 pub struct PluginCtaState {
     /// Official-source, not-installed candidate plugins for CTA matching.
-    pub candidates: Vec<xai_hooks_plugins_types::MarketplacePluginEntry>,
+    pub candidates: Vec<agent_tui_hooks_plugins_types::MarketplacePluginEntry>,
     /// Whether the official marketplace source was present in the last catalog scan.
     pub official_source_present: bool,
     /// Current CTA phase (recomputed when the prompt debounce expires).

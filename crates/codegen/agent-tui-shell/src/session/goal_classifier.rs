@@ -24,7 +24,7 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use xai_file_utils::events::EventWriter;
+use agent_tui_file_utils::events::EventWriter;
 
 // Constants
 
@@ -441,7 +441,7 @@ pub(crate) async fn capture_git_baseline(workspace_root: &Path) -> Option<String
 /// harness-spawned subagent, shaped like a model-issued `task` spawn.
 ///
 /// The tool_result MUST carry the real task tool's `<subagent_result>` footer
-/// (via [`xai_tool_types::format_resume_footer`]): trace tooling
+/// (via [`agent_tui_tool_types::format_resume_footer`]): trace tooling
 /// discovers subagents by scanning tool_result bodies for that
 /// `subagent_id:` block, so without it the harness subagent never shows in the
 /// session tree. The footer id equals the child session id, so the viewer can
@@ -466,7 +466,7 @@ pub(crate) fn build_subagent_trace_items(
         name: task_tool_name.to_string(),
         arguments: std::sync::Arc::from(arguments),
     }]);
-    let footer = xai_tool_types::format_resume_footer(subagent_id, subagent_type, None);
+    let footer = agent_tui_tool_types::format_resume_footer(subagent_id, subagent_type, None);
     let result = ConversationItem::tool_result(subagent_id, format!("{output}\n\n{footer}"));
     vec![call, result]
 }
@@ -474,12 +474,12 @@ pub(crate) fn build_subagent_trace_items(
 /// Record a harness-spawned subagent into the in-progress harness trace phase
 /// as a synthetic `task` call (see [`build_subagent_trace_items`]). The items
 /// accumulate in a side buffer (never the live model context); the caller seals
-/// the phase via [`xai_chat_state::ChatStateHandle::flush_harness_trace_turn`]
+/// the phase via [`agent_tui_chat_state::ChatStateHandle::flush_harness_trace_turn`]
 /// so it uploads as its own sibling `turn_{N}` artifact. No-op when tracing is
 /// off (`sink` absent) or no prompt was captured. `sink` carries the chat-state
 /// handle and the resolved `task` tool name.
 pub(crate) fn record_subagent_trace(
-    sink: Option<&(xai_chat_state::ChatStateHandle, String)>,
+    sink: Option<&(agent_tui_chat_state::ChatStateHandle, String)>,
     subagent_id: &str,
     subagent_type: &str,
     description: &str,
@@ -516,7 +516,7 @@ pub(crate) struct ChannelSpawner {
     pub(crate) cwd: Option<String>,
     /// Trace-artifact sink + the resolved `task` tool name. `None` disables
     /// trace recording (tests, or sessions without trace capture).
-    pub(crate) trace_sink: Option<(xai_chat_state::ChatStateHandle, String)>,
+    pub(crate) trace_sink: Option<(agent_tui_chat_state::ChatStateHandle, String)>,
     /// Per-skeptic-index resolved model+toolset override, indexed by
     /// `skeptic_idx`. An out-of-range index (or `Default`) inherits the
     /// current model — round-robin expansion + auth/capability fail-open is

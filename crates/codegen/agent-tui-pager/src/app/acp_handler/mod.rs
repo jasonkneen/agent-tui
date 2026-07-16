@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use agent_client_protocol as acp;
-use xai_acp_lib::AcpClientMessage;
+use agent_tui_acp_lib::AcpClientMessage;
 
 use super::actions::Effect;
 use agent_tui_shell::extensions::notification::{
@@ -688,7 +688,7 @@ fn handle_interjection(notif: &acp::ExtNotification, app: &mut AppView) -> bool 
 /// Dispatches on method string. Unknown methods get `method_not_found` error.
 /// The response sender is stashed (for `ask_user_question`) or replied to
 /// immediately (for unknown methods).
-fn handle_ext_method(ext: xai_acp_lib::AcpArgs<acp::ExtRequest>, app: &mut AppView) -> bool {
+fn handle_ext_method(ext: agent_tui_acp_lib::AcpArgs<acp::ExtRequest>, app: &mut AppView) -> bool {
     match ext.request.method.as_ref() {
         "x.ai/ask_user_question" => handle_ask_user_question(ext, app),
         "x.ai/exit_plan_mode" => handle_exit_plan_mode(ext, app),

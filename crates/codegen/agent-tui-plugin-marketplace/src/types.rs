@@ -188,7 +188,7 @@ pub struct MarketplaceEntry {
     /// Structured inventory from the marketplace catalog (`plugin-index.json`).
     /// `None` = no catalog data for this plugin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub components: Option<xai_hooks_plugins_types::PluginComponents>,
+    pub components: Option<agent_tui_hooks_plugins_types::PluginComponents>,
 }
 
 /// Result of a marketplace scan, with catalog telemetry.

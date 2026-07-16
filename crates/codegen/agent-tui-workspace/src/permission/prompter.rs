@@ -7,8 +7,8 @@ use crate::permission::{
     types::{AccessKind, ClientType},
 };
 use agent_client_protocol::{self as acp, Client as _};
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
-use xai_file_utils::events::{Event, EventWriter, PermissionDecision};
+use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_tui_file_utils::events::{Event, EventWriter, PermissionDecision};
 use agent_tui_tools::implementations::grok_build::web_fetch::domain_from_url;
 
 const REJECT_ONCE_LABEL: &str = "No, and tell Grok what to do differently";
@@ -1560,7 +1560,7 @@ mod tests {
     /// the Error→Deny decision mapping.
     #[tokio::test]
     async fn request_emits_permission_requested_and_resolved() {
-        use xai_file_utils::events::EventWriter;
+        use agent_tui_file_utils::events::EventWriter;
 
         let dir = tempfile::tempdir().unwrap();
         let writer = EventWriter::open(dir.path());

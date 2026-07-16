@@ -4,7 +4,7 @@
 //! Pass2 rewrites NOTE₁ + the ~5% tail into the successor-visible NOTE₂.
 //! Sampling lives in [`super::compaction`]; this module has no I/O.
 
-use xai_chat_state::estimate_item_tokens;
+use agent_tui_chat_state::estimate_item_tokens;
 use agent_tui_sampling_types::ConversationItem;
 
 /// Default history fraction covered by pass1; the remainder is the blocking

@@ -35,7 +35,7 @@ pub(super) struct ReplaySendUpdateFixture {
     persistence_rx: mpsc::UnboundedReceiver<PersistenceMsg>,
 }
 pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture {
-    let (gateway_tx, mut gateway_rx) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+    let (gateway_tx, mut gateway_rx) = mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
     let gateway = GatewaySender::new(gateway_tx);
     let sent = Arc::new(tokio::sync::Mutex::new(
         Vec::<acp::SessionNotification>::new(),
@@ -43,7 +43,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
     let sent_for_task = sent.clone();
     tokio::task::spawn_local(async move {
         while let Some(msg) = gateway_rx.recv().await {
-            if let xai_acp_lib::AcpClientMessage::SessionNotification(args) = msg {
+            if let agent_tui_acp_lib::AcpClientMessage::SessionNotification(args) = msg {
                 sent_for_task.lock().await.push(args.request);
                 let _ = args.response_tx.send(Ok(()));
             }
@@ -54,11 +54,11 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
     let fs = Arc::new(MockFs::new(cwd.to_path_buf()));
     let terminal = Arc::new(DummyTerminal {});
     let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
-    let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+    let hunk_tracker_handle = agent_tui_hunk_tracker::HunkTrackerActor::spawn(
         "test-session".to_string(),
         cwd.to_path_buf(),
         hunk_tx,
-        xai_hunk_tracker::TrackingMode::AgentOnly,
+        agent_tui_hunk_tracker::TrackingMode::AgentOnly,
         tokio_util::sync::CancellationToken::new(),
     );
     let tool_context = ToolContext::new(cwd.clone(), None, None, fs, terminal, hunk_tracker_handle);
@@ -91,7 +91,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
         deny_read_globs: Vec::new(),
         mcp_state: Arc::new(TokioMutex::new(McpState::new(vec![]))),
         mcp_strategy: McpInitStrategy::Blocking,
-        chat_state_handle: xai_chat_state::ChatStateHandle::noop(),
+        chat_state_handle: agent_tui_chat_state::ChatStateHandle::noop(),
         current_prompt_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
         pending_interactions: std::sync::Arc::new(std::sync::Mutex::new(
             std::collections::HashMap::new(),
@@ -113,7 +113,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
             count: std::sync::atomic::AtomicU64::new(0),
             auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
             previous_model: std::cell::Cell::new(None),
-            compaction_mode: xai_chat_state::CompactionMode::Transcript,
+            compaction_mode: agent_tui_chat_state::CompactionMode::Transcript,
             verbatim_input: true,
             prefire: crate::session::compaction_config::PrefireState::default(),
             prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -213,7 +213,7 @@ pub(super) async fn make_replay_send_update_fixture() -> ReplaySendUpdateFixture
         user_input_generation: std::sync::atomic::AtomicU64::new(0),
         laziness_debug_log: None,
         deferred_prefix: TaskSlot::new(),
-        extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+        extension_registry: agent_tui_agent_lifecycle::LocalExtensionRegistry::default(),
         last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
         last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
         last_api_request_at: std::sync::atomic::AtomicI64::new(0),
@@ -1217,7 +1217,7 @@ async fn reasoning_only_doomloop_turn_captures_every_generation_as_segments() {
                 panic!("a reasoning_only empty response must be a terminal error, not recoverable");
             };
             let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<SessionCommand>();
-            let (_chat_tx, chat_rx) = mpsc::unbounded_channel::<xai_chat_state::ChatStateEvent>();
+            let (_chat_tx, chat_rx) = mpsc::unbounded_channel::<agent_tui_chat_state::ChatStateEvent>();
             let codebase_indexes = Arc::new(parking_lot::Mutex::new(
                 agent_tui_workspace::file_system::CodebaseIndexManager::new(),
             ));

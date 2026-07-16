@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use serde::Deserialize;
-use xai_hooks_plugins_types::PluginComponents;
+use agent_tui_hooks_plugins_types::PluginComponents;
 
 /// Catalog format version this client understands.
 const SUPPORTED_VERSION: u64 = 1;

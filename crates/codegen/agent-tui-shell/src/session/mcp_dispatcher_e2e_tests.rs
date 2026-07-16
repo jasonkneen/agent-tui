@@ -181,9 +181,9 @@ impl RestartActions for E2eActions {
 /// Discarding gateway: these tests assert on the drop / shutdown /
 /// restart observation points, not on the ACP pushes `flush_window`
 /// emits, so the gateway receiver is dropped.
-fn discard_gateway() -> xai_acp_lib::AcpAgentGatewaySender {
+fn discard_gateway() -> agent_tui_acp_lib::AcpAgentGatewaySender {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    xai_acp_lib::AcpAgentGatewaySender::new(tx)
+    agent_tui_acp_lib::AcpAgentGatewaySender::new(tx)
 }
 
 /// Yield enough times for the dispatcher task + any spawned

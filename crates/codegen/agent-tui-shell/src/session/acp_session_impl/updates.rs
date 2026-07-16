@@ -24,7 +24,7 @@ impl SessionActor {
     /// Apply subagent usage. `Ok` after chat-state acked; `Err` if apply failed.
     pub(super) async fn record_subagent_usage(
         &self,
-        by_model: &[(String, xai_chat_state::UsageTotals)],
+        by_model: &[(String, agent_tui_chat_state::UsageTotals)],
         parent_prompt_id: Option<&str>,
         incomplete: bool,
     ) -> Result<SubagentUsageApply, ()> {
@@ -780,7 +780,7 @@ mod xai_event_id_stamping_tests {
         local
             .run_until(async {
                 let (gateway_tx, _gateway_rx) =
-                    tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                    tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
                 let (persistence_tx, mut prx) =
                     tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -822,7 +822,7 @@ mod xai_event_id_stamping_tests {
         local
             .run_until(async {
                 let (gateway_tx, _gateway_rx) =
-                    tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                    tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
                 let (persistence_tx, mut prx) =
                     tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -867,7 +867,7 @@ mod xai_event_id_stamping_tests {
         local
             .run_until(async {
                 let (gateway_tx, _gateway_rx) =
-                    tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                    tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
                 let (persistence_tx, mut prx) =
                     tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
                 let (actor, mut event_rx) = super::support::create_test_actor_ex(

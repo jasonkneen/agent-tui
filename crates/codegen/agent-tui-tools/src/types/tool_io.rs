@@ -36,10 +36,10 @@ use crate::implementations::search_tool::SearchToolInput;
 use crate::implementations::skills::skill::SkillInput;
 use crate::implementations::use_tool::UseToolInput;
 use serde::{Deserialize, Serialize};
-use xai_tool_types::KillTaskToolInput;
-use xai_tool_types::TaskOutputToolInput;
-use xai_tool_types::TaskToolInput;
-use xai_tool_types::WaitTasksToolInput;
+use agent_tui_tool_types::KillTaskToolInput;
+use agent_tui_tool_types::TaskOutputToolInput;
+use agent_tui_tool_types::TaskToolInput;
+use agent_tui_tool_types::WaitTasksToolInput;
 /// Raw input for an MCP (Model Context Protocol) tool call.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MCPToolInput {

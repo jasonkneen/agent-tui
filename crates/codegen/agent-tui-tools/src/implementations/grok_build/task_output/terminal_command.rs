@@ -3,7 +3,7 @@
 use super::{TaskOutputTool, background_bash_requires_exprs};
 use crate::types::requirements::{Expr, ToolRequirement};
 use crate::types::tool::{ToolKind, ToolNamespace};
-use xai_tool_types::{TaskOutputOutput, TaskOutputToolInput};
+use agent_tui_tool_types::{TaskOutputOutput, TaskOutputToolInput};
 
 fn terminal_command_output_requires_expr() -> Expr<ToolRequirement> {
     Expr::Or(background_bash_requires_exprs())
@@ -40,28 +40,28 @@ Usage notes:
     }
 }
 
-impl xai_tool_runtime::Tool for GetTerminalCommandOutputTool {
+impl agent_tui_tool_runtime::Tool for GetTerminalCommandOutputTool {
     type Args = TaskOutputToolInput;
     type Output = TaskOutputOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("get_terminal_command_output").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("get_terminal_command_output").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "get_terminal_command_output",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: true,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Read),
             ..Default::default()
         }
     }
@@ -73,10 +73,10 @@ impl xai_tool_runtime::Tool for GetTerminalCommandOutputTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: TaskOutputToolInput,
-    ) -> Result<TaskOutputOutput, xai_tool_runtime::ToolError> {
-        xai_tool_runtime::Tool::run(&TaskOutputTool, ctx, input).await
+    ) -> Result<TaskOutputOutput, agent_tui_tool_runtime::ToolError> {
+        agent_tui_tool_runtime::Tool::run(&TaskOutputTool, ctx, input).await
     }
 }
 
@@ -93,7 +93,7 @@ mod tests {
     fn tool_name_and_description_are_subagent_free() {
         let tool = GetTerminalCommandOutputTool;
         assert_eq!(
-            xai_tool_runtime::Tool::id(&tool).as_str(),
+            agent_tui_tool_runtime::Tool::id(&tool).as_str(),
             "get_terminal_command_output"
         );
         let tmpl = ToolMetadata::description_template(&tool);
@@ -114,7 +114,7 @@ mod tests {
     async fn delegates_to_task_output_for_running_task() {
         let snapshot = make_snapshot("tc-1", false, None);
         let resources = resources_with_terminal(Some(snapshot));
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &GetTerminalCommandOutputTool,
             test_ctx(resources.into_shared()),
             TaskOutputToolInput {
@@ -138,7 +138,7 @@ mod tests {
     async fn delegates_to_task_output_for_completed_task() {
         let snapshot = make_snapshot("tc-2", true, Some(0));
         let resources = resources_with_terminal(Some(snapshot));
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &GetTerminalCommandOutputTool,
             test_ctx(resources.into_shared()),
             TaskOutputToolInput {

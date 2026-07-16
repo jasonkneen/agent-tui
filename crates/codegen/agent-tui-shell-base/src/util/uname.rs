@@ -81,7 +81,7 @@ fn windows_version() -> Option<String> {
 
     let mut cmd = Command::new("cmd");
     cmd.args(["/C", "ver"]);
-    xai_tty_utils::detach_std_command(&mut cmd);
+    agent_tui_tty_utils::detach_std_command(&mut cmd);
     let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;

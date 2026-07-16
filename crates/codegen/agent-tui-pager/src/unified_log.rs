@@ -9,7 +9,7 @@ use std::sync::{Mutex, OnceLock};
 
 use agent_client_protocol as acp;
 use tokio::runtime::Handle;
-use xai_acp_lib::AcpAgentTx;
+use agent_tui_acp_lib::AcpAgentTx;
 use agent_tui_telemetry::unified_log::{
     ClientLogEntry, LOG_METHOD, LogLevel, LogNotificationParams, LogSource,
 };
@@ -85,7 +85,7 @@ fn send_entries(entries: Vec<ClientLogEntry>) {
     };
     let tx = tx.clone();
     handle.spawn(async move {
-        let _ = xai_acp_lib::acp_send(notification, &tx).await;
+        let _ = agent_tui_acp_lib::acp_send(notification, &tx).await;
     });
 }
 
@@ -117,7 +117,7 @@ pub async fn flush_blocking() {
     let Some(notification) = build_notification(entries) else {
         return;
     };
-    let _ = xai_acp_lib::acp_send(notification, tx).await;
+    let _ = agent_tui_acp_lib::acp_send(notification, tx).await;
 }
 
 /// Log an info-level entry.

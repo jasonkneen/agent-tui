@@ -290,7 +290,7 @@
                 .cloned(),
         );
         handle(
-            AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+            AcpClientMessage::SessionNotification(agent_tui_acp_lib::AcpArgs {
                 request,
                 response_tx: tx,
             }),

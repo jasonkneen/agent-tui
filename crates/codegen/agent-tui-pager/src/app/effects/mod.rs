@@ -19,7 +19,7 @@ use helpers::*;
 use std::path::{Path, PathBuf};
 use agent_client_protocol as acp;
 use tokio::task::JoinSet;
-use xai_acp_lib::{AcpAgentTx, acp_send};
+use agent_tui_acp_lib::{AcpAgentTx, acp_send};
 use actions::{
     ClipboardPasteTarget, Effect, ProbedAttachment, SubagentKillOutcome,
     SwitchModelError, TaskResult,
@@ -2087,7 +2087,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::HooksListResponse,
+                                agent_tui_hooks_plugins_types::HooksListResponse,
                             >(inner.clone())
                                 .map_err(|_| "couldn't load hooks".to_string())
                         }
@@ -2124,7 +2124,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::PluginsListResponse,
+                                agent_tui_hooks_plugins_types::PluginsListResponse,
                             >(inner.clone())
                                 .map_err(|_| "couldn't load plugins".to_string())
                         }
@@ -2144,7 +2144,7 @@ pub(crate) fn execute(
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
-                    let req_body = xai_hooks_plugins_types::HooksActionRequest {
+                    let req_body = agent_tui_hooks_plugins_types::HooksActionRequest {
                         session_id: session_id.0.to_string(),
                         action,
                     };
@@ -2162,7 +2162,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::ActionOutcome,
+                                agent_tui_hooks_plugins_types::ActionOutcome,
                             >(inner.clone())
                                 .map_err(|_| "couldn't complete hooks action".to_string())
                         }
@@ -2184,7 +2184,7 @@ pub(crate) fn execute(
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
-                    let req_body = xai_hooks_plugins_types::PluginsActionRequest {
+                    let req_body = agent_tui_hooks_plugins_types::PluginsActionRequest {
                         session_id: session_id.0.to_string(),
                         action,
                     };
@@ -2202,7 +2202,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::ActionOutcome,
+                                agent_tui_hooks_plugins_types::ActionOutcome,
                             >(inner.clone())
                                 .map_err(|_| "couldn't complete plugins action".to_string())
                         }
@@ -2241,7 +2241,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::MarketplaceListResponse,
+                                agent_tui_hooks_plugins_types::MarketplaceListResponse,
                             >(inner.clone())
                                 .map_err(|_| "couldn't load marketplace".to_string())
                         }
@@ -2280,7 +2280,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::MarketplaceListResponse,
+                                agent_tui_hooks_plugins_types::MarketplaceListResponse,
                             >(inner.clone())
                                 .map_err(|_| "couldn't load marketplace".to_string())
                         }
@@ -2405,7 +2405,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::MarketplaceListResponse,
+                                agent_tui_hooks_plugins_types::MarketplaceListResponse,
                             >(inner.clone())
                                 .ok()
                                 .map(|r| {
@@ -2444,11 +2444,11 @@ pub(crate) fn execute(
                     }
                     let mut succeeded = Vec::new();
                     for (name, old, new, source_url, rel_path) in outdated {
-                        let action = xai_hooks_plugins_types::MarketplaceAction::Update {
+                        let action = agent_tui_hooks_plugins_types::MarketplaceAction::Update {
                             source_url_or_path: source_url.clone(),
                             plugin_relative_path: rel_path.clone(),
                         };
-                        let req_body = xai_hooks_plugins_types::MarketplaceActionRequest {
+                        let req_body = agent_tui_hooks_plugins_types::MarketplaceActionRequest {
                             session_id: session_id.0.to_string(),
                             action,
                         };
@@ -2466,7 +2466,7 @@ pub(crate) fn execute(
                                     .unwrap_or_default();
                                 let inner = wrapper.get("result").unwrap_or(&wrapper);
                                 serde_json::from_value::<
-                                    xai_hooks_plugins_types::ActionOutcome,
+                                    agent_tui_hooks_plugins_types::ActionOutcome,
                                 >(inner.clone())
                                     .is_ok_and(|outcome| marketplace_outcome_succeeded(
                                         &outcome,
@@ -2501,7 +2501,7 @@ pub(crate) fn execute(
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
-                    let req_body = xai_hooks_plugins_types::MarketplaceActionRequest {
+                    let req_body = agent_tui_hooks_plugins_types::MarketplaceActionRequest {
                         session_id: session_id.0.to_string(),
                         action,
                     };
@@ -2519,7 +2519,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::ActionOutcome,
+                                agent_tui_hooks_plugins_types::ActionOutcome,
                             >(inner.clone())
                                 .map_err(|e| {
                                     tracing::debug!(
@@ -2556,11 +2556,11 @@ pub(crate) fn execute(
                         .next()
                         .unwrap_or(plugin_relative_path.as_str())
                         .to_string();
-                    let action = xai_hooks_plugins_types::MarketplaceAction::Install {
+                    let action = agent_tui_hooks_plugins_types::MarketplaceAction::Install {
                         source_url_or_path,
                         plugin_relative_path,
                     };
-                    let req_body = xai_hooks_plugins_types::MarketplaceActionRequest {
+                    let req_body = agent_tui_hooks_plugins_types::MarketplaceActionRequest {
                         session_id: session_id.0.to_string(),
                         action,
                     };
@@ -2578,7 +2578,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::ActionOutcome,
+                                agent_tui_hooks_plugins_types::ActionOutcome,
                             >(inner.clone())
                                 .map_err(|e| {
                                     tracing::debug!(
@@ -2606,9 +2606,9 @@ pub(crate) fn execute(
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
-                    let req_body = xai_hooks_plugins_types::PluginsActionRequest {
+                    let req_body = agent_tui_hooks_plugins_types::PluginsActionRequest {
                         session_id: session_id.0.to_string(),
-                        action: xai_hooks_plugins_types::PluginsAction::Reload,
+                        action: agent_tui_hooks_plugins_types::PluginsAction::Reload,
                     };
                     let req = acp::ExtRequest::new(
                         "x.ai/plugins/action",
@@ -2624,7 +2624,7 @@ pub(crate) fn execute(
                                 .unwrap_or_default();
                             let inner = wrapper.get("result").unwrap_or(&wrapper);
                             serde_json::from_value::<
-                                xai_hooks_plugins_types::ActionOutcome,
+                                agent_tui_hooks_plugins_types::ActionOutcome,
                             >(inner.clone())
                                 .map_err(|_| "couldn't complete plugins action".to_string())
                         }

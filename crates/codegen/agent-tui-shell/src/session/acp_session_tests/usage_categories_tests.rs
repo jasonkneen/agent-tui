@@ -46,7 +46,7 @@ async fn usage_categories_include_skills_and_mcp_with_counts() {
     local
         .run_until(async {
             let (gateway_tx, _) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
             seed_skills(&actor, &["alpha", "beta"]).await;
@@ -76,7 +76,7 @@ async fn mcp_snapshot_matches_full_mode_injected_reminder() {
     local
         .run_until(async {
             let (gateway_tx, _) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
             actor.mcp_reminder_mode = McpReminderMode::Full;

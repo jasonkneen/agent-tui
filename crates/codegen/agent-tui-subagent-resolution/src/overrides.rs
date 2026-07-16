@@ -7,7 +7,7 @@ use std::path::Path;
 
 use serde::de::DeserializeOwned;
 use agent_tui_tools::implementations::grok_build::task::types::SubagentRuntimeOverrides;
-use xai_tool_types::{SubagentCapabilityMode, SubagentIsolationMode};
+use agent_tui_tool_types::{SubagentCapabilityMode, SubagentIsolationMode};
 
 use crate::config::{SubagentPersona, SubagentRole};
 use crate::types::EffectiveRuntimeConfig;

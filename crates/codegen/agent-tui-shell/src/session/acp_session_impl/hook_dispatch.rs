@@ -6,8 +6,8 @@ use super::*;
 /// Map a turn result to the hub protocol's `TurnHookOutcome`.
 pub(super) fn turn_result_to_hook_outcome(
     result: &Result<TurnOutcome, acp::Error>,
-) -> xai_tool_protocol::turn_hook::TurnHookOutcome {
-    use xai_tool_protocol::turn_hook::TurnHookOutcome;
+) -> agent_tui_tool_protocol::turn_hook::TurnHookOutcome {
+    use agent_tui_tool_protocol::turn_hook::TurnHookOutcome;
     match result {
         Ok(TurnOutcome::Completed { .. }) => TurnHookOutcome::Completed,
         Ok(TurnOutcome::Cancelled { .. }) | Ok(TurnOutcome::MaxTurnsReached { .. }) => {
@@ -38,9 +38,9 @@ pub(super) fn cancellation_category_wire_string(
 /// - `Cancelled` → tool never ran (permission, doom-loop, hook, followup)
 pub(super) fn map_tool_outcome(
     outcome: crate::session::events::ToolOutcome,
-) -> xai_tool_protocol::session_event::ToolCallOutcome {
+) -> agent_tui_tool_protocol::session_event::ToolCallOutcome {
     use crate::session::events::ToolOutcome;
-    use xai_tool_protocol::session_event::ToolCallOutcome;
+    use agent_tui_tool_protocol::session_event::ToolCallOutcome;
     match outcome {
         ToolOutcome::Success => ToolCallOutcome::Success,
         ToolOutcome::Error | ToolOutcome::InvalidTool => ToolCallOutcome::Error,

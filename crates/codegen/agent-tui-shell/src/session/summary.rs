@@ -12,7 +12,7 @@ use crate::session::info::Info;
 use crate::session::persistence::PersistenceMsg;
 use agent_client_protocol as acp;
 use tokio::sync::mpsc;
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 /// Internal state for the summary generation lifecycle.
 enum State {

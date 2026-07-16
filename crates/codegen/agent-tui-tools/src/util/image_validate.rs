@@ -592,7 +592,7 @@ mod tests {
     /// feature is enabled, so `guess_format` returns `ImageFormat::Ico` —
     /// which is intentionally NOT on the inference-side allow-list.
     fn ico_with_png_frame() -> Vec<u8> {
-        xai_test_utils::image::ico_with_png_frame(&png_bytes(8, 8), 8, 8)
+        agent_tui_test_utils::image::ico_with_png_frame(&png_bytes(8, 8), 8, 8)
     }
 
     /// ICO → `WrongFormat` (recognised format, not allow-listed).

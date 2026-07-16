@@ -42,7 +42,7 @@ async fn write_compaction_segment_numbers_and_indexes_resume_safely() {
     let seg = |summary: &str| CompactionSegmentFile {
         items: vec![ConversationItem::user("a"), ConversationItem::user("b")],
         summary: summary.to_string(),
-        detail: xai_chat_state::CompactionDetail::Verbose,
+        detail: agent_tui_chat_state::CompactionDetail::Verbose,
         timestamp: "2026-01-01T00:00:00Z".to_string(),
     };
     let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
@@ -50,7 +50,7 @@ async fn write_compaction_segment_numbers_and_indexes_resume_safely() {
     adapter.write_compaction_segment(&info, &seg("second")).await.unwrap();
     let base = adapter
         .session_dir(&info)
-        .join(xai_chat_state::compaction_transcript::COMPACTION_DIR);
+        .join(agent_tui_chat_state::compaction_transcript::COMPACTION_DIR);
     let read = |p: &str| std::fs::read_to_string(base.join(p)).unwrap();
     assert!(read("segment_000.md").contains("# HISTORICAL -- DO NOT EDIT"));
     assert!(read("segment_001.md").contains("second"));
@@ -540,7 +540,7 @@ async fn copy_session_data_copies_compaction_segments_when_enabled() {
     let seg = |s: &str| CompactionSegmentFile {
         items: vec![ConversationItem::user("a"), ConversationItem::user("b")],
         summary: s.to_string(),
-        detail: xai_chat_state::CompactionDetail::Verbose,
+        detail: agent_tui_chat_state::CompactionDetail::Verbose,
         timestamp: "2026-01-01T00:00:00Z".to_string(),
     };
     adapter.write_compaction_segment(&source_info, &seg("first")).await.unwrap();
@@ -563,7 +563,7 @@ async fn copy_session_data_copies_compaction_segments_when_enabled() {
     assert_eq!(result.compaction_segments_copied, 3);
     let dst = adapter
         .session_dir(&target_info)
-        .join(xai_chat_state::compaction_transcript::COMPACTION_DIR);
+        .join(agent_tui_chat_state::compaction_transcript::COMPACTION_DIR);
     assert!(dst.join("segment_000.md").is_file());
     assert!(dst.join("segment_001.md").is_file());
     assert!(dst.join("INDEX.md").is_file());
@@ -582,7 +582,7 @@ async fn copy_session_data_copies_compaction_segments_when_enabled() {
     assert_eq!(result2.compaction_segments_copied, 0);
     assert!(
         ! adapter.session_dir(& target2)
-        .join(xai_chat_state::compaction_transcript::COMPACTION_DIR).exists()
+        .join(agent_tui_chat_state::compaction_transcript::COMPACTION_DIR).exists()
     );
 }
 #[tokio::test]

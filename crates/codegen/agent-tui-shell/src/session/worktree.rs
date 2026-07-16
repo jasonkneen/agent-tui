@@ -78,7 +78,7 @@ async fn cleanup_worktree_on_failure(source_cwd: &str, worktree_path: &str) {
         }
     } else {
         let wt_path = wt.to_path_buf();
-        match tokio::task::spawn_blocking(move || xai_fast_worktree::remove_worktree(&wt_path))
+        match tokio::task::spawn_blocking(move || agent_tui_fast_worktree::remove_worktree(&wt_path))
             .await
         {
             Ok(Ok(_)) => {}
@@ -459,14 +459,14 @@ pub async fn rehydrate_session_in_worktree(
         let session_id = req.session_id.clone();
         let btrfs_delegate = btrfs_delegate_from_env();
         tokio::task::spawn_blocking(move || {
-            use xai_fast_worktree::{
+            use agent_tui_fast_worktree::{
                 CreationMode, IgnoredFilesMode, WorkingTreeMode, WorktreeBuilder,
             };
             let mut builder = WorktreeBuilder::new(&source, &dest)
                 .working_tree_mode(WorkingTreeMode::CleanAll)
                 .ignored_files_mode(IgnoredFilesMode::Skip)
                 .creation_mode(CreationMode::Linked)
-                .worktree_kind(xai_fast_worktree::WorktreeKind::Fork)
+                .worktree_kind(agent_tui_fast_worktree::WorktreeKind::Fork)
                 .session_id(session_id);
             if let Some(delegate) = btrfs_delegate {
                 builder = builder.btrfs_delegate(delegate);
@@ -815,13 +815,13 @@ mod tests {
         let result = resolve_worktree_by_id_or_path(path).unwrap();
         assert_eq!(result.unwrap(), tmp.path());
     }
-    fn make_wt_record(path: &str, source_repo: &str) -> xai_fast_worktree::WorktreeRecord {
-        xai_fast_worktree::WorktreeRecord {
+    fn make_wt_record(path: &str, source_repo: &str) -> agent_tui_fast_worktree::WorktreeRecord {
+        agent_tui_fast_worktree::WorktreeRecord {
             id: format!("wt-{}", path.replace('/', "-")),
             path: std::path::PathBuf::from(path),
             source_repo: std::path::PathBuf::from(source_repo),
             repo_name: "repo".into(),
-            kind: xai_fast_worktree::WorktreeKind::Session,
+            kind: agent_tui_fast_worktree::WorktreeKind::Session,
             creation_mode: "linked".into(),
             git_ref: None,
             head_commit: None,
@@ -829,7 +829,7 @@ mod tests {
             creator_pid: None,
             created_at: 0,
             last_accessed_at: None,
-            status: xai_fast_worktree::WorktreeStatus::Alive,
+            status: agent_tui_fast_worktree::WorktreeStatus::Alive,
             metadata: None,
         }
     }

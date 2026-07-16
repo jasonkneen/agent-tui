@@ -12,8 +12,8 @@ use crate::session::file_state::{FileRewindResponse, RewindPoint, rewind_files};
 use crate::session::git;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use xai_hunk_tracker::{HunkId, HunkTrackerSnapshot, HunkTurnDelta};
-use xai_tool_protocol::turn_hook::TurnHookOutcome;
+use agent_tui_hunk_tracker::{HunkId, HunkTrackerSnapshot, HunkTurnDelta};
+use agent_tui_tool_protocol::turn_hook::TurnHookOutcome;
 /// A turn/prompt boundary routed through [`WorkspaceHandle::on_turn_boundary`].
 ///
 /// `prompt_index` selects the origin and keeps the two effect sets disjoint:
@@ -163,7 +163,7 @@ impl WorkspaceSession {
             return;
         }
         prompts.sort_unstable();
-        let mut file_states: HashMap<std::path::PathBuf, xai_hunk_tracker::FileHunkStateSnapshot> =
+        let mut file_states: HashMap<std::path::PathBuf, agent_tui_hunk_tracker::FileHunkStateSnapshot> =
             HashMap::new();
         let mut turn_index: HashMap<usize, HashSet<HunkId>> = HashMap::new();
         for idx in prompts {
@@ -239,7 +239,7 @@ impl WorkspaceHandle {
         &self,
         session_id: &str,
         boundary: TurnBoundary,
-    ) -> Option<tokio::task::JoinHandle<xai_file_utils::queue::EnqueueOutcome>> {
+    ) -> Option<tokio::task::JoinHandle<agent_tui_file_utils::queue::EnqueueOutcome>> {
         match boundary {
             TurnBoundary::Start {
                 prompt_index: Some(idx),
@@ -989,7 +989,7 @@ mod tests {
             .create_session_with_tracker_and_viewer_ctx(
                 "main",
                 handle.root_cwd().unwrap(),
-                xai_hunk_tracker::HunkTrackerHandle::noop(),
+                agent_tui_hunk_tracker::HunkTrackerHandle::noop(),
                 None,
                 crate::capability::CapabilityMode::All,
                 None,

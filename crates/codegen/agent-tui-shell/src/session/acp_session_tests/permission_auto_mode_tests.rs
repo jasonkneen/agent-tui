@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use agent_client_protocol as acp;
-use xai_acp_lib::AcpAgentGatewaySender;
+use agent_tui_acp_lib::AcpAgentGatewaySender;
 use agent_tui_paths::AbsPathBuf;
 use agent_tui_workspace::permission::{AccessKind, ClientType, spawn_permission_manager};
 
@@ -45,7 +45,7 @@ async fn set_auto_mode_path_wires_live_side_query_via_session_actor() {
     local
         .run_until(async {
             let (gateway_tx, _grx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _prx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor =
@@ -117,7 +117,7 @@ async fn spawn_auto_seed_wires_classifier_when_is_auto_mode() {
     local
         .run_until(async {
             let (gateway_tx, _grx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _prx) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
             install_real_permissions(&mut actor);
@@ -143,7 +143,7 @@ async fn set_auto_mode_off_clears_side_query_flag() {
     local
         .run_until(async {
             let (gateway_tx, _grx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _prx) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
             install_real_permissions(&mut actor);

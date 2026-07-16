@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::path::Path;
 
 use super::{DbStats, GcReport, RebuildReport};
-use xai_fast_worktree::WorktreeRecord;
+use agent_tui_fast_worktree::WorktreeRecord;
 use agent_tui_shell::session::worktree::META_KEY_LABEL;
 
 /// Extract the label from a worktree record's metadata JSON.
@@ -283,8 +283,8 @@ mod tests {
         assert!(formatted.contains(&long_id), "Full ID must be present");
     }
 
-    fn make_test_record(metadata: Option<serde_json::Value>) -> xai_fast_worktree::WorktreeRecord {
-        use xai_fast_worktree::{WorktreeKind, WorktreeRecord, WorktreeStatus};
+    fn make_test_record(metadata: Option<serde_json::Value>) -> agent_tui_fast_worktree::WorktreeRecord {
+        use agent_tui_fast_worktree::{WorktreeKind, WorktreeRecord, WorktreeStatus};
         WorktreeRecord {
             id: "test".into(),
             path: "/tmp/wt".into(),

@@ -15,7 +15,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "time", "macros"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
-xai-file-utils = { path = "../xai-file-utils", optional = true }
+agent-tui-file-utils = { path = "../agent-tui-file-utils", optional = true }
 agent-tui-http = { workspace = true }
 agent-tui-shell-base = { workspace = true }
 agent-tui-version = { workspace = true }

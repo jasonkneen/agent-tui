@@ -11,7 +11,7 @@ use tokio::time::Duration;
 use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
 use tracing::{debug, info, warn};
 
-use xai_acp_lib::{
+use agent_tui_acp_lib::{
     AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
     LineBufferedRead,
 };
@@ -209,7 +209,7 @@ fn spawn_agent_local(
     });
     tokio::task::spawn_local(
         GatewayReceiver::new(gw_rx, conn)
-            .with_on_meta(xai_file_utils::trace_context::span_from_meta_traceparent)
+            .with_on_meta(agent_tui_file_utils::trace_context::span_from_meta_traceparent)
             .run(),
     );
     handle_io
@@ -279,11 +279,11 @@ where
 }
 
 /// Register the process-lifetime runtime so shared filesystem watchers
-/// ([`xai_fsnotify::shared`]) run their event loops on a runtime that outlives
+/// ([`agent_tui_fsnotify::shared`]) run their event loops on a runtime that outlives
 /// individual sessions (each session builds its own short-lived runtime).
 /// Idempotent — safe to call from every agent entrypoint.
 fn register_fs_watch_runtime() {
-    xai_fsnotify::set_runtime_handle(tokio::runtime::Handle::current());
+    agent_tui_fsnotify::set_runtime_handle(tokio::runtime::Handle::current());
 }
 
 pub async fn run_stdio_agent(
@@ -298,9 +298,9 @@ pub async fn run_stdio_agent(
 
     // Clean up orphaned upload queue temp files from previous sessions (best-effort).
     // Uses DEFAULT_MAX_AGE to stay in sync with the upload queue's retry policy.
-    xai_file_utils::queue::cleanup_orphaned_uploads(
+    agent_tui_file_utils::queue::cleanup_orphaned_uploads(
         &grok_home::grok_home(),
-        xai_file_utils::queue::DEFAULT_MAX_AGE,
+        agent_tui_file_utils::queue::DEFAULT_MAX_AGE,
     );
 
     // Log the client that launched us (set by grok-desktop when spawning `grok agent stdio`).
@@ -331,7 +331,7 @@ pub async fn run_stdio_agent(
     let acp_incoming_tx = Arc::new(TokioMutex::new(acp_incoming_tx));
 
     // Bridge stdin to the simplex writer. A dedicated OS thread does the
-    // blocking stdin reads (see `xai_acp_lib::spawn_stdin_line_reader`): on
+    // blocking stdin reads (see `agent_tui_acp_lib::spawn_stdin_line_reader`): on
     // Windows `tokio::io::stdin()` only delivers buffered lines from a
     // redirected pipe at EOF, so a persistent ACP client (which keeps stdin
     // open) would hang the `initialize` handshake. The forwarder writes each
@@ -339,7 +339,7 @@ pub async fn run_stdio_agent(
     // skills watcher) never interleave mid-line with client data.
     let stdin_tx = acp_incoming_tx.clone();
     let (stdin_closed_tx, stdin_closed_rx) = tokio::sync::oneshot::channel();
-    let mut stdin_lines = xai_acp_lib::spawn_stdin_line_reader();
+    let mut stdin_lines = agent_tui_acp_lib::spawn_stdin_line_reader();
     tokio::spawn(async move {
         while let Some(line) = stdin_lines.recv().await {
             let mut tx = stdin_tx.lock().await;
@@ -444,9 +444,9 @@ async fn run_headless_inner(
 
     // Clean up orphaned upload queue temp files from previous sessions (best-effort).
     // Uses DEFAULT_MAX_AGE to stay in sync with the upload queue's retry policy.
-    xai_file_utils::queue::cleanup_orphaned_uploads(
+    agent_tui_file_utils::queue::cleanup_orphaned_uploads(
         &grok_home::grok_home(),
-        xai_file_utils::queue::DEFAULT_MAX_AGE,
+        agent_tui_file_utils::queue::DEFAULT_MAX_AGE,
     );
 
     let mut agent_config = agent_config.clone();
@@ -606,7 +606,7 @@ async fn run_headless_inner(
                     });
                 tokio::task::spawn_local(
                     GatewayReceiver::new(gw_rx, conn)
-                        .with_on_meta(xai_file_utils::trace_context::span_from_meta_traceparent)
+                        .with_on_meta(agent_tui_file_utils::trace_context::span_from_meta_traceparent)
                         .run(),
                 );
 
@@ -939,9 +939,9 @@ pub async fn run_leader(
     // inline here blocked the socket bind and lock acquisition below, so clients
     // could not connect until the sweep finished.
     tokio::task::spawn_blocking(|| {
-        xai_file_utils::queue::cleanup_orphaned_uploads(
+        agent_tui_file_utils::queue::cleanup_orphaned_uploads(
             &grok_home::grok_home(),
-            xai_file_utils::queue::DEFAULT_MAX_AGE,
+            agent_tui_file_utils::queue::DEFAULT_MAX_AGE,
         );
     });
 
@@ -1285,7 +1285,7 @@ pub async fn run_leader(
                     });
                 tokio::task::spawn_local(
                     GatewayReceiver::new(gw_rx, conn)
-                        .with_on_meta(xai_file_utils::trace_context::span_from_meta_traceparent)
+                        .with_on_meta(agent_tui_file_utils::trace_context::span_from_meta_traceparent)
                         .run(),
                 );
 

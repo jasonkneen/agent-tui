@@ -822,7 +822,7 @@ mod tests {
     // semantics that threads/extra FDs cannot model: a *dead* holder PID
     // (flock auto-released on process death) and `is_process_alive()`
     // recovery. Following the in-repo subprocess-isolation pattern
-    // (`xai-crash-handler/tests/integration.rs`), the holder is this very
+    // (`agent-tui-crash-handler/tests/integration.rs`), the holder is this very
     // test binary re-executed via `current_exe()`, gated by the
     // `GROK_TEST_LOCK_HOLDER` env var on an `#[ignore]`d entry-point test —
     // no external `python3` dependency.

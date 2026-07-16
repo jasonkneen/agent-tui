@@ -50,7 +50,7 @@ use agent_client_protocol::Client as _;
 use agent_client_protocol::{self as acp, AuthenticateResponse};
 use indexmap::IndexMap;
 use tokio::sync::oneshot;
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use crate::agent::auth_method;
 use crate::agent::config::{self, Config as AgentConfig, ModelEntry, resolve_credentials};
 use crate::agent::feedback_client::FeedbackClient;
@@ -99,7 +99,7 @@ use crate::upload::turn::{
 use tokio_util::sync::CancellationToken;
 use agent_tui_paths::AbsPathBuf;
 use agent_tui_workspace::session::git::GitDiscoveryResult;
-use xai_hunk_tracker::HunkTrackerActor;
+use agent_tui_hunk_tracker::HunkTrackerActor;
 /// Hard-error message for legacy Direct hub-bind sessions (`x.ai/cloud_server_id`).
 pub(crate) const DIRECT_HUB_CLOUD_REMOVED_MSG: &str = "Direct hub cloud removed; use Gateway (envId or existing-workspace attach)";
 /// Reject session `_meta` that still requests Direct hub bind (D8).
@@ -749,7 +749,7 @@ pub struct MvpAgent {
     /// CodebaseIndexManager holds only Weak; without these the actor would
     /// be reaped immediately. Cleaned up in remove_session.
     session_index_claims: RefCell<
-        HashMap<acp::SessionId, std::sync::Arc<xai_codebase_graph::IndexManagerHandle>>,
+        HashMap<acp::SessionId, std::sync::Arc<agent_tui_codebase_graph::IndexManagerHandle>>,
     >,
     /// Worktree creation type (resolved: local config > remote > default Linked).
     pub(crate) worktree_type: crate::util::config::WorktreeType,
@@ -1017,7 +1017,7 @@ fn read_session_or_init_meta_str<'a>(
     };
     read(session_meta).or_else(|| read(init_meta))
 }
-use xai_chat_state::conversation_util::replace_or_insert_system_head;
+use agent_tui_chat_state::conversation_util::replace_or_insert_system_head;
 /// Non-empty `systemPromptOverride` from session meta (preferred) or init meta.
 /// A blank string (empty or whitespace-only) is treated as "no override" so a
 /// client cannot accidentally blank the system prompt.
@@ -1203,7 +1203,7 @@ fn resolve_inference_idle_timeout_secs(
 /// and trimmed. Absent/blank/`off`/`disabled` => `None`; unknown => `AllDirty`.
 fn resolve_hunk_tracking_mode(
     mode_str: Option<&str>,
-) -> Option<xai_hunk_tracker::TrackingMode> {
+) -> Option<agent_tui_hunk_tracker::TrackingMode> {
     let mode = mode_str.map(str::trim)?;
     if mode.is_empty() || mode.eq_ignore_ascii_case("off")
         || mode.eq_ignore_ascii_case("disabled")
@@ -1212,7 +1212,7 @@ fn resolve_hunk_tracking_mode(
     }
     Some(
         serde_json::from_value(serde_json::Value::String(mode.to_ascii_lowercase()))
-            .unwrap_or(xai_hunk_tracker::TrackingMode::AllDirty),
+            .unwrap_or(agent_tui_hunk_tracker::TrackingMode::AllDirty),
     )
 }
 /// Session wiring derived from the resolved tracking mode. Disabling the tracker
@@ -1221,7 +1221,7 @@ fn resolve_hunk_tracking_mode(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct HunkTrackingPlan {
     /// `Some` → spawn the actor in this mode; `None` → use `noop()`, no actor.
-    actor_mode: Option<xai_hunk_tracker::TrackingMode>,
+    actor_mode: Option<agent_tui_hunk_tracker::TrackingMode>,
 }
 impl HunkTrackingPlan {
     /// Gate for the fs-notify forward sites (via `ToolContext.hunk_tracking_enabled`)
@@ -1310,7 +1310,7 @@ impl MvpAgent {
         persist_data: Option<&serde_json::Value>,
         target_client_id: Option<&serde_json::Value>,
         completions: &mut Vec<
-            tokio::sync::oneshot::Receiver<xai_acp_lib::AcpResult<()>>,
+            tokio::sync::oneshot::Receiver<agent_tui_acp_lib::AcpResult<()>>,
         >,
         mark_replay: bool,
         pending_tool_calls: &mut std::collections::HashMap<
@@ -1544,7 +1544,7 @@ impl MvpAgent {
         persist_data: Option<&serde_json::Value>,
         target_client_id: Option<&serde_json::Value>,
         mark_replay: bool,
-    ) -> Vec<tokio::sync::oneshot::Receiver<xai_acp_lib::AcpResult<()>>> {
+    ) -> Vec<tokio::sync::oneshot::Receiver<agent_tui_acp_lib::AcpResult<()>>> {
         use std::io::{Read, Seek, SeekFrom};
         let Some(updates_path) = updates_file_path.clone() else {
             return Vec::new();
@@ -1653,7 +1653,7 @@ impl MvpAgent {
         &self,
         session_id: &acp::SessionId,
         updates_file_path: &Option<PathBuf>,
-    ) -> Vec<tokio::sync::oneshot::Receiver<xai_acp_lib::AcpResult<()>>> {
+    ) -> Vec<tokio::sync::oneshot::Receiver<agent_tui_acp_lib::AcpResult<()>>> {
         let orphaned = Self::find_orphaned_background_tasks(updates_file_path);
         if orphaned.is_empty() {
             return Vec::new();
@@ -2402,7 +2402,7 @@ async fn handle_synthetic_turn_trace(
             upload_turn_result(&ctx, &turn_result_metadata, UploadWait::Confirm).await;
         }
     }
-    let turn_messages: Option<xai_chat_state::TurnCapture> = {
+    let turn_messages: Option<agent_tui_chat_state::TurnCapture> = {
         let (tx, rx) = tokio::sync::oneshot::channel();
         if ctx
             .session_handle

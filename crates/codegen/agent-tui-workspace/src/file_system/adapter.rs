@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use agent_client_protocol as acp;
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use agent_tui_tools::computer::types::{AsyncFileSystem, ComputerError};
 
 /// Wraps agent-tui-shell's ACP gateway to satisfy agent-tui-tools' AsyncFileSystem.

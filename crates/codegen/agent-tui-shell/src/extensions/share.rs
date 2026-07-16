@@ -153,7 +153,7 @@ async fn upload_share_data_to_gcs(
     let gcs_path = format!("share/{}_{}_data.json", session_id, timestamp);
 
     use crate::upload::gcs::WithAuth as _;
-    if let Err(e) = xai_file_utils::gcs::upload_bytes_signed(
+    if let Err(e) = agent_tui_file_utils::gcs::upload_bytes_signed(
         &gcs_config.with_auth(auth_manager),
         &gcs_path,
         &data_json,

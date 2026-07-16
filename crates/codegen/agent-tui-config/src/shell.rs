@@ -75,7 +75,7 @@ pub fn detect_windows_shell() -> &'static WindowsShell {
         // pwsh (PowerShell 7+).
         if let Ok(output) = {
             let mut cmd = std::process::Command::new("where");
-            xai_tty_utils::detach_std_command(&mut cmd);
+            agent_tui_tty_utils::detach_std_command(&mut cmd);
             cmd.arg("pwsh.exe").stdin(std::process::Stdio::null());
             cmd.output()
         } {
@@ -128,7 +128,7 @@ fn find_git_bash() -> Option<String> {
     // Fall back to PATH; prefer Git Bash over WSL bash.
     if let Ok(output) = {
         let mut cmd = std::process::Command::new("where");
-        xai_tty_utils::detach_std_command(&mut cmd);
+        agent_tui_tty_utils::detach_std_command(&mut cmd);
         cmd.arg("bash.exe").stdin(std::process::Stdio::null());
         cmd.output()
     } {
@@ -471,7 +471,7 @@ fn resolve_unix_shell_path(kind: UnixShellKind) -> String {
 /// be misleading: some Nix overlay filesystems expose binaries whose
 /// owner/group/world mode bits don't reflect their real executability.
 ///
-/// The probe is spawned via `xai_tty_utils::detach_std_command` so that
+/// The probe is spawned via `agent_tui_tty_utils::detach_std_command` so that
 /// the child does NOT inherit the parent's controlling TTY. The resolver
 /// runs lazily inside `unix_shell_path`'s `OnceLock::get_or_init` which
 /// can fire during interactive TUI/pager startup; without detach, a
@@ -490,7 +490,7 @@ fn is_executable(path: &std::path::Path) -> bool {
         return true;
     }
 
-    // Nix fallback. Detach from the controlling TTY via xai_tty_utils so
+    // Nix fallback. Detach from the controlling TTY via agent_tui_tty_utils so
     // the probe (which the resolver may run during interactive TUI/pager
     // startup) cannot leak escapes onto the parent's terminal.
     let mut cmd = std::process::Command::new(path);
@@ -498,7 +498,7 @@ fn is_executable(path: &std::path::Path) -> bool {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    xai_tty_utils::detach_std_command(&mut cmd);
+    agent_tui_tty_utils::detach_std_command(&mut cmd);
     cmd.status().map(|s| s.success()).unwrap_or(false)
 }
 

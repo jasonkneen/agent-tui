@@ -74,9 +74,9 @@ impl ToolBridge {
         builder: ToolRegistryBuilder,
         config: ToolServerConfig,
         ctx: SessionContext,
-    ) -> Result<Self, xai_tool_runtime::ToolError> {
+    ) -> Result<Self, agent_tui_tool_runtime::ToolError> {
         let finalized_toolset = builder.finalize(config, ctx).map_err(|errs| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
+            agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "Requirements unsatisfied: {errs:?}"
             ))
         })?;
@@ -162,9 +162,9 @@ impl ToolBridge {
         mcp_name: String,
         tool: T,
         input_schema: Option<serde_json::Value>,
-    ) -> Result<(), xai_tool_runtime::ToolError>
+    ) -> Result<(), agent_tui_tool_runtime::ToolError>
     where
-        T: xai_tool_runtime::Tool
+        T: agent_tui_tool_runtime::Tool
             + crate::types::tool_metadata::ToolMetadata
             + std::fmt::Debug
             + Send
@@ -198,7 +198,7 @@ impl ToolBridge {
         client_function_name: &str,
         client_params: serde_json::Value,
         tool_call_id: &str,
-    ) -> Result<ToolRunResult, xai_tool_runtime::ToolError> {
+    ) -> Result<ToolRunResult, agent_tui_tool_runtime::ToolError> {
         self.registry
             .call(client_function_name, client_params, tool_call_id, None)
             .await
@@ -208,7 +208,7 @@ impl ToolBridge {
         &self,
         client_function_name: &str,
         client_params: serde_json::Value,
-    ) -> Result<ToolInput, xai_tool_runtime::ToolError> {
+    ) -> Result<ToolInput, agent_tui_tool_runtime::ToolError> {
         self.registry
             .try_parse(client_function_name, &client_params)
             .await
@@ -536,11 +536,11 @@ impl ToolBridge {
     pub async fn kill_background_task(
         &self,
         task_id: &str,
-    ) -> Result<KillOutcome, xai_tool_runtime::ToolError> {
+    ) -> Result<KillOutcome, agent_tui_tool_runtime::ToolError> {
         if let Some(terminal) = &self.terminal {
             Ok(terminal.kill_task(task_id).await)
         } else {
-            Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+            Err(agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "Missing Task Id: {task_id}"
             )))
         }
@@ -549,7 +549,7 @@ impl ToolBridge {
     pub async fn delete_scheduled_task(
         &self,
         task_id: &str,
-    ) -> Result<bool, xai_tool_runtime::ToolError> {
+    ) -> Result<bool, agent_tui_tool_runtime::ToolError> {
         use crate::implementations::grok_build::scheduler::types::{
             SchedulerCommand, SchedulerHandle,
         };
@@ -557,7 +557,7 @@ impl ToolBridge {
             let res = self.registry.resources.lock().await;
             res.get::<SchedulerHandle>()
                 .ok_or_else(|| {
-                    xai_tool_runtime::ToolError::custom("missing_resource", "SchedulerHandle")
+                    agent_tui_tool_runtime::ToolError::custom("missing_resource", "SchedulerHandle")
                 })?
                 .0
                 .clone()
@@ -569,10 +569,10 @@ impl ToolBridge {
                 reply: reply_tx,
             })
             .map_err(|_| {
-                xai_tool_runtime::ToolError::custom("process_manager", "Scheduler actor stopped")
+                agent_tui_tool_runtime::ToolError::custom("process_manager", "Scheduler actor stopped")
             })?;
         reply_rx.await.map_err(|_| {
-            xai_tool_runtime::ToolError::custom("process_manager", "Scheduler actor dropped reply")
+            agent_tui_tool_runtime::ToolError::custom("process_manager", "Scheduler actor dropped reply")
         })
     }
 
@@ -671,24 +671,24 @@ mod tests {
         }
     }
 
-    impl xai_tool_runtime::Tool for KindFixture {
+    impl agent_tui_tool_runtime::Tool for KindFixture {
         type Args = serde_json::Value;
         type Output = String;
 
-        fn id(&self) -> xai_tool_protocol::ToolId {
-            xai_tool_protocol::ToolId::new(self.id).expect("valid id")
+        fn id(&self) -> agent_tui_tool_protocol::ToolId {
+            agent_tui_tool_protocol::ToolId::new(self.id).expect("valid id")
         }
         fn description(
             &self,
-            _ctx: &::xai_tool_runtime::ListToolsContext,
-        ) -> xai_tool_types::ToolDescription {
-            xai_tool_types::ToolDescription::new(self.id, "kind fixture")
+            _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+        ) -> agent_tui_tool_types::ToolDescription {
+            agent_tui_tool_types::ToolDescription::new(self.id, "kind fixture")
         }
         async fn run(
             &self,
-            _ctx: xai_tool_runtime::ToolCallContext,
+            _ctx: agent_tui_tool_runtime::ToolCallContext,
             _input: serde_json::Value,
-        ) -> Result<String, xai_tool_runtime::ToolError> {
+        ) -> Result<String, agent_tui_tool_runtime::ToolError> {
             Ok("ok".into())
         }
     }

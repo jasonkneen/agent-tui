@@ -625,7 +625,7 @@ fn push(
 /// [`crate::session::mcp_dispatcher::SERVER_STATUS_METHOD`] so pushes
 /// share the dispatcher's wire method name.
 pub fn forward_status(
-    gateway: &xai_acp_lib::AcpAgentGatewaySender,
+    gateway: &agent_tui_acp_lib::AcpAgentGatewaySender,
     payload: &McpServerStatusPayload,
 ) {
     let raw = match serde_json::value::to_raw_value(payload) {

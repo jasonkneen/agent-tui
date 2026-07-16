@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 /// Worktree creation strategy.
 ///
-/// Mirrors `xai_fast_worktree::CreationMode` but uses config-friendly naming
+/// Mirrors `agent_tui_fast_worktree::CreationMode` but uses config-friendly naming
 /// (lowercase strings in TOML / JSON).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]

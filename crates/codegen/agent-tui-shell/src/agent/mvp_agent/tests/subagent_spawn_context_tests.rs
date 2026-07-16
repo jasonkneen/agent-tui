@@ -4,7 +4,7 @@
 
 use super::{build_minimal_agent_for_tests, make_test_handle};
 use agent_client_protocol as acp;
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 /// Subagents inherit the parent permission handle, so a managed `Read(**/.env)`
 /// deny still blocks the child — direct read and the `cat .env` shell equivalent.

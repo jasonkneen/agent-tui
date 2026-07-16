@@ -7,7 +7,7 @@ use std::sync::atomic::Ordering;
 
 async fn make_test_actor_with_active_goal() -> SessionActor {
     let (gateway_tx, _gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
     let (persistence_tx, _persistence_rx) =
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -881,13 +881,13 @@ fn agent_message_text_from_notification(n: &acp::SessionNotification) -> Option<
 }
 
 fn spawn_gateway_notification_capture(
-    mut gateway_rx: tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+    mut gateway_rx: tokio::sync::mpsc::UnboundedReceiver<agent_tui_acp_lib::AcpClientMessage>,
 ) -> std::sync::Arc<tokio::sync::Mutex<Vec<acp::SessionNotification>>> {
     let sent = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let sent_for_task = sent.clone();
     tokio::task::spawn_local(async move {
         while let Some(msg) = gateway_rx.recv().await {
-            if let xai_acp_lib::AcpClientMessage::SessionNotification(args) = msg {
+            if let agent_tui_acp_lib::AcpClientMessage::SessionNotification(args) = msg {
                 sent_for_task.lock().await.push(args.request);
                 let _ = args.response_tx.send(Ok(()));
             }
@@ -931,7 +931,7 @@ async fn make_test_actor_with_active_goal_and_gateway_capture() -> (
     std::sync::Arc<tokio::sync::Mutex<Vec<acp::SessionNotification>>>,
 ) {
     let (gateway_tx, gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
     let sent = spawn_gateway_notification_capture(gateway_rx);
     let (persistence_tx, _persistence_rx) =
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
@@ -1213,7 +1213,7 @@ async fn cancelled_turn_without_infra_error_does_not_auto_pause_goal() {
                 turn_snapshot: None,
                 completion_kind: crate::session::commands::PromptCompletionKind::Cancelled {
                     category: Some(
-                        xai_file_utils::events::types::CancellationCategory::MidTurnAbort,
+                        agent_tui_file_utils::events::types::CancellationCategory::MidTurnAbort,
                     ),
                     context: None,
                 },
@@ -1878,7 +1878,7 @@ async fn goal_auto_paused_event_emits_verification_reason() {
         .run_until(async {
             let tmp = tempfile::TempDir::new().expect("tempdir");
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -1986,7 +1986,7 @@ async fn goal_resume_with_no_goal_returns_terminal_message() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -2053,7 +2053,7 @@ async fn make_goal_resume_turn_actor(
     tokio::sync::mpsc::UnboundedReceiver<PersistenceMsg>,
 ) {
     let (gateway_tx, gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
     let sent = spawn_gateway_notification_capture(gateway_rx);
     let (persistence_tx, persistence_rx) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     let (mut actor, event_rx) =
@@ -2311,7 +2311,7 @@ async fn drain_goal_updates_harness_disabled_does_not_drop_ack() {
         .run_until(async {
             // A non-goal session: harness disabled (create_test_actor default).
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -3010,7 +3010,7 @@ async fn goal_auto_paused_event_emits_infra_reason() {
         .run_until(async {
             let tmp = tempfile::TempDir::new().expect("tempdir");
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -3054,7 +3054,7 @@ async fn goal_auto_paused_event_is_emitted() {
             // through `make_test_actor_with_active_goal`).
             let tmp = tempfile::TempDir::new().expect("tempdir");
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -3484,7 +3484,7 @@ async fn handle_turn_end_trips_budget_on_failed_turn() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -3522,7 +3522,7 @@ async fn handle_turn_end_keeps_goal_active_under_budget_on_failed_turn() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -3702,7 +3702,7 @@ async fn goal_tokens_used_returns_zero_when_no_active_goal() {
     local
         .run_until(async {
             let (gateway_tx, _g) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _p) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
             insert_record(&actor, "a", Some("phantom"), 0, 50_000);
@@ -3834,7 +3834,7 @@ async fn subagent_progress_advances_goal_tokens_live_without_double_count() {
     local
         .run_until(async {
             let (gateway_tx, mut gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, mut persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -3855,10 +3855,10 @@ async fn subagent_progress_advances_goal_tokens_live_without_double_count() {
             // gateway. Progress-tick emits are gateway-only now, so coalescing
             // is observed here rather than on the persistence channel.
             let count_gateway_goal_updated =
-                |rx: &mut tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>| {
+                |rx: &mut tokio::sync::mpsc::UnboundedReceiver<agent_tui_acp_lib::AcpClientMessage>| {
                     let mut n = 0usize;
                     while let Ok(msg) = rx.try_recv() {
-                        let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg else {
+                        let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg else {
                             continue;
                         };
                         if args.request.method.as_ref() != "x.ai/session_notification" {
@@ -3969,7 +3969,7 @@ async fn subagent_progress_live_tokens_monotonic_across_child_compaction() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;

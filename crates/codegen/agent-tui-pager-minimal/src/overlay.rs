@@ -29,7 +29,7 @@
 //! `set_viewport_height` early-returns when the height is unchanged, so steady
 //! state is a no-op.
 //!
-//! [`Terminal::set_viewport_height`]: xai_ratatui_inline::Terminal::set_viewport_height
+//! [`Terminal::set_viewport_height`]: agent_tui_ratatui_inline::Terminal::set_viewport_height
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;

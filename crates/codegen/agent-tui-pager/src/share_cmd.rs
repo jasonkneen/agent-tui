@@ -4,7 +4,7 @@ use agent_tui_shell::agent::config::Config as AgentConfig;
 use agent_tui_shell::session::share::{ShareSessionRequest, ShareSessionResponse};
 
 use agent_client_protocol as acp;
-use xai_acp_lib::acp_send;
+use agent_tui_acp_lib::acp_send;
 
 #[derive(Debug, clap::Args, Clone)]
 pub struct ShareArgs {

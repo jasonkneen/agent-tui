@@ -156,28 +156,28 @@ impl crate::types::tool_metadata::ToolMetadata for CodexGrepFilesTool {
     }
 }
 
-impl xai_tool_runtime::Tool for CodexGrepFilesTool {
+impl agent_tui_tool_runtime::Tool for CodexGrepFilesTool {
     type Args = CodexGrepFilesInput;
     type Output = CodexGrepFilesOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("grep_files").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("grep_files").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "grep_files",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: true,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Read),
             ..Default::default()
         }
     }
@@ -185,9 +185,9 @@ impl xai_tool_runtime::Tool for CodexGrepFilesTool {
     #[tracing::instrument(name = "tool.codex_grep_files", skip_all)]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: CodexGrepFilesInput,
-    ) -> Result<CodexGrepFilesOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<CodexGrepFilesOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -261,10 +261,10 @@ mod tests {
     use tempfile::TempDir;
 
     /// Build a runtime `ToolCallContext` with the given resources.
-    fn test_ctx(cwd: &Path) -> xai_tool_runtime::ToolCallContext {
+    fn test_ctx(cwd: &Path) -> agent_tui_tool_runtime::ToolCallContext {
         let mut resources = Resources::new();
         resources.insert(Cwd(cwd.to_path_buf()));
-        let mut ctx = xai_tool_runtime::ToolCallContext::default();
+        let mut ctx = agent_tui_tool_runtime::ToolCallContext::default();
         ctx.extensions.insert(resources.into_shared());
         ctx
     }
@@ -394,7 +394,7 @@ mod tests {
             limit: 100,
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(tmp.path()), input)
+        let result = agent_tui_tool_runtime::Tool::run(&tool, test_ctx(tmp.path()), input)
             .await
             .unwrap();
         match result {
@@ -417,7 +417,7 @@ mod tests {
             limit: 0,
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(tmp.path()), input)
+        let result = agent_tui_tool_runtime::Tool::run(&tool, test_ctx(tmp.path()), input)
             .await
             .unwrap();
         match result {
@@ -445,7 +445,7 @@ mod tests {
             limit: 100,
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(tmp.path()), input)
+        let result = agent_tui_tool_runtime::Tool::run(&tool, test_ctx(tmp.path()), input)
             .await
             .unwrap();
         match result {
@@ -475,7 +475,7 @@ mod tests {
             limit: 100,
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(tmp.path()), input)
+        let result = agent_tui_tool_runtime::Tool::run(&tool, test_ctx(tmp.path()), input)
             .await
             .unwrap();
         match result {
@@ -504,7 +504,7 @@ mod tests {
             limit: 100,
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(tmp.path()), input)
+        let result = agent_tui_tool_runtime::Tool::run(&tool, test_ctx(tmp.path()), input)
             .await
             .unwrap();
         match result {
@@ -535,7 +535,7 @@ mod tests {
             limit: 5000, // exceeds MAX_LIMIT (2000)
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(tmp.path()), input)
+        let result = agent_tui_tool_runtime::Tool::run(&tool, test_ctx(tmp.path()), input)
             .await
             .unwrap();
         match result {

@@ -19,18 +19,18 @@ async fn create_test_actor(
     total_tokens: u64,
     context_window: u64,
     threshold_percent: u8,
-    gateway_tx: mpsc::UnboundedSender<xai_acp_lib::AcpClientMessage>,
+    gateway_tx: mpsc::UnboundedSender<agent_tui_acp_lib::AcpClientMessage>,
     persistence_tx: mpsc::UnboundedSender<PersistenceMsg>,
 ) -> SessionActor {
     let cwd = AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap();
     let fs = Arc::new(MockFs::new(cwd.to_path_buf()));
     let terminal = Arc::new(DummyTerminal {});
     let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
-    let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+    let hunk_tracker_handle = agent_tui_hunk_tracker::HunkTrackerActor::spawn(
         "test-auto-compact".to_string(),
         cwd.to_path_buf(),
         hunk_tx,
-        xai_hunk_tracker::TrackingMode::AgentOnly,
+        agent_tui_hunk_tracker::TrackingMode::AgentOnly,
         tokio_util::sync::CancellationToken::new(),
     );
     let tool_context = ToolContext::new(cwd.clone(), None, None, fs, terminal, hunk_tracker_handle);
@@ -43,7 +43,7 @@ async fn create_test_actor(
         nudges_used_this_session: 0,
     });
     let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
-    let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+    let chat_state_handle = agent_tui_chat_state::ChatStateActor::spawn(
         vec![],
         agent_tui_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
@@ -58,7 +58,7 @@ async fn create_test_actor(
             reasoning_effort: None,
             stream_tool_calls: None,
         },
-        Box::new(xai_chat_state::NullChatPersistence),
+        Box::new(agent_tui_chat_state::NullChatPersistence),
         event_tx,
         tokio_util::sync::CancellationToken::new(),
     );
@@ -109,7 +109,7 @@ async fn create_test_actor(
             count: std::sync::atomic::AtomicU64::new(0),
             auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
             previous_model: std::cell::Cell::new(None),
-            compaction_mode: xai_chat_state::CompactionMode::Transcript,
+            compaction_mode: agent_tui_chat_state::CompactionMode::Transcript,
             verbatim_input: true,
             prefire: crate::session::compaction_config::PrefireState::default(),
             prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -205,7 +205,7 @@ async fn create_test_actor(
         user_input_generation: std::sync::atomic::AtomicU64::new(0),
         laziness_debug_log: None,
         deferred_prefix: TaskSlot::new(),
-        extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+        extension_registry: agent_tui_agent_lifecycle::LocalExtensionRegistry::default(),
         last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
         last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
         last_api_request_at: std::sync::atomic::AtomicI64::new(0),
@@ -241,7 +241,7 @@ async fn test_should_auto_compact_triggers_at_threshold() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(85_000, 100_000, 85, gateway_tx, persistence_tx).await;
             let result =
@@ -261,7 +261,7 @@ async fn test_should_auto_compact_below_threshold() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(84_000, 100_000, 85, gateway_tx, persistence_tx).await;
             let result =
@@ -277,7 +277,7 @@ async fn test_check_auto_compact_needed_uses_state() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(90_000, 100_000, 85, gateway_tx, persistence_tx).await;
             let result = actor.check_auto_compact_needed().await;
@@ -297,7 +297,7 @@ async fn test_context_window_override_affects_auto_compact() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(86_000, 100_000, 85, gateway_tx, persistence_tx).await;
             let result = actor.check_auto_compact_needed().await;
@@ -323,7 +323,7 @@ async fn test_context_window_override_to_smaller_triggers_compact() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(86_000, 200_000, 85, gateway_tx, persistence_tx).await;
             let result = actor.check_auto_compact_needed().await;
@@ -350,7 +350,7 @@ async fn test_response_header_context_window_downgrade_rejected() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(200_000, 500_000, 85, gateway_tx, persistence_tx).await;
             let cfg_before = actor.chat_state_handle.get_sampling_config().await.unwrap();
@@ -443,7 +443,7 @@ async fn create_test_actor_with_memory(
     total_tokens: u64,
     context_window: u64,
     threshold_percent: u8,
-    gateway_tx: mpsc::UnboundedSender<xai_acp_lib::AcpClientMessage>,
+    gateway_tx: mpsc::UnboundedSender<agent_tui_acp_lib::AcpClientMessage>,
     persistence_tx: mpsc::UnboundedSender<PersistenceMsg>,
     memory_config: Option<crate::config::MemoryConfig>,
 ) -> SessionActor {
@@ -453,11 +453,11 @@ async fn create_test_actor_with_memory(
     let fs = Arc::new(MockFs::new(cwd.to_path_buf()));
     let terminal = Arc::new(DummyTerminal {});
     let (hunk_tx, _) = tokio::sync::mpsc::unbounded_channel();
-    let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+    let hunk_tracker_handle = agent_tui_hunk_tracker::HunkTrackerActor::spawn(
         "test-memory".to_string(),
         cwd.to_path_buf(),
         hunk_tx,
-        xai_hunk_tracker::TrackingMode::AgentOnly,
+        agent_tui_hunk_tracker::TrackingMode::AgentOnly,
         tokio_util::sync::CancellationToken::new(),
     );
     let tool_context = ToolContext::new(cwd.clone(), None, None, fs, terminal, hunk_tracker_handle);
@@ -474,7 +474,7 @@ async fn create_test_actor_with_memory(
         nudges_used_this_session: 0,
     });
     let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
-    let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+    let chat_state_handle = agent_tui_chat_state::ChatStateActor::spawn(
         vec![],
         agent_tui_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
@@ -489,7 +489,7 @@ async fn create_test_actor_with_memory(
             reasoning_effort: None,
             stream_tool_calls: None,
         },
-        Box::new(xai_chat_state::NullChatPersistence),
+        Box::new(agent_tui_chat_state::NullChatPersistence),
         event_tx,
         tokio_util::sync::CancellationToken::new(),
     );
@@ -541,7 +541,7 @@ async fn create_test_actor_with_memory(
             count: std::sync::atomic::AtomicU64::new(0),
             auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
             previous_model: std::cell::Cell::new(None),
-            compaction_mode: xai_chat_state::CompactionMode::Transcript,
+            compaction_mode: agent_tui_chat_state::CompactionMode::Transcript,
             verbatim_input: true,
             prefire: crate::session::compaction_config::PrefireState::default(),
             prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -650,7 +650,7 @@ async fn create_test_actor_with_memory(
         user_input_generation: std::sync::atomic::AtomicU64::new(0),
         laziness_debug_log: None,
         deferred_prefix: TaskSlot::new(),
-        extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+        extension_registry: agent_tui_agent_lifecycle::LocalExtensionRegistry::default(),
         last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
         last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
         last_api_request_at: std::sync::atomic::AtomicI64::new(0),
@@ -1148,7 +1148,7 @@ async fn test_compact_on_error_triggers_when_tokens_exceed_new_window() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (gateway_tx, _) = mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(214_000, 1_000_000, 85, gateway_tx, persistence_tx).await;
             let err = api_error_with_context_window(200_000);
@@ -1163,7 +1163,7 @@ async fn test_compact_on_error_no_trigger_when_tokens_within_new_window() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (gateway_tx, _) = mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(150_000, 1_000_000, 85, gateway_tx, persistence_tx).await;
             let err = api_error_with_context_window(200_000);
@@ -1199,7 +1199,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 axum::serve(listener, app).await.unwrap();
             });
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (gateway_tx, _) = mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
             let cwd = agent_tui_paths::AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap();
             let fs = Arc::new(agent_tui_workspace::file_system::MockFs::new(
@@ -1207,11 +1207,11 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
             ));
             let terminal = Arc::new(DummyTerminal {});
             let (hunk_tx, _) = tokio::sync::mpsc::unbounded_channel();
-            let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+            let hunk_tracker_handle = agent_tui_hunk_tracker::HunkTrackerActor::spawn(
                 "test-idle-resume".to_string(),
                 cwd.to_path_buf(),
                 hunk_tx,
-                xai_hunk_tracker::TrackingMode::AgentOnly,
+                agent_tui_hunk_tracker::TrackingMode::AgentOnly,
                 tokio_util::sync::CancellationToken::new(),
             );
             let tool_context =
@@ -1225,7 +1225,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 nudges_used_this_session: 0,
             });
             let (event_tx, _) = tokio::sync::mpsc::unbounded_channel();
-            let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+            let chat_state_handle = agent_tui_chat_state::ChatStateActor::spawn(
                 vec![],
                 agent_tui_sampling_types::SamplingConfig {
                     base_url: mock_url,
@@ -1239,11 +1239,11 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                     reasoning_effort: None,
                     stream_tool_calls: None,
                 },
-                Box::new(xai_chat_state::NullChatPersistence),
+                Box::new(agent_tui_chat_state::NullChatPersistence),
                 event_tx,
                 tokio_util::sync::CancellationToken::new(),
             );
-            chat_state_handle.update_credentials(xai_chat_state::types::Credentials {
+            chat_state_handle.update_credentials(agent_tui_chat_state::types::Credentials {
                 api_key: Some("test-key".to_string()),
                 auth_type: Default::default(),
                 alpha_test_key: None,
@@ -1309,7 +1309,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                     count: std::sync::atomic::AtomicU64::new(0),
                     auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
                     previous_model: std::cell::Cell::new(None),
-                    compaction_mode: xai_chat_state::CompactionMode::Transcript,
+                    compaction_mode: agent_tui_chat_state::CompactionMode::Transcript,
                     verbatim_input: true,
                     prefire: crate::session::compaction_config::PrefireState::default(),
                     prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -1410,7 +1410,7 @@ async fn test_e2e_idle_resume_refreshes_model_metadata() {
                 user_input_generation: std::sync::atomic::AtomicU64::new(0),
                 laziness_debug_log: None,
                 deferred_prefix: TaskSlot::new(),
-                extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+                extension_registry: agent_tui_agent_lifecycle::LocalExtensionRegistry::default(),
                 last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
                 last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
                 last_api_request_at: std::sync::atomic::AtomicI64::new(0),
@@ -1473,7 +1473,7 @@ async fn test_idle_resume_noop_when_not_idle_enough() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (gateway_tx, _) = mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(50_000, 200_000, 85, gateway_tx, persistence_tx).await;
             let five_minutes_ago_ms = chrono::Utc::now().timestamp_millis() - (5 * 60 * 1000);
@@ -1497,7 +1497,7 @@ async fn test_compact_on_error_noop_without_model_metadata() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
-            let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+            let (gateway_tx, _) = mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(500_000, 200_000, 85, gateway_tx, persistence_tx).await;
             let err = agent_tui_sampler::SamplingErrorInfo {

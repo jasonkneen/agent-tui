@@ -68,7 +68,7 @@ pub async fn git_cli(cwd: &Path, args: &[&str]) -> Result<String> {
     tracing::debug!(cwd = % cwd.display(), args = ? args, "git_cli");
     let mut cmd = Command::new("git");
     cmd.current_dir(cwd).arg("--no-optional-locks");
-    for &(key, val) in xai_tty_utils::GIT_AUTH_SUPPRESSION_ENVS.iter() {
+    for &(key, val) in agent_tui_tty_utils::GIT_AUTH_SUPPRESSION_ENVS.iter() {
         cmd.env(key, val);
     }
     cmd.stdin(std::process::Stdio::null());

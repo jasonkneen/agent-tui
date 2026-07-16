@@ -2,11 +2,11 @@ use super::RemoteSettings;
 use super::mcp::use_leader_from_toml;
 use serde::{Deserialize, Serialize};
 use toml::Value as TomlValue;
-use xai_fast_worktree::CreationMode;
+use agent_tui_fast_worktree::CreationMode;
 
 /// Worktree creation type configuration.
 ///
-/// Mirrors the internal `CreationMode` enum from xai-fast-worktree but uses
+/// Mirrors the internal `CreationMode` enum from agent-tui-fast-worktree but uses
 /// config-friendly naming (lowercase strings in TOML).
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]

@@ -11,12 +11,12 @@ use crate::workspace_ops::WorkspaceOp;
 use async_trait::async_trait;
 use prometheus::{HistogramVec, IntCounterVec, register_histogram_vec, register_int_counter_vec};
 use serde_json::Value;
-use xai_computer_hub_sdk::ToolServerHandler;
-use xai_tool_protocol::{HookEvent, HookFrame, SessionId, ToolId, ToolServerEvictParams};
-use xai_tool_runtime::{
+use agent_tui_computer_hub_sdk::ToolServerHandler;
+use agent_tui_tool_protocol::{HookEvent, HookFrame, SessionId, ToolId, ToolServerEvictParams};
+use agent_tui_tool_runtime::{
     ToolCallContext, ToolError, ToolErrorKind, ToolStream, TypedToolOutput, terminal_only,
 };
-use xai_tool_types::ToolDescription;
+use agent_tui_tool_types::ToolDescription;
 /// Deprecation monitor for the self-attested `caller_session_id` param:
 /// `kind="param_mismatch"` — the param disagreed with the server-bound envelope
 /// session (envelope trusted); `kind="envelope_absent"` — no envelope
@@ -844,7 +844,7 @@ impl ToolServerHandler for WorkspaceRpcHandler {
             .get("params")
             .cloned()
             .unwrap_or(Value::Object(Default::default()));
-        let bound_session = ctx.extensions.get::<xai_tool_runtime::SessionContext>();
+        let bound_session = ctx.extensions.get::<agent_tui_tool_runtime::SessionContext>();
         let start = std::time::Instant::now();
         let result = self
             .dispatch(
@@ -896,7 +896,7 @@ impl ToolServerHandler for WorkspaceRpcHandler {
                 self.workspace.on_session_ended(session_id.as_str());
             }
             HookEvent::Custom { kind, payload } => {
-                use xai_tool_protocol::turn_hook::{
+                use agent_tui_tool_protocol::turn_hook::{
                     AFTER_TURN_KIND, AfterTurnPayload, BEFORE_TURN_KIND, BeforeTurnPayload,
                 };
                 match kind.as_str() {
@@ -947,7 +947,7 @@ impl ToolServerHandler for WorkspaceRpcHandler {
         }
     }
     async fn handle_hook_request(&self, session_id: SessionId, frame: HookFrame) -> Option<Value> {
-        use xai_tool_protocol::turn_hook::{self, TurnHookRequest};
+        use agent_tui_tool_protocol::turn_hook::{self, TurnHookRequest};
         let HookEvent::Custom { kind, payload } = frame.event else {
             return None;
         };
@@ -1040,11 +1040,11 @@ impl ToolServerHandler for WorkspaceRpcHandler {
 mod tests {
     use super::*;
     use crate::handle::tests::make_handle;
-    use xai_tool_protocol::turn_hook;
+    use agent_tui_tool_protocol::turn_hook;
     /// Helper: consume the first item from a ToolStream.
     async fn next_item(
         stream: &mut ToolStream<TypedToolOutput>,
-    ) -> Option<xai_tool_runtime::ToolStreamItem<TypedToolOutput>> {
+    ) -> Option<agent_tui_tool_runtime::ToolStreamItem<TypedToolOutput>> {
         use std::task::Context;
         std::future::poll_fn(|cx: &mut Context<'_>| stream.as_mut().poll_next(cx)).await
     }
@@ -1128,7 +1128,7 @@ mod tests {
     /// ShuttingDown (not a lingering Draining) for an evicted workspace.
     #[tokio::test]
     async fn handle_evict_triggers_two_phase_drain() {
-        use xai_tool_protocol::ToolServerLifecycleStatus;
+        use agent_tui_tool_protocol::ToolServerLifecycleStatus;
         let handle = make_handle();
         let tracker = handle.activity_tracker().clone();
         let handler = WorkspaceRpcHandler::new(handle);
@@ -1342,7 +1342,7 @@ mod tests {
     /// drain or downgrade terminal `ShuttingDown` back to `Draining`.
     #[tokio::test]
     async fn repeat_evict_does_not_redrain() {
-        use xai_tool_protocol::ToolServerLifecycleStatus;
+        use agent_tui_tool_protocol::ToolServerLifecycleStatus;
         let handle = make_handle();
         let tracker = handle.activity_tracker().clone();
         let handler = WorkspaceRpcHandler::new(handle);
@@ -1874,14 +1874,14 @@ mod tests {
         let handler = WorkspaceRpcHandler::new(handle);
         let mut ctx = ToolCallContext::default();
         ctx.extensions
-            .insert(xai_tool_runtime::SessionContext("main".to_owned()));
+            .insert(agent_tui_tool_runtime::SessionContext("main".to_owned()));
         let args = serde_json::json!(
             { "method" : "workspace.get_session_summary", "params" : {} }
         );
         let mut stream = handler.handle_call(ctx, args).await;
         let item = next_item(&mut stream).await.expect("should have terminal");
         match item {
-            xai_tool_runtime::ToolStreamItem::Terminal(Ok(typed)) => {
+            agent_tui_tool_runtime::ToolStreamItem::Terminal(Ok(typed)) => {
                 let ok_val = typed
                     .value
                     .get("ok")
@@ -1905,7 +1905,7 @@ mod tests {
         let mut stream = handler.handle_call(ctx, args).await;
         let item = next_item(&mut stream).await.expect("should have terminal");
         match item {
-            xai_tool_runtime::ToolStreamItem::Terminal(Ok(typed)) => {
+            agent_tui_tool_runtime::ToolStreamItem::Terminal(Ok(typed)) => {
                 assert!(
                     typed.value.get("err").is_some(),
                     "envelope should have 'err' key: {}",
@@ -1933,7 +1933,7 @@ mod tests {
             .get_sample_count();
         let mut ctx = ToolCallContext::default();
         ctx.extensions
-            .insert(xai_tool_runtime::SessionContext("main".to_owned()));
+            .insert(agent_tui_tool_runtime::SessionContext("main".to_owned()));
         let mut stream = handler
             .handle_call(
                 ctx,
@@ -2136,7 +2136,7 @@ mod tests {
     }
     #[tokio::test]
     async fn handle_hook_cancel_marks_call_completed() {
-        use xai_tool_protocol::ToolCallId;
+        use agent_tui_tool_protocol::ToolCallId;
         let handle = make_handle();
         let handler = WorkspaceRpcHandler::new(handle.clone());
         let tracker = handle.activity_tracker();

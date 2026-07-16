@@ -4979,7 +4979,7 @@ fn dashboard_peek_reply_with_image_sends_blocks() {
             },
         ));
         let img = crate::prompt_images::PastedImage {
-            element_id: xai_ratatui_textarea::ElementId::from_raw(0),
+            element_id: agent_tui_ratatui_textarea::ElementId::from_raw(0),
             display_number: 0,
             mime_type: "image/png".into(),
             dimensions: Some((10, 10)),
@@ -5039,7 +5039,7 @@ fn dashboard_peek_reply_image_with_whitespace_survives_rewind_restore() {
         d.peek_reply.set_text("   ");
         d.peek_reply.set_cursor(3);
         let img = crate::prompt_images::PastedImage {
-            element_id: xai_ratatui_textarea::ElementId::from_raw(0),
+            element_id: agent_tui_ratatui_textarea::ElementId::from_raw(0),
             display_number: 0,
             mime_type: "image/png".into(),
             dimensions: Some((10, 10)),
@@ -5113,7 +5113,7 @@ fn dashboard_peek_reply_with_image_queues_images() {
             },
         ));
         let img = crate::prompt_images::PastedImage {
-            element_id: xai_ratatui_textarea::ElementId::from_raw(0),
+            element_id: agent_tui_ratatui_textarea::ElementId::from_raw(0),
             display_number: 0,
             mime_type: "image/png".into(),
             dimensions: Some((10, 10)),

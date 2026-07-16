@@ -33,10 +33,10 @@ reqwest = { workspace = true }
 url = { workspace = true }
 agent-tui-env = { workspace = true }
 agent-tui-secrets = { workspace = true }
-xai-mixpanel = { workspace = true }
+agent-tui-mixpanel = { workspace = true }
 agent-tui-config = { workspace = true }
 agent-tui-sampler = { workspace = true }
-xai-token-estimation = { workspace = true }
+agent-tui-token-estimation = { workspace = true }
 dirs = { workspace = true }
 sentry = { version = "0.42.0", default-features = false, features = [
     "panic",
@@ -49,10 +49,10 @@ sentry = { version = "0.42.0", default-features = false, features = [
     "debug-images",
 ] }
 # Single cross-edge: `events::ToolCallCompleted.outcome` reuses
-# `xai_file_utils::events::types::ToolOutcome` so the local event log and
+# `agent_tui_file_utils::events::types::ToolOutcome` so the local event log and
 # the product telemetry event share the same enum surface. Semantically this enum
 # lives with the events module in data-collector; not worth a third crate.
-xai-file-utils = { path = "../xai-file-utils" }
+agent-tui-file-utils = { path = "../agent-tui-file-utils" }
 # `session_metrics::TraceUploadReason::from_upload_method` matches on the shared
 # `UploadMethod` enum (small, dependency-light types crate) so the reason->wire
 # mapping lives next to the trace-upload lifecycle events it labels.

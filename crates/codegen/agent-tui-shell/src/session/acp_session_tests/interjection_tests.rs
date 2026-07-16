@@ -207,7 +207,7 @@ mod interjection_broadcast_tests {
         local
             .run_until(async {
                 let (gateway_tx, mut gateway_rx) =
-                    tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                    tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
                 let (persistence_tx, _prx) =
                     tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -216,7 +216,7 @@ mod interjection_broadcast_tests {
 
                 let mut payload = None;
                 while let Ok(msg) = gateway_rx.try_recv() {
-                    if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg
+                    if let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg
                         && args.request.method.as_ref() == "x.ai/session/interjection"
                     {
                         payload =

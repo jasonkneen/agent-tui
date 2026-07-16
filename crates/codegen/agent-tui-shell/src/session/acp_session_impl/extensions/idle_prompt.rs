@@ -3,9 +3,9 @@
 use std::rc::Rc;
 use std::time::Duration;
 
-use xai_agent_lifecycle::LocalExtensionRegistryBuilder;
-use xai_agent_lifecycle::{LocalSessionLifecycleContributor, LocalTurnLifecycleContributor};
-use xai_agent_lifecycle::{
+use agent_tui_agent_lifecycle::LocalExtensionRegistryBuilder;
+use agent_tui_agent_lifecycle::{LocalSessionLifecycleContributor, LocalTurnLifecycleContributor};
+use agent_tui_agent_lifecycle::{
     SessionIdleInput, TurnAbortInput, TurnDoneInput, TurnErrorInput, TurnStartInput,
 };
 
@@ -223,7 +223,7 @@ mod tests {
                 extension.on_turn_done(&TurnDoneInput).await;
                 extension
                     .on_turn_abort(&TurnAbortInput::new(
-                        xai_agent_lifecycle::TurnAbortReason::Interrupted,
+                        agent_tui_agent_lifecycle::TurnAbortReason::Interrupted,
                     ))
                     .await;
                 extension.on_session_idle(&SessionIdleInput).await;

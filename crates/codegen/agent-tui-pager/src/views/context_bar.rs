@@ -205,7 +205,7 @@ pub fn context_bar_line_for_session(
     }
     let used = used_tokens?;
     let total = total_tokens.filter(|&t| t > 0)?;
-    let pct = xai_token_estimation::usage_percentage(used, total);
+    let pct = agent_tui_token_estimation::usage_percentage(used, total);
 
     // Default form drives the line width: `used / total`, right-padded to the
     // minimum hover width so the two states always render at the same width.

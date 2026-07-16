@@ -1,7 +1,7 @@
 use super::*;
 use crate::session::events::ToolOutcome;
-use xai_tool_protocol::session_event::ToolCallOutcome;
-use xai_tool_protocol::turn_hook::TurnHookOutcome;
+use agent_tui_tool_protocol::session_event::ToolCallOutcome;
+use agent_tui_tool_protocol::turn_hook::TurnHookOutcome;
 #[test]
 fn map_tool_outcome_success() {
     assert_eq!(

@@ -235,26 +235,26 @@ impl ToolRequirement {
     }
 
     /// Require a specific tool (by namespace + id).
-    pub fn tool<T: crate::types::tool_metadata::ToolMetadata + xai_tool_runtime::Tool + Default>()
+    pub fn tool<T: crate::types::tool_metadata::ToolMetadata + agent_tui_tool_runtime::Tool + Default>()
     -> Self {
         let t = T::default();
         Self::Tool {
             namespace: t.tool_namespace().to_string(),
-            id: xai_tool_runtime::Tool::id(&t).as_str().to_owned(),
+            id: agent_tui_tool_runtime::Tool::id(&t).as_str().to_owned(),
             if_params: None,
         }
     }
 
     /// Require a specific tool, but only when its params satisfy `params`.
     pub fn tool_with_params<
-        T: crate::types::tool_metadata::ToolMetadata + xai_tool_runtime::Tool + Default,
+        T: crate::types::tool_metadata::ToolMetadata + agent_tui_tool_runtime::Tool + Default,
     >(
         params: impl Into<Expr<ToolParamsRequirement>>,
     ) -> Self {
         let t = T::default();
         Self::Tool {
             namespace: t.tool_namespace().to_string(),
-            id: xai_tool_runtime::Tool::id(&t).as_str().to_owned(),
+            id: agent_tui_tool_runtime::Tool::id(&t).as_str().to_owned(),
             if_params: Some(params.into()),
         }
     }

@@ -22,7 +22,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use xai_tool_runtime::ToolCallContext;
+use agent_tui_tool_runtime::ToolCallContext;
 
 use crate::types::output::{MCPOutputDetails, ToolOutput};
 use crate::types::tool::ToolKind;

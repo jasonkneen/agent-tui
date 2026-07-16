@@ -7,7 +7,7 @@
 //! cwd, the model, and a one-line hint. It mirrors the full-TUI hero box's style
 //! (rounded dim border + logo) without its menu/onboarding.
 //!
-//! It is printed via [`xai_ratatui_inline::Terminal::insert_before`] — the same
+//! It is printed via [`agent_tui_ratatui_inline::Terminal::insert_before`] — the same
 //! one-shot mechanism the commit pipeline uses — gated on an `AppView` flag set
 //! at session creation, so it prints exactly once per session and re-prints when
 //! a new session starts.

@@ -4,7 +4,7 @@
 //! rendering) and [`scan_lines_for_url_overlays`] for detecting plain-text URLs
 //! and absolute file paths across all block types. The collected links are
 //! handed to the terminal as `LinkSpan`s and emitted as OSC 8 hyperlinks by the
-//! frame diff (see `xai_ratatui_inline::Terminal::flush_with_links`).
+//! frame diff (see `agent_tui_ratatui_inline::Terminal::flush_with_links`).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};

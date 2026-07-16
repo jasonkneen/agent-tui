@@ -8,7 +8,7 @@ use crate::session::events::{Event, GoalPlannerFailClosedReason, GoalRoleModelFa
 use crate::session::goal_role_tools::RoleToolNames;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use xai_file_utils::events::EventWriter;
+use agent_tui_file_utils::events::EventWriter;
 
 // Shared per-role model override + spawn-and-retry-once fail-open wrapper
 
@@ -261,7 +261,7 @@ pub(crate) struct ChannelSpawner {
     pub(crate) cwd: Option<String>,
     /// Trace-artifact sink + resolved `task` tool name; `None` disables
     /// recording. See [`super::goal_classifier::record_subagent_trace`].
-    pub(crate) trace_sink: Option<(xai_chat_state::ChatStateHandle, String)>,
+    pub(crate) trace_sink: Option<(agent_tui_chat_state::ChatStateHandle, String)>,
     /// Resolved per-role model+toolset override. Default (inherit) keeps the
     /// historic `::default()` spawn behavior.
     pub(crate) role_override: RoleSpawnOverride,
@@ -1498,7 +1498,7 @@ mod tests {
     #[tokio::test]
     async fn fail_open_retry_emits_spawn_failed_event() {
         let dir = tempfile::tempdir().unwrap();
-        let writer = xai_file_utils::events::EventWriter::open(dir.path());
+        let writer = agent_tui_file_utils::events::EventWriter::open(dir.path());
         let ov = RoleSpawnOverride {
             model: Some("m".into()),
             agent_type: Some("t".into()),

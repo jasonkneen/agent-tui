@@ -9,7 +9,7 @@ use std::thread;
 use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 
-use xai_acp_lib::{
+use agent_tui_acp_lib::{
     AcpAgentChannel, AcpClientChannel, AcpClientTx, AcpGatewayReceiver, AcpGatewaySender,
     acp_channels,
 };

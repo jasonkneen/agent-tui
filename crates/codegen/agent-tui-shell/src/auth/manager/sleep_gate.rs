@@ -300,7 +300,7 @@ impl AuthManager {
     }
 
     /// Whether the system is currently in a **dark wake** (see
-    /// [`xai_system_power::PowerState`] for the canonical explanation of what a
+    /// [`agent_tui_system_power::PowerState`] for the canonical explanation of what a
     /// dark wake is and why an IdP refresh must avoid one). `refresh_chain`
     /// gates on [`Self::should_defer_for_dark_wake`], which wraps this with a
     /// deferral bound.
@@ -319,8 +319,8 @@ impl AuthManager {
             return false;
         }
         matches!(
-            xai_system_power::current_power_state(),
-            xai_system_power::PowerState::DarkWake
+            agent_tui_system_power::current_power_state(),
+            agent_tui_system_power::PowerState::DarkWake
         )
     }
 
@@ -409,9 +409,9 @@ impl AuthManager {
         }
         // Weak ref to avoid a manager <-> listener Arc cycle.
         let weak = Arc::downgrade(self);
-        let listener = xai_system_power::SystemPowerListener::start(move |event| {
+        let listener = agent_tui_system_power::SystemPowerListener::start(move |event| {
             if let Some(this) = weak.upgrade() {
-                let imminent = matches!(event, xai_system_power::PowerEvent::WillSleep);
+                let imminent = matches!(event, agent_tui_system_power::PowerEvent::WillSleep);
                 this.set_system_sleep_imminent(imminent);
             }
         });

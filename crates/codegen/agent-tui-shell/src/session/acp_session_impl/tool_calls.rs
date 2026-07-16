@@ -282,7 +282,7 @@ fn is_interruptible_wait_tool(tool_name: &str, args: &serde_json::Value) -> bool
         "get_task_output"
         | "get_command_or_subagent_output"
         | "get_task_or_subagent_output"
-        | "get_terminal_command_output" => xai_tool_types::task_output_waits_from_json(args),
+        | "get_terminal_command_output" => agent_tui_tool_types::task_output_waits_from_json(args),
         "wait_tasks" | "wait_commands_or_subagents" | "wait_tasks_or_subagents" => true,
         "Await" | "AwaitShell" => true,
         _ => false,
@@ -303,7 +303,7 @@ fn interrupted_wait_tool_result(args: &serde_json::Value) -> ToolRunResult {
 }
 /// [`interrupted_wait_tool_result`] with a caller-chosen model-facing message.
 fn interrupted_wait_tool_result_with_msg(args: &serde_json::Value, msg: &str) -> ToolRunResult {
-    use xai_tool_types::{TaskOutputOutput, TaskOutputResult};
+    use agent_tui_tool_types::{TaskOutputOutput, TaskOutputResult};
     let task_id = args
         .get("task_ids")
         .and_then(|v| v.as_array())
@@ -468,7 +468,7 @@ impl PlanApprovalOutcome {
 /// `false` when it was delivered but the client went away before answering
 /// (quit / disconnect / leader restart).
 ///
-/// Uses `xai_acp_lib`'s TYPED [`AcpChannelFailure`](xai_acp_lib::AcpChannelFailure)
+/// Uses `agent_tui_acp_lib`'s TYPED [`AcpChannelFailure`](agent_tui_acp_lib::AcpChannelFailure)
 /// discriminant (carried in the error's `data`) rather than substring-matching
 /// another crate's message text: `SendFailed` (enqueue failed → no connection) →
 /// `true`; `RecvFailed` (delivered then dropped) → `false`. Any other error
@@ -476,8 +476,8 @@ impl PlanApprovalOutcome {
 /// kept pending and never auto-approved.
 fn ext_method_no_client(err: &acp::Error) -> bool {
     matches!(
-        xai_acp_lib::acp_channel_failure(err),
-        Some(xai_acp_lib::AcpChannelFailure::SendFailed)
+        agent_tui_acp_lib::acp_channel_failure(err),
+        Some(agent_tui_acp_lib::AcpChannelFailure::SendFailed)
     )
 }
 /// Model-facing turn injected after a resumed plan is approved.
@@ -639,7 +639,7 @@ impl SessionActor {
             });
             self.observability_bridge
                 .emit(
-                    xai_tool_protocol::session_event::SessionEvent::ToolCallStarted {
+                    agent_tui_tool_protocol::session_event::SessionEvent::ToolCallStarted {
                         tool_call_id: call.id.clone(),
                         tool_name: call.function.name.clone(),
                         turn_number: self.current_turn_number.get(),
@@ -666,7 +666,7 @@ impl SessionActor {
                             }
                             other => format!("{other:?}"),
                         };
-                        self.emit_event(xai_file_utils::events::Event::McpToolCallCompleted {
+                        self.emit_event(agent_tui_file_utils::events::Event::McpToolCallCompleted {
                             server_name: server.to_string(),
                             tool_name: tool.to_string(),
                             call_id: format!(
@@ -970,7 +970,7 @@ impl SessionActor {
             });
             self.observability_bridge
                 .emit(
-                    xai_tool_protocol::session_event::SessionEvent::ToolCallCompleted {
+                    agent_tui_tool_protocol::session_event::SessionEvent::ToolCallCompleted {
                         tool_call_id: prepared.call_id.clone(),
                         tool_name: prepared.tool_name.clone(),
                         duration_ms,
@@ -1403,16 +1403,16 @@ impl SessionActor {
                 &call.function.name,
                 match &decision {
                     Decision::Allow | Decision::Ask => {
-                        xai_file_utils::events::types::PermissionDecision::Allow
+                        agent_tui_file_utils::events::types::PermissionDecision::Allow
                     }
                     Decision::Reject(_) | Decision::PolicyDeny(_) => {
-                        xai_file_utils::events::types::PermissionDecision::Deny
+                        agent_tui_file_utils::events::types::PermissionDecision::Deny
                     }
                     Decision::Cancelled => {
-                        xai_file_utils::events::types::PermissionDecision::Cancelled
+                        agent_tui_file_utils::events::types::PermissionDecision::Cancelled
                     }
                     Decision::FollowupMessage(_) => {
-                        xai_file_utils::events::types::PermissionDecision::Followup
+                        agent_tui_file_utils::events::types::PermissionDecision::Followup
                     }
                 },
                 perm_start,
@@ -1979,8 +1979,8 @@ impl SessionActor {
                     "Wait tasks: {} ids, mode={}",
                     wait.task_ids.len(),
                     match wait.mode {
-                        xai_tool_types::WaitMode::WaitAny => "wait_any",
-                        xai_tool_types::WaitMode::WaitAll => "wait_all",
+                        agent_tui_tool_types::WaitMode::WaitAny => "wait_any",
+                        agent_tui_tool_types::WaitMode::WaitAll => "wait_all",
                     }
                 ),
                 acp::ToolKind::Other,
@@ -2168,7 +2168,7 @@ impl SessionActor {
         tool_call_id: &acp::ToolCallId,
         call_id: &str,
         function_name: &str,
-        err: xai_tool_runtime::ToolError,
+        err: agent_tui_tool_runtime::ToolError,
         raw_arguments: &str,
         model_id: &str,
     ) -> Result<(), acp::Error> {
@@ -3202,7 +3202,7 @@ mod plan_approval_helper_tests {
     }
     #[test]
     fn ext_method_no_client_defaults_false_for_untagged_error() {
-        assert!(!ext_method_no_client(&xai_acp_lib::acp_internal_error(
+        assert!(!ext_method_no_client(&agent_tui_acp_lib::acp_internal_error(
             "unrelated internal error"
         )));
     }
@@ -3237,14 +3237,14 @@ mod wait_interrupt_tests {
         wait_for_pending_interjection,
     };
     use agent_tui_tools::types::output::ToolOutput;
-    use xai_tool_types::TaskOutputOutput;
+    use agent_tui_tool_types::TaskOutputOutput;
     /// The interruptible-wait select arms: a pending interjection aborts an
     /// in-flight wait, and `biased` prefers an already-completed wait result
     /// over the abort. (Unit-level: the full dispatch loop has no test seam.)
     #[tokio::test(start_paused = true)]
     async fn pending_interjection_aborts_in_flight_wait() {
         use super::InterjectionBuffer;
-        use xai_interjection_core::PendingInterjection;
+        use agent_tui_interjection_core::PendingInterjection;
         let buf: InterjectionBuffer<agent_client_protocol::ImageContent> =
             InterjectionBuffer::default();
         let out = tokio::select! {

@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use agent_client_protocol as acp;
 use chrono::Utc;
 use tokio::sync::{mpsc, oneshot};
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 use crate::permission::bash_command_splitting::{
     all_commands_from_script, is_setup_command, unwrap_wrappers,
@@ -2559,7 +2559,7 @@ mod tests {
         client_type: ClientType,
         remember_tool_approvals: bool,
     ) -> (PermissionHandle, mpsc::UnboundedReceiver<PermissionEvent>) {
-        let (gateway, receiver) = xai_acp_lib::acp_gateway::<acp::AgentSide, _>(client);
+        let (gateway, receiver) = agent_tui_acp_lib::acp_gateway::<acp::AgentSide, _>(client);
         tokio::task::spawn_local(receiver.run());
         spawn_permission_manager_with_pin(
             acp::SessionId::new(Arc::from("test-session")),
@@ -2829,7 +2829,7 @@ mod tests {
                     seen: seen.clone(),
                     gate: gate.clone(),
                 };
-                let (gateway, receiver) = xai_acp_lib::acp_gateway::<acp::AgentSide, _>(client);
+                let (gateway, receiver) = agent_tui_acp_lib::acp_gateway::<acp::AgentSide, _>(client);
                 tokio::task::spawn_local(receiver.run());
                 let (mgr, mut events) = spawn_permission_manager_with_pin(
                     acp::SessionId::new(Arc::from("test-session")),

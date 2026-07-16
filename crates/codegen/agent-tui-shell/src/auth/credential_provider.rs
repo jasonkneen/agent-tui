@@ -104,7 +104,7 @@ impl AuthCredentialProvider for ShellAuthCredentialProvider {
 /// - `x-grok-client-version`   (e.g. "0.1.210-alpha.5 (279ffacddb)")
 /// - `x-grok-client-identifier`
 ///
-/// to the underlying `xai-file-utils::StorageClient` via
+/// to the underlying `agent-tui-file-utils::StorageClient` via
 /// `.with_client_identity(...)`. This is what powers the improved error
 /// logging on the request-attribution path.
 ///
@@ -126,7 +126,7 @@ pub fn build_storage_client_for_proxy(
     user_token: Option<String>,
     session_id: Option<String>,
     client_identifier: &str,
-) -> xai_file_utils::storage_client::StorageClient {
+) -> agent_tui_file_utils::storage_client::StorageClient {
     let http_client = crate::http::shared_upload_client();
     if let Some(am) = auth_manager {
         let provider: Arc<dyn AuthCredentialProvider> = Arc::new(ShellAuthCredentialProvider::new(
@@ -134,9 +134,9 @@ pub fn build_storage_client_for_proxy(
             deployment_key,
             alpha_test_key,
         ));
-        let bridge: Arc<dyn xai_file_utils::storage_client::Auth401AttributionCallback> =
+        let bridge: Arc<dyn agent_tui_file_utils::storage_client::Auth401AttributionCallback> =
             Arc::new(StorageClientAttributionBridge::new(am, session_id));
-        xai_file_utils::storage_client::StorageClient::with_provider(
+        agent_tui_file_utils::storage_client::StorageClient::with_provider(
             proxy_base_url,
             http_client,
             provider,
@@ -155,7 +155,7 @@ pub fn build_storage_client_for_proxy(
         let provider: Arc<dyn AuthCredentialProvider> = Arc::new(
             StaticAuthCredentialProvider::new(Box::new(creds), wire_bearer),
         );
-        xai_file_utils::storage_client::StorageClient::with_provider(
+        agent_tui_file_utils::storage_client::StorageClient::with_provider(
             proxy_base_url,
             http_client,
             provider,
@@ -164,7 +164,7 @@ pub fn build_storage_client_for_proxy(
         .with_client_mode(crate::http::process_client_mode())
     }
 }
-/// Bridge that lets `StorageClient` (which lives in xai-file-utils)
+/// Bridge that lets `StorageClient` (which lives in agent-tui-file-utils)
 /// emit shell's 401-attribution event without the data-collector crate
 /// having a direct dependency on shell. Holds a reference to the live
 /// `AuthManager` so attribution events carry the correct user_id.
@@ -186,7 +186,7 @@ impl StorageClientAttributionBridge {
         }
     }
 }
-impl xai_file_utils::storage_client::Auth401AttributionCallback for StorageClientAttributionBridge {
+impl agent_tui_file_utils::storage_client::Auth401AttributionCallback for StorageClientAttributionBridge {
     fn record_401(&self, operation: &str, sent_bearer_prefix: Option<&str>) {
         crate::auth::attribution::record_consumer_401(
             self.auth_manager.as_ref(),

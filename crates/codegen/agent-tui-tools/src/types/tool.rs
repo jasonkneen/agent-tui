@@ -1,6 +1,6 @@
 //! Tool types and post-execution reminders.
 //!
-//! The tool runtime contract (`Tool` trait) lives in `xai_tool_runtime`.
+//! The tool runtime contract (`Tool` trait) lives in `agent_tui_tool_runtime`.
 //! Tool metadata (kind, namespace, fingerprinting, etc.) lives in
 //! `crate::types::tool_metadata::ToolMetadata`.
 //!

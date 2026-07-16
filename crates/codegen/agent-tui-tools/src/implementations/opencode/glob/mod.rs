@@ -90,7 +90,7 @@ pub struct GlobOutput {
     pub cwd_for_display: String,
 }
 
-impl xai_tool_runtime::ToolOutput for GlobOutput {}
+impl agent_tui_tool_runtime::ToolOutput for GlobOutput {}
 
 impl From<GlobOutput> for ToolOutput {
     fn from(output: GlobOutput) -> Self {
@@ -118,28 +118,28 @@ impl crate::types::tool_metadata::ToolMetadata for GlobTool {
     }
 }
 
-impl xai_tool_runtime::Tool for GlobTool {
+impl agent_tui_tool_runtime::Tool for GlobTool {
     type Args = GlobInput;
     type Output = GlobOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("glob").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("glob").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "glob",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: true,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Read),
             ..Default::default()
         }
     }
@@ -147,9 +147,9 @@ impl xai_tool_runtime::Tool for GlobTool {
     #[tracing::instrument(name = "tool.glob", skip_all)]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: GlobInput,
-    ) -> Result<GlobOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<GlobOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -346,7 +346,7 @@ mod tests {
         let tool = GlobTool;
         let resources = test_resources(tmp.path());
 
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             GlobInput {
@@ -371,7 +371,7 @@ mod tests {
         let tool = GlobTool;
         let resources = test_resources(tmp.path());
 
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             GlobInput {
@@ -398,7 +398,7 @@ mod tests {
         let tool = GlobTool;
         let resources = test_resources(tmp.path());
 
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             GlobInput {
@@ -427,7 +427,7 @@ mod tests {
         let tool = GlobTool;
         let resources = test_resources(tmp.path());
 
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             GlobInput {
@@ -461,7 +461,7 @@ mod tests {
         let tool = GlobTool;
         let resources = test_resources(tmp.path());
 
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             GlobInput {
@@ -481,7 +481,7 @@ mod tests {
     fn tool_metadata() {
         use crate::types::tool_metadata::ToolMetadata;
         let tool = GlobTool;
-        assert_eq!(xai_tool_runtime::Tool::id(&tool).as_str(), "glob");
+        assert_eq!(agent_tui_tool_runtime::Tool::id(&tool).as_str(), "glob");
         assert!(matches!(tool.kind(), ToolKind::List));
         assert!(matches!(tool.tool_namespace(), ToolNamespace::OpenCode));
     }
@@ -517,7 +517,7 @@ mod tests {
         // cwd is the tmp root, but we pass the absolute path to the sub dir
         let resources = test_resources(tmp.path());
 
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             GlobInput {
@@ -540,7 +540,7 @@ mod tests {
         let tool = GlobTool;
         let resources = test_resources(tmp.path());
 
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             GlobInput {
@@ -564,7 +564,7 @@ mod tests {
         let tool = GlobTool;
         let resources = test_resources(tmp.path());
 
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             GlobInput {
@@ -584,7 +584,7 @@ mod tests {
         let tool = GlobTool;
         let resources = Resources::new(); // No Cwd inserted
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             GlobInput {
@@ -613,7 +613,7 @@ mod tests {
         let tool = GlobTool;
         let resources = test_resources(tmp.path());
 
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             GlobInput {
@@ -642,7 +642,7 @@ mod tests {
         let tool = GlobTool;
         let resources = test_resources(tmp.path());
 
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             GlobInput {
@@ -675,7 +675,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
 
         // Initialize a git repo so ripgrep respects .gitignore.
-        xai_test_utils::git::ensure_hermetic_git_on_path();
+        agent_tui_test_utils::git::ensure_hermetic_git_on_path();
         let status = std::process::Command::new("git")
             .args(["init"])
             .current_dir(tmp.path())
@@ -702,7 +702,7 @@ mod tests {
         // Pattern **/*.txt would match both files if .gitignore were not in
         // effect. Because ripgrep processes the ignore stack *before* applying
         // the glob whitelist for directory ignores, ignored_dir/ is pruned.
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             GlobInput {
@@ -733,7 +733,7 @@ mod tests {
         let tool = GlobTool;
         let resources = test_resources(tmp.path());
 
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             GlobInput {

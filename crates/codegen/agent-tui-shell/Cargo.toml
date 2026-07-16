@@ -16,7 +16,7 @@ tonic-prost = { workspace = true, optional = true }
 agent-client-protocol = { workspace = true }
 anyhow = { workspace = true }
 agent-tui-announcements = { workspace = true }
-xai-prompt-queue = { workspace = true }
+agent-tui-prompt-queue = { workspace = true }
 agent-tui-version = { workspace = true }
 
 async-openai = { workspace = true }
@@ -76,7 +76,7 @@ obfstr = { workspace = true }
 tokio-util = { workspace = true, features = ["compat"] }
 tokio-retry = { workspace = true }
 uuid = { workspace = true, features = ["v4", "v5", "v7"] }
-xai-acp-lib = { workspace = true }
+agent-tui-acp-lib = { workspace = true }
 axum = { workspace = true, features = ["ws", "multipart"] }
 backon = { workspace = true }
 webbrowser = { workspace = true }
@@ -113,7 +113,7 @@ sha2 = { workspace = true }
 rand = { workspace = true }
 shlex = { workspace = true }
 strum = { workspace = true }
-xai-fast-worktree = { path = "../xai-fast-worktree", features = ["metadata"] }
+agent-tui-fast-worktree = { path = "../agent-tui-fast-worktree", features = ["metadata"] }
 
 tonic = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
@@ -121,22 +121,22 @@ agent-tui-paths = { path = "../agent-tui-paths" }
 agent-tui-shell-base = { workspace = true }
 agent-tui-shell-session-support = { workspace = true }
 agent-tui-shared = { workspace = true }
-xai-tracing-macros = { path = "../xai-tracing-macros" }
-xai-fsnotify = { path = "../xai-fsnotify" }
-xai-codebase-graph = { path = "../xai-codebase-graph" }
-xai-hunk-tracker = { path = "../xai-hunk-tracker" }
-xai-agent-lifecycle = { workspace = true }
-xai-interjection-core = { workspace = true }
+agent-tui-tracing-macros = { path = "../agent-tui-tracing-macros" }
+agent-tui-fsnotify = { path = "../agent-tui-fsnotify" }
+agent-tui-codebase-graph = { path = "../agent-tui-codebase-graph" }
+agent-tui-hunk-tracker = { path = "../agent-tui-hunk-tracker" }
+agent-tui-agent-lifecycle = { workspace = true }
+agent-tui-interjection-core = { workspace = true }
 agent-tui-sandbox = { path = "../agent-tui-sandbox", default-features = false }
-xai-chat-state = { path = "../xai-chat-state" }
+agent-tui-chat-state = { path = "../agent-tui-chat-state" }
 agent-tui-compaction = { path = "../../common/agent-tui-compaction" }
 agent-tui-sampler = { path = "../agent-tui-sampler" }
-xai-sqlite-journal = { workspace = true }
-xai-token-estimation = { workspace = true }
+agent-tui-sqlite-journal = { workspace = true }
+agent-tui-token-estimation = { workspace = true }
 agent-tui-sampling-types = { path = "../agent-tui-sampling-types" }
 agent-tui-tools = { path = "../agent-tui-tools" }
-xai-tty-utils = { workspace = true }
-xai-system-power = { workspace = true }
+agent-tui-tty-utils = { workspace = true }
+agent-tui-system-power = { workspace = true }
 agent-tui-workspace = { workspace = true }
 agent-tui-subagent-resolution = { path = "../agent-tui-subagent-resolution" }
 agent-tui-agent = { path = "../agent-tui-agent" }
@@ -144,9 +144,9 @@ agent-tui-config = { workspace = true }
 agent-tui-config-types = { workspace = true }
 agent-tui-memory = { workspace = true }
 agent-tui-hooks = { path = "../agent-tui-hooks" }
-xai-hooks-plugins-types = { path = "../xai-hooks-plugins-types" }
+agent-tui-hooks-plugins-types = { path = "../agent-tui-hooks-plugins-types" }
 agent-tui-plugin-marketplace = { path = "../agent-tui-plugin-marketplace" }
-xai-file-utils = { path = "../xai-file-utils" }
+agent-tui-file-utils = { path = "../agent-tui-file-utils" }
 agent-tui-auth = { workspace = true, features = ["middleware"] }
 agent-tui-telemetry = { workspace = true }
 agent-tui-http = { workspace = true }
@@ -166,11 +166,11 @@ parking_lot.workspace = true
 dashmap.workspace = true
 
 # Used by acp_session.rs and mcp_servers.rs for the unified
-# xai_tool_runtime::Tool dispatch model and the computer-hub MCP adapter.
-xai-computer-hub-sdk = { workspace = true }
-xai-tool-runtime = { workspace = true }
-xai-tool-protocol = { workspace = true }
-xai-tool-types = { workspace = true }
+# agent_tui_tool_runtime::Tool dispatch model and the computer-hub MCP adapter.
+agent-tui-computer-hub-sdk = { workspace = true }
+agent-tui-tool-runtime = { workspace = true }
+agent-tui-tool-protocol = { workspace = true }
+agent-tui-tool-types = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -200,7 +200,7 @@ serial_test = { workspace = true }
 # Test-only builds expose the cpu_profile test seams to this crate's test targets.
 agent-tui-shell-base = { workspace = true, features = ["test-support"] }
 agent-tui-test-support = { workspace = true, features = [] }
-xai-test-utils = { workspace = true }
+agent-tui-test-utils = { workspace = true }
 # `test-util` enables `#[tokio::test(start_paused = true)]` (paused virtual
 # clock with auto-advance) so interval-driven loop tests in `auth::refresh`
 # can assert exact tick counts deterministically without real-time sleep.

@@ -9,7 +9,7 @@ use agent_client_protocol as acp;
 use serde::Deserialize;
 use agent_tui_hooks::event::{HookEventEnvelope, HookEventName};
 use agent_tui_hooks::matcher::HookMatcher;
-use xai_hooks_plugins_types::{HookEvent, HookHandlerType, HookInfo};
+use agent_tui_hooks_plugins_types::{HookEvent, HookHandlerType, HookInfo};
 
 use crate::agent::MvpAgent;
 
@@ -236,7 +236,7 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
             super::to_ext_response(result)
         }
         "x.ai/hooks/action" => {
-            let req: xai_hooks_plugins_types::HooksActionRequest = super::parse_params(args)?;
+            let req: agent_tui_hooks_plugins_types::HooksActionRequest = super::parse_params(args)?;
             let sid = acp::SessionId::new(req.session_id);
 
             let result = agent

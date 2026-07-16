@@ -74,7 +74,7 @@ pub struct MonitorOutput {
     pub persistent: bool,
 }
 
-impl xai_tool_runtime::ToolOutput for MonitorOutput {}
+impl agent_tui_tool_runtime::ToolOutput for MonitorOutput {}
 
 #[derive(thiserror::Error, Debug)]
 pub enum MonitorError {

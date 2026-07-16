@@ -20,10 +20,10 @@ use crate::upload::trace::{
     upload_subagent_metadata, upload_turn_result,
 };
 use crate::upload::turn::{PromptTraceContext, complete_prompt_trace};
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use agent_tui_tools::implementations::grok_build::task::types::*;
 use agent_tui_workspace::file_system::AsyncFileSystem;
-use xai_hunk_tracker::HunkTrackerHandle;
+use agent_tui_hunk_tracker::HunkTrackerHandle;
 use super::*;
 impl SubagentCoordinator {
     pub fn new() -> Self {

@@ -21,7 +21,7 @@ use crate::session::{
     CommentResponse, FeedbackRequestDismiss, FeedbackResponse, SessionCommand,
 };
 use crate::upload::gcs::WithAuth as _;
-use xai_file_utils::gcs::upload_bytes;
+use agent_tui_file_utils::gcs::upload_bytes;
 use agent_tui_telemetry::id::agent_id;
 
 #[tracing::instrument(skip_all, fields(method = %args.method))]

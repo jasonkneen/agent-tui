@@ -195,7 +195,7 @@ impl SessionRegistryClient {
         builder: RequestBuilder,
         op: &'static str,
     ) -> Result<reqwest::Response> {
-        let builder = xai_file_utils::trace_context::inject_trace_context_into_request(builder);
+        let builder = agent_tui_file_utils::trace_context::inject_trace_context_into_request(builder);
         let request = builder.build().context(op)?;
         self.client.execute(request).await.map_err(|e| match e {
             reqwest_middleware::Error::Middleware(e) => e.context(op),

@@ -463,7 +463,7 @@ impl CompactionScope {
         user_context_provided: bool,
     ) -> Self {
         let compaction_id = uuid::Uuid::new_v4().to_string();
-        let percentage = xai_token_estimation::usage_percentage_u8(tokens_used, context_window);
+        let percentage = agent_tui_token_estimation::usage_percentage_u8(tokens_used, context_window);
         crate::session_ctx::log_event(CompactionTriggered {
             trigger,
             tokens_used,
@@ -1006,7 +1006,7 @@ pub struct TurnCompleted {
 #[derive(Serialize)]
 pub struct ToolCallCompleted {
     pub tool_name: String,
-    pub outcome: xai_file_utils::events::types::ToolOutcome,
+    pub outcome: agent_tui_file_utils::events::types::ToolOutcome,
     pub duration_ms: u64,
     /// Primary file path of the call, for the external stream only
     /// (`#[serde(skip)]`: never serialized to product events/Mixpanel). Always reduced to

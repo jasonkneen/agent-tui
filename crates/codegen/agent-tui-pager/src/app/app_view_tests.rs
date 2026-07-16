@@ -47,7 +47,7 @@ fn app_draw_drains_deferred_release_after_flush() {
         frame_tx,
         crate::render::draw::WriterSync::new(),
     ));
-    let mut terminal = xai_ratatui_inline::Terminal::with_options(
+    let mut terminal = agent_tui_ratatui_inline::Terminal::with_options(
         backend,
         TerminalOptions {
             viewport: Viewport::Fixed(ratatui::layout::Rect::new(0, 0, 80, 24)),

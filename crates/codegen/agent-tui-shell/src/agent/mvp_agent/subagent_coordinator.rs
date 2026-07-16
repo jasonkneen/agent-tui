@@ -337,7 +337,7 @@ impl MvpAgent {
                 ps.map(|h| h.yolo_mode).unwrap_or(self.default_yolo_mode),
                 ps.map(|h| h.tool_context.subagent_depth).unwrap_or(0),
                 ps.map(|h| h.tool_context.hunk_tracker_handle.clone())
-                    .unwrap_or_else(xai_hunk_tracker::HunkTrackerHandle::noop),
+                    .unwrap_or_else(agent_tui_hunk_tracker::HunkTrackerHandle::noop),
                 ps.map(|h| h.tool_context.hunk_tracking_enabled)
                     .unwrap_or(false),
                 ps.map(|h| h.tool_context.fs.inner().clone())

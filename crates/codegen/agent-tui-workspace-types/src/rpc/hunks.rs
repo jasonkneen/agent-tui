@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::WorkspaceRpc;
 
-/// Wire-safe hunk action enum. Maps to `xai_hunk_tracker::types::HunkAction`
+/// Wire-safe hunk action enum. Maps to `agent_tui_hunk_tracker::types::HunkAction`
 /// but carries `Serialize + Deserialize` for RPC transport.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -109,7 +109,7 @@ pub struct FileSummary {
 }
 
 // =========================================================================
-// Request types whose responses reference `xai_hunk_tracker` types (which pull
+// Request types whose responses reference `agent_tui_hunk_tracker` types (which pull
 // in `gix`), so those responses are mirrored below as wire structs.
 // =========================================================================
 
@@ -155,10 +155,10 @@ impl WorkspaceRpc for HunkGetFilteredHunksReq {
 }
 
 // =========================================================================
-// Wire mirrors of `xai_hunk_tracker` response types
+// Wire mirrors of `agent_tui_hunk_tracker` response types
 // =========================================================================
 
-/// Wire mirror of `xai_hunk_tracker::types::Hunk` (the `selected` field is
+/// Wire mirror of `agent_tui_hunk_tracker::types::Hunk` (the `selected` field is
 /// `#[serde(skip)]` upstream and so is omitted here).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -173,7 +173,7 @@ pub struct HunkWire {
     pub created_at: DateTime<Utc>,
 }
 
-/// Wire mirror of `xai_hunk_tracker::types::HunkLineInfo`.
+/// Wire mirror of `agent_tui_hunk_tracker::types::HunkLineInfo`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HunkLineInfoWire {
@@ -183,7 +183,7 @@ pub struct HunkLineInfoWire {
     pub new_count: usize,
 }
 
-/// Wire mirror of `xai_hunk_tracker::types::HunkSource`.
+/// Wire mirror of `agent_tui_hunk_tracker::types::HunkSource`.
 ///
 /// `Unknown` (`#[serde(other)]`) keeps decoding forward-tolerant: an
 /// unrecognized `type` tag from a newer server decodes here instead of failing
@@ -201,7 +201,7 @@ pub enum HunkSourceWire {
     Unknown,
 }
 
-/// Wire mirror of `xai_hunk_tracker::types::FileContentStatus`.
+/// Wire mirror of `agent_tui_hunk_tracker::types::FileContentStatus`.
 ///
 /// `Deserialize` is hand-written so an unrecognized status from a newer server
 /// decodes to [`Unknown`](Self::Unknown) rather than failing the whole
@@ -238,7 +238,7 @@ impl<'de> Deserialize<'de> for FileContentStatusWire {
     }
 }
 
-/// Wire mirror of `xai_hunk_tracker::types::FileContentView`.
+/// Wire mirror of `agent_tui_hunk_tracker::types::FileContentView`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileContentViewWire {
@@ -249,7 +249,7 @@ pub struct FileContentViewWire {
     pub content: Option<String>,
 }
 
-/// Wire mirror of `xai_hunk_tracker::types::FileContentEntry`.
+/// Wire mirror of `agent_tui_hunk_tracker::types::FileContentEntry`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileContentEntryWire {
@@ -260,7 +260,7 @@ pub struct FileContentEntryWire {
     pub staged: bool,
 }
 
-/// Wire mirror of `xai_hunk_tracker::types::SessionStats`.
+/// Wire mirror of `agent_tui_hunk_tracker::types::SessionStats`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStatsWire {
@@ -272,7 +272,7 @@ pub struct SessionStatsWire {
     pub rejected_lines_removed: usize,
 }
 
-/// Wire mirror of `xai_hunk_tracker::types::TurnSummary`.
+/// Wire mirror of `agent_tui_hunk_tracker::types::TurnSummary`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnSummaryWire {
@@ -283,7 +283,7 @@ pub struct TurnSummaryWire {
     pub lines_removed: usize,
 }
 
-/// Wire mirror of `xai_hunk_tracker::types::SessionSummary`.
+/// Wire mirror of `agent_tui_hunk_tracker::types::SessionSummary`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummaryWire {

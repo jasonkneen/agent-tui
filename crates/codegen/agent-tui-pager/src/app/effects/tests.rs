@@ -689,13 +689,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// Spawn a fake ACP agent that counts `x.ai/yolo_mode_changed`
 /// notifications. Exits when the channel closes.
 fn spawn_fake_acp_agent(
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpAgentMessage>,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<agent_tui_acp_lib::AcpAgentMessage>,
 ) -> Arc<AtomicUsize> {
     let counter = Arc::new(AtomicUsize::new(0));
     let counter_clone = counter.clone();
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            if let xai_acp_lib::AcpAgentMessage::ExtNotification(args) = msg {
+            if let agent_tui_acp_lib::AcpAgentMessage::ExtNotification(args) = msg {
                 if args.request.method.as_ref() == "x.ai/yolo_mode_changed" {
                     counter_clone.fetch_add(1, Ordering::SeqCst);
                 }
@@ -1086,7 +1086,7 @@ fn route_permission_mode_result_err_best_effort_routes_to_dedicated_variant() {
 }
 #[test]
 fn marketplace_outcome_succeeded_only_accepts_success_status() {
-    use xai_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
+    use agent_tui_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
     let success = ActionOutcome {
         status: OutcomeStatus::Success,
         message: "updated".into(),
@@ -1106,8 +1106,8 @@ fn marketplace_outcome_succeeded_only_accepts_success_status() {
 async fn check_marketplace_updates_dispatches_update_and_skips_failed_notifications() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use xai_acp_lib::AcpAgentMessage;
-    use xai_hooks_plugins_types::{ActionOutcome, MarketplaceAction, OutcomeStatus};
+    use agent_tui_acp_lib::AcpAgentMessage;
+    use agent_tui_hooks_plugins_types::{ActionOutcome, MarketplaceAction, OutcomeStatus};
     let action_calls = Arc::new(AtomicUsize::new(0));
     let saw_update = Arc::new(AtomicBool::new(false));
     let saw_wrong_action = Arc::new(AtomicBool::new(false));
@@ -1143,7 +1143,7 @@ async fn check_marketplace_updates_dispatches_update_and_skips_failed_notificati
                     }
                     "x.ai/marketplace/action" => {
                         action_calls_for_task.fetch_add(1, Ordering::SeqCst);
-                        let req: xai_hooks_plugins_types::MarketplaceActionRequest = serde_json::from_str(
+                        let req: agent_tui_hooks_plugins_types::MarketplaceActionRequest = serde_json::from_str(
                                 args.request.params.get(),
                             )
                             .expect("parse marketplace action request");
@@ -1317,7 +1317,7 @@ async fn foreign_resume_detection_runs_as_task_result() {
 #[tokio::test]
 async fn fetch_session_list_pushes_query_and_echoes_seq() {
     use std::sync::{Arc, Mutex};
-    use xai_acp_lib::AcpAgentMessage;
+    use agent_tui_acp_lib::AcpAgentMessage;
     let captured: Arc<Mutex<Vec<serde_json::Value>>> = Arc::default();
     let captured_for_task = captured.clone();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

@@ -43,7 +43,7 @@ pub fn bootstrap(
 /// while fd 2 may still point at the `/dev/null` the TUI's `redirect_native_stderr()` set, which
 /// would swallow the message. No-op when stderr was never redirected (headless).
 pub(crate) fn exit_on_config_error<T>(e: String) -> T {
-    xai_tty_utils::restore_native_stderr();
+    agent_tui_tty_utils::restore_native_stderr();
     eprintln!("\nConfiguration error:\n\n    {e}\n");
     std::process::exit(1);
 }

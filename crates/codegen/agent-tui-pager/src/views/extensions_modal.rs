@@ -41,7 +41,7 @@ fn fuzzy_matches(name: &str, query: &str) -> bool {
 }
 
 /// Check if a hook fuzzy-matches the search query across all its fields.
-pub fn fuzzy_matches_hook(hook: &xai_hooks_plugins_types::HookInfo, query: &str) -> bool {
+pub fn fuzzy_matches_hook(hook: &agent_tui_hooks_plugins_types::HookInfo, query: &str) -> bool {
     if query.is_empty() {
         return true;
     }
@@ -98,7 +98,7 @@ fn word_wrap(text: &str, max_w: usize) -> Vec<&str> {
 /// Source-level search gate shared by the marketplace count, resolve, and
 /// navigation helpers: empty query, or any plugin name fuzzy-matches.
 pub(crate) fn source_has_matching_plugin(
-    source: &xai_hooks_plugins_types::MarketplaceScanResult,
+    source: &agent_tui_hooks_plugins_types::MarketplaceScanResult,
     query: &str,
 ) -> bool {
     query.is_empty() || source.plugins.iter().any(|p| fuzzy_matches(&p.name, query))
@@ -106,7 +106,7 @@ pub(crate) fn source_has_matching_plugin(
 
 /// Count marketplace plugins that match the search query.
 pub fn filtered_marketplace_count(
-    sources: &[xai_hooks_plugins_types::MarketplaceScanResult],
+    sources: &[agent_tui_hooks_plugins_types::MarketplaceScanResult],
     query: &str,
 ) -> usize {
     // Match the renderer's indexing: non-matching sources take plugins.len().max(1)
@@ -127,13 +127,13 @@ pub fn filtered_marketplace_count(
 #[cfg(test)]
 pub(crate) fn test_plugin_info(
     name: &str,
-    origin: Option<xai_hooks_plugins_types::PluginOrigin>,
-) -> xai_hooks_plugins_types::PluginInfo {
-    xai_hooks_plugins_types::PluginInfo {
+    origin: Option<agent_tui_hooks_plugins_types::PluginOrigin>,
+) -> agent_tui_hooks_plugins_types::PluginInfo {
+    agent_tui_hooks_plugins_types::PluginInfo {
         name: name.to_string(),
         id: format!("user/abcd1234/{name}"),
         root: format!("/tmp/{name}"),
-        scope: xai_hooks_plugins_types::PluginScope::User,
+        scope: agent_tui_hooks_plugins_types::PluginScope::User,
         trusted: true,
         enabled: true,
         version: None,
@@ -142,10 +142,10 @@ pub(crate) fn test_plugin_info(
         skill_names: vec![],
         agent_count: 0,
         agent_names: vec![],
-        hook_status: xai_hooks_plugins_types::HookStatus::None,
+        hook_status: agent_tui_hooks_plugins_types::HookStatus::None,
         hook_count: 0,
         mcp_server_count: 0,
-        mcp_status: xai_hooks_plugins_types::McpStatus::None,
+        mcp_status: agent_tui_hooks_plugins_types::McpStatus::None,
         marketplace_source: None,
         origin,
         conflict: None,
@@ -176,7 +176,7 @@ impl PluginGroup {
 /// Plugins bucketed by `(rank, label, key)` group sort key for the Plugins tab.
 type GroupedPlugins<'a> = std::collections::BTreeMap<
     (u8, String, String),
-    Vec<(usize, &'a xai_hooks_plugins_types::PluginInfo)>,
+    Vec<(usize, &'a agent_tui_hooks_plugins_types::PluginInfo)>,
 >;
 
 /// Header count suffix: `1 plugin`, `2 plugins`.
@@ -194,8 +194,8 @@ fn plugin_count_label(n: usize) -> String {
 /// or an unrecognized variant (newer shell) falls back to the scope plus
 /// the legacy `marketplace_source` label so the UI still degrades to
 /// sensible groups.
-pub fn plugin_group(plugin: &xai_hooks_plugins_types::PluginInfo) -> PluginGroup {
-    use xai_hooks_plugins_types::{PluginOrigin, PluginScope};
+pub fn plugin_group(plugin: &agent_tui_hooks_plugins_types::PluginInfo) -> PluginGroup {
+    use agent_tui_hooks_plugins_types::{PluginOrigin, PluginScope};
 
     match &plugin.origin {
         Some(PluginOrigin::ProjectGrok) => PluginGroup::new(0, "origin:project", "Project"),
@@ -254,7 +254,7 @@ pub fn plugin_group(plugin: &xai_hooks_plugins_types::PluginInfo) -> PluginGroup
 /// (ToggleExpand, Install, Uninstall) must go through this function so the
 /// index arithmetic stays consistent with the rendering and navigation helpers.
 pub fn resolve_marketplace_index<'a>(
-    sources: &'a [xai_hooks_plugins_types::MarketplaceScanResult],
+    sources: &'a [agent_tui_hooks_plugins_types::MarketplaceScanResult],
     target: usize,
     query: &str,
     collapsed_sources: &std::collections::HashSet<usize>,
@@ -298,13 +298,13 @@ pub enum MarketplaceHit<'a> {
     /// The index points at a specific plugin inside a source.
     Plugin {
         source_index: usize,
-        source: &'a xai_hooks_plugins_types::MarketplaceScanResult,
-        plugin: &'a xai_hooks_plugins_types::MarketplacePluginEntry,
+        source: &'a agent_tui_hooks_plugins_types::MarketplaceScanResult,
+        plugin: &'a agent_tui_hooks_plugins_types::MarketplacePluginEntry,
     },
 }
 /// Find the next selectable marketplace index at or after `start`.
 pub fn next_matching_marketplace(
-    sources: &[xai_hooks_plugins_types::MarketplaceScanResult],
+    sources: &[agent_tui_hooks_plugins_types::MarketplaceScanResult],
     start: usize,
     query: &str,
     collapsed_sources: &std::collections::HashSet<usize>,
@@ -337,7 +337,7 @@ pub fn next_matching_marketplace(
 
 /// Find the previous selectable marketplace index at or before `start`.
 pub fn prev_matching_marketplace(
-    sources: &[xai_hooks_plugins_types::MarketplaceScanResult],
+    sources: &[agent_tui_hooks_plugins_types::MarketplaceScanResult],
     start: usize,
     query: &str,
     collapsed_sources: &std::collections::HashSet<usize>,
@@ -371,7 +371,7 @@ pub fn prev_matching_marketplace(
 
 /// Build merged hook groups (same grouping as the renderer uses).
 fn build_hook_groups<'a>(
-    hooks: &'a [xai_hooks_plugins_types::HookInfo],
+    hooks: &'a [agent_tui_hooks_plugins_types::HookInfo],
     filter: StatusFilter,
     query: &str,
 ) -> Vec<(&'a str, Vec<usize>)> {
@@ -394,7 +394,7 @@ fn build_hook_groups<'a>(
 
 /// Find the next visible hook index after `current`, skipping collapsed groups.
 pub fn next_visible_hook(
-    hooks: &[xai_hooks_plugins_types::HookInfo],
+    hooks: &[agent_tui_hooks_plugins_types::HookInfo],
     current: usize,
     collapsed: &std::collections::HashSet<String>,
     filter: StatusFilter,
@@ -437,7 +437,7 @@ pub fn next_visible_hook(
 
 /// Find the previous visible hook index before `current`, skipping collapsed groups.
 pub fn prev_visible_hook(
-    hooks: &[xai_hooks_plugins_types::HookInfo],
+    hooks: &[agent_tui_hooks_plugins_types::HookInfo],
     current: usize,
     collapsed: &std::collections::HashSet<String>,
     filter: StatusFilter,
@@ -600,9 +600,9 @@ impl StatusFilter {
 #[derive(Debug, Clone)]
 pub enum ButtonAction {
     /// Execute a hooks action via ACP (no args needed).
-    HooksAction(xai_hooks_plugins_types::HooksAction),
+    HooksAction(agent_tui_hooks_plugins_types::HooksAction),
     /// Execute a plugins action via ACP (no args needed).
-    PluginsAction(xai_hooks_plugins_types::PluginsAction),
+    PluginsAction(agent_tui_hooks_plugins_types::PluginsAction),
     /// Remove the hook under the cursor (uses source_dir from selected hook).
     RemoveSelectedHook,
     /// Toggle enable/disable on the hook under the cursor.
@@ -639,7 +639,7 @@ pub enum ButtonAction {
     /// Uninstall the selected marketplace plugin.
     UninstallSelectedMarketplacePlugin,
     /// Execute a marketplace action via ACP.
-    MarketplaceAction(xai_hooks_plugins_types::MarketplaceAction),
+    MarketplaceAction(agent_tui_hooks_plugins_types::MarketplaceAction),
 
     /// Remove the marketplace source under the cursor (unconfigure + uninstall all its plugins).
     RemoveSelectedMarketplaceSource,
@@ -1118,12 +1118,12 @@ pub enum ModalMessage {
     /// A confirmation prompt. Stores the action to replay with confirmed=true.
     Confirmation {
         message: String,
-        action: xai_hooks_plugins_types::PluginsAction,
+        action: agent_tui_hooks_plugins_types::PluginsAction,
     },
     /// A confirmation prompt for a marketplace action (install/uninstall/update).
     MarketplaceConfirmation {
         message: String,
-        action: xai_hooks_plugins_types::MarketplaceAction,
+        action: agent_tui_hooks_plugins_types::MarketplaceAction,
     },
 }
 
@@ -1388,7 +1388,7 @@ pub fn action_telemetry_label(tab: ExtensionsTab, ch: char) -> Option<String> {
 
 /// Resolve a key press to a button action based on the active tab.
 pub fn resolve_key(tab: ExtensionsTab, ch: char) -> Option<ButtonAction> {
-    use xai_hooks_plugins_types::{HooksAction, MarketplaceAction, PluginsAction};
+    use agent_tui_hooks_plugins_types::{HooksAction, MarketplaceAction, PluginsAction};
 
     match (tab, ch) {
         // Plugins tab
@@ -1670,7 +1670,7 @@ pub fn build_action_from_input(
     command_prefix: &str,
     field_texts: &[String],
 ) -> Option<ButtonAction> {
-    use xai_hooks_plugins_types::{HooksAction, PluginsAction};
+    use agent_tui_hooks_plugins_types::{HooksAction, PluginsAction};
 
     let first = field_texts.first().map(|s| s.trim()).unwrap_or("");
 
@@ -1689,7 +1689,7 @@ pub fn build_action_from_input(
             path: first.to_string(),
         })),
         "marketplace_add_source" => Some(ButtonAction::MarketplaceAction(
-            xai_hooks_plugins_types::MarketplaceAction::AddSource {
+            agent_tui_hooks_plugins_types::MarketplaceAction::AddSource {
                 url: first.to_string(),
             },
         )),
@@ -1815,9 +1815,9 @@ pub struct ExtensionsModalState {
     /// Session team principal for managed-connectors deep links in section copy.
     pub session_team_id: Option<String>,
     /// Hooks list data (fetched from shell).
-    pub hooks_data: TabDataState<xai_hooks_plugins_types::HooksListResponse>,
+    pub hooks_data: TabDataState<agent_tui_hooks_plugins_types::HooksListResponse>,
     /// Plugins list data (fetched from shell).
-    pub plugins_data: TabDataState<xai_hooks_plugins_types::PluginsListResponse>,
+    pub plugins_data: TabDataState<agent_tui_hooks_plugins_types::PluginsListResponse>,
     /// Cached button hit areas from last render (for mouse click).
     pub button_areas: Vec<ButtonArea>,
     /// Active inline input (when the user is typing an argument for a command).
@@ -1836,7 +1836,7 @@ pub struct ExtensionsModalState {
     /// badge on `entry_index`'s row, or a tab-wide footer line when `None`.
     pub result_notice: Option<ActionResultNotice>,
     /// Last dispatched plugins action (for confirmation replay).
-    pub last_plugins_action: Option<xai_hooks_plugins_types::PluginsAction>,
+    pub last_plugins_action: Option<agent_tui_hooks_plugins_types::PluginsAction>,
     /// Selected item index per tab (for j/k navigation).
     /// Maps visible row offset (relative to content top) to hook index.
     /// Rebuilt every render; used for mouse click → hook selection.
@@ -1847,7 +1847,7 @@ pub struct ExtensionsModalState {
     pub hooks_scroll: usize,
     pub plugins_scroll: usize,
     /// Marketplace tab state.
-    pub marketplace_data: TabDataState<xai_hooks_plugins_types::MarketplaceListResponse>,
+    pub marketplace_data: TabDataState<agent_tui_hooks_plugins_types::MarketplaceListResponse>,
     pub marketplace_selected: usize,
     pub marketplace_scroll: usize,
     /// Skills tab state.
@@ -2019,7 +2019,7 @@ impl ExtensionsModalState {
     /// Called from both plugin-data delivery channels (list fetch and the
     /// `PluginsChanged` push); the first to deliver seeds, later deliveries
     /// preserve the user's expand state.
-    pub fn seed_plugin_groups_once(&mut self, plugins: &[xai_hooks_plugins_types::PluginInfo]) {
+    pub fn seed_plugin_groups_once(&mut self, plugins: &[agent_tui_hooks_plugins_types::PluginInfo]) {
         if self.plugins_groups_seeded {
             return;
         }
@@ -2134,7 +2134,7 @@ impl ExtensionsModalState {
     /// Returns `(source_index, Option<plugin_index_within_source>)`.
     pub fn resolve_marketplace_selection(
         &self,
-        sources: &[xai_hooks_plugins_types::MarketplaceScanResult],
+        sources: &[agent_tui_hooks_plugins_types::MarketplaceScanResult],
     ) -> Option<(usize, Option<usize>)> {
         let sel = self.picker_state.selected;
         // Source index from entry_data_indices (None for source headers).
@@ -2494,8 +2494,8 @@ fn skill_source_str(skill: &SkillInfo) -> String {
 }
 
 /// Build picker fields for an expanded plugin.
-fn build_plugin_fields(plugin: &xai_hooks_plugins_types::PluginInfo) -> Vec<String> {
-    use xai_hooks_plugins_types::McpStatus;
+fn build_plugin_fields(plugin: &agent_tui_hooks_plugins_types::PluginInfo) -> Vec<String> {
+    use agent_tui_hooks_plugins_types::McpStatus;
     let mut components = Vec::new();
     if !plugin.skill_names.is_empty() {
         components.push(format!("skills: {}", plugin.skill_names.join(", ")));
@@ -2529,9 +2529,9 @@ const COMPONENT_ITEMS_CAP: usize = 8;
 const NO_DETECTABLE_COMPONENTS: &str = "no detectable components";
 
 fn component_categories(
-    components: &xai_hooks_plugins_types::PluginComponents,
-) -> [(&'static str, &[xai_hooks_plugins_types::ComponentItem]); 6] {
-    use xai_hooks_plugins_types::ComponentCategory;
+    components: &agent_tui_hooks_plugins_types::PluginComponents,
+) -> [(&'static str, &[agent_tui_hooks_plugins_types::ComponentItem]); 6] {
+    use agent_tui_hooks_plugins_types::ComponentCategory;
     components.categories().map(|(category, items)| {
         let label = match category {
             ComponentCategory::Skills => "skills",
@@ -2548,7 +2548,7 @@ fn component_categories(
 /// Per-category names-only fields for an expanded marketplace entry:
 /// comma-joined component names, capped per category with "+N more".
 pub(crate) fn render_components_fields(
-    components: &xai_hooks_plugins_types::PluginComponents,
+    components: &agent_tui_hooks_plugins_types::PluginComponents,
 ) -> Vec<(String, String)> {
     let mut fields = Vec::new();
     for (label, items) in component_categories(components) {
@@ -2571,7 +2571,7 @@ pub(crate) fn render_components_fields(
 
 /// Collapsed-row summary from catalog components; `None` without catalog data.
 pub(crate) fn marketplace_components_summary(
-    plugin: &xai_hooks_plugins_types::MarketplacePluginEntry,
+    plugin: &agent_tui_hooks_plugins_types::MarketplacePluginEntry,
 ) -> Option<String> {
     plugin
         .components
@@ -2846,7 +2846,7 @@ pub fn render_extensions_modal(
                     // Group hooks by source_dir.
                     let mut groups: std::collections::BTreeMap<
                         String,
-                        Vec<(usize, &xai_hooks_plugins_types::HookInfo)>,
+                        Vec<(usize, &agent_tui_hooks_plugins_types::HookInfo)>,
                     > = std::collections::BTreeMap::new();
                     for (i, hook) in data.hooks.iter().enumerate() {
                         if !fuzzy_matches_hook(hook, &state.picker_state.query) {
@@ -4769,14 +4769,14 @@ mod tests {
 
     // ── Plugin fixtures ─────────────────────────────────────────────
 
-    fn make_plugin(name: &str) -> xai_hooks_plugins_types::PluginInfo {
+    fn make_plugin(name: &str) -> agent_tui_hooks_plugins_types::PluginInfo {
         test_plugin_info(name, None)
     }
 
     fn make_plugin_with_origin(
         name: &str,
-        origin: xai_hooks_plugins_types::PluginOrigin,
-    ) -> xai_hooks_plugins_types::PluginInfo {
+        origin: agent_tui_hooks_plugins_types::PluginOrigin,
+    ) -> agent_tui_hooks_plugins_types::PluginInfo {
         test_plugin_info(name, Some(origin))
     }
 
@@ -4799,7 +4799,7 @@ mod tests {
         assert!(StatusFilter::Disabled.matches(false));
     }
 
-    fn make_plugin_with_enabled(name: &str, enabled: bool) -> xai_hooks_plugins_types::PluginInfo {
+    fn make_plugin_with_enabled(name: &str, enabled: bool) -> agent_tui_hooks_plugins_types::PluginInfo {
         let mut p = make_plugin(name);
         p.enabled = enabled;
         p
@@ -4816,7 +4816,7 @@ mod tests {
 
         state.entry_data_indices = vec![Some(0), Some(1)];
         state.picker_state.selected = 0;
-        state.plugins_data = TabDataState::Loaded(xai_hooks_plugins_types::PluginsListResponse {
+        state.plugins_data = TabDataState::Loaded(agent_tui_hooks_plugins_types::PluginsListResponse {
             plugins: vec![
                 make_plugin_with_enabled("on", true),
                 make_plugin_with_enabled("off", false),
@@ -4842,7 +4842,7 @@ mod tests {
     #[test]
     fn space_footer_follows_refreshed_entry_data_indices_after_filter_shape_change() {
         let mut state = ExtensionsModalState::new(ExtensionsTab::Plugins);
-        state.plugins_data = TabDataState::Loaded(xai_hooks_plugins_types::PluginsListResponse {
+        state.plugins_data = TabDataState::Loaded(agent_tui_hooks_plugins_types::PluginsListResponse {
             plugins: vec![
                 make_plugin_with_enabled("on", true),
                 make_plugin_with_enabled("off", false),
@@ -5262,7 +5262,7 @@ mod tests {
         assert!(matches!(
             action,
             Some(ButtonAction::PluginsAction(
-                xai_hooks_plugins_types::PluginsAction::Install { .. }
+                agent_tui_hooks_plugins_types::PluginsAction::Install { .. }
             ))
         ));
     }
@@ -5390,11 +5390,11 @@ mod tests {
         name: &str,
         source_dir: &str,
         disabled: bool,
-    ) -> xai_hooks_plugins_types::HookInfo {
-        xai_hooks_plugins_types::HookInfo {
+    ) -> agent_tui_hooks_plugins_types::HookInfo {
+        agent_tui_hooks_plugins_types::HookInfo {
             name: name.to_string(),
-            event: xai_hooks_plugins_types::HookEvent::PreToolUse,
-            handler_type: xai_hooks_plugins_types::HookHandlerType::Command,
+            event: agent_tui_hooks_plugins_types::HookEvent::PreToolUse,
+            handler_type: agent_tui_hooks_plugins_types::HookHandlerType::Command,
             matcher: None,
             command: Some("/bin/true".to_string()),
             url: None,
@@ -5522,8 +5522,8 @@ mod tests {
     // ── Marketplace tests (obra/superpowers as sample) ──────────────
 
     /// Build a realistic marketplace source modelled on obra/superpowers.
-    fn superpowers_source() -> xai_hooks_plugins_types::MarketplaceScanResult {
-        xai_hooks_plugins_types::MarketplaceScanResult {
+    fn superpowers_source() -> agent_tui_hooks_plugins_types::MarketplaceScanResult {
+        agent_tui_hooks_plugins_types::MarketplaceScanResult {
             source_name: "superpowers".into(),
             source_kind: "git".into(),
             source_url_or_path: "https://github.com/obra/superpowers".into(),
@@ -5574,8 +5574,8 @@ mod tests {
     }
 
     /// Second marketplace source for multi-source tests.
-    fn local_plugins_source() -> xai_hooks_plugins_types::MarketplaceScanResult {
-        xai_hooks_plugins_types::MarketplaceScanResult {
+    fn local_plugins_source() -> agent_tui_hooks_plugins_types::MarketplaceScanResult {
+        agent_tui_hooks_plugins_types::MarketplaceScanResult {
             source_name: "local-plugins".into(),
             source_kind: "local".into(),
             source_url_or_path: "/home/user/.grok/marketplace/local".into(),
@@ -5606,7 +5606,7 @@ mod tests {
         has_agents: bool,
         has_mcp: bool,
         install_status: &'static str,
-        components: Option<xai_hooks_plugins_types::PluginComponents>,
+        components: Option<agent_tui_hooks_plugins_types::PluginComponents>,
     }
 
     impl Default for TestPlugin {
@@ -5627,7 +5627,7 @@ mod tests {
     }
 
     impl TestPlugin {
-        fn build(self) -> xai_hooks_plugins_types::MarketplacePluginEntry {
+        fn build(self) -> agent_tui_hooks_plugins_types::MarketplacePluginEntry {
             let installed_version = if self.install_status == "installed"
                 || self.install_status == "update_available"
             {
@@ -5635,7 +5635,7 @@ mod tests {
             } else {
                 None
             };
-            xai_hooks_plugins_types::MarketplacePluginEntry {
+            agent_tui_hooks_plugins_types::MarketplacePluginEntry {
                 name: self.name.to_string(),
                 version: self.version.map(String::from),
                 description: self.description.map(String::from),
@@ -5944,7 +5944,7 @@ mod tests {
         let action = build_action_from_input("marketplace_add_source", &texts);
         match action {
             Some(ButtonAction::MarketplaceAction(
-                xai_hooks_plugins_types::MarketplaceAction::AddSource { url },
+                agent_tui_hooks_plugins_types::MarketplaceAction::AddSource { url },
             )) => {
                 assert_eq!(url, "https://github.com/obra/superpowers");
             }
@@ -5958,7 +5958,7 @@ mod tests {
         let action = build_action_from_input("marketplace_add_source", &texts);
         match action {
             Some(ButtonAction::MarketplaceAction(
-                xai_hooks_plugins_types::MarketplaceAction::AddSource { url },
+                agent_tui_hooks_plugins_types::MarketplaceAction::AddSource { url },
             )) => {
                 assert_eq!(url, "https://github.com/obra/superpowers");
             }
@@ -5992,7 +5992,7 @@ mod tests {
         assert!(matches!(
             action,
             Some(ButtonAction::MarketplaceAction(
-                xai_hooks_plugins_types::MarketplaceAction::Refresh {
+                agent_tui_hooks_plugins_types::MarketplaceAction::Refresh {
                     source_url_or_path: None
                 }
             ))
@@ -6118,7 +6118,7 @@ mod tests {
     fn marketplace_modal_state_with_loaded_data() {
         let mut state = ExtensionsModalState::new(ExtensionsTab::Marketplace);
         state.marketplace_data =
-            TabDataState::Loaded(xai_hooks_plugins_types::MarketplaceListResponse {
+            TabDataState::Loaded(agent_tui_hooks_plugins_types::MarketplaceListResponse {
                 sources: vec![superpowers_source()],
             });
         assert!(matches!(state.marketplace_data, TabDataState::Loaded(_)));
@@ -6160,7 +6160,7 @@ mod tests {
 
     #[test]
     fn marketplace_error_source_has_zero_plugins() {
-        let error_source = xai_hooks_plugins_types::MarketplaceScanResult {
+        let error_source = agent_tui_hooks_plugins_types::MarketplaceScanResult {
             source_name: "broken-source".into(),
             source_kind: "git".into(),
             source_url_or_path: "https://github.com/bad/repo".into(),
@@ -6175,12 +6175,12 @@ mod tests {
 
     // ── Marketplace: components rendering + search ──────────────────
 
-    fn component(name: &str, desc: Option<&str>) -> xai_hooks_plugins_types::ComponentItem {
-        xai_hooks_plugins_types::ComponentItem::new(name, desc.map(str::to_string))
+    fn component(name: &str, desc: Option<&str>) -> agent_tui_hooks_plugins_types::ComponentItem {
+        agent_tui_hooks_plugins_types::ComponentItem::new(name, desc.map(str::to_string))
     }
 
-    fn sample_components() -> xai_hooks_plugins_types::PluginComponents {
-        xai_hooks_plugins_types::PluginComponents {
+    fn sample_components() -> agent_tui_hooks_plugins_types::PluginComponents {
+        agent_tui_hooks_plugins_types::PluginComponents {
             skills: vec![
                 component("brainstorming", Some("Structured ideation before coding")),
                 component("test-driven-development", None),
@@ -6209,7 +6209,7 @@ mod tests {
     fn marketplace_summary_empty_components_is_none() {
         let plugin = TestPlugin {
             name: "empty",
-            components: Some(xai_hooks_plugins_types::PluginComponents::default()),
+            components: Some(agent_tui_hooks_plugins_types::PluginComponents::default()),
             ..Default::default()
         }
         .build();
@@ -6271,7 +6271,7 @@ mod tests {
 
     #[test]
     fn render_components_fields_caps_names_per_category() {
-        let components = xai_hooks_plugins_types::PluginComponents {
+        let components = agent_tui_hooks_plugins_types::PluginComponents {
             skills: (0..12)
                 .map(|i| component(&format!("skill-{i}"), None))
                 .collect(),
@@ -6288,7 +6288,7 @@ mod tests {
 
     #[test]
     fn render_components_fields_covers_all_six_categories() {
-        let components = xai_hooks_plugins_types::PluginComponents {
+        let components = agent_tui_hooks_plugins_types::PluginComponents {
             skills: vec![component("s", None)],
             commands: vec![component("c", None)],
             agents: vec![component("a", None)],
@@ -6366,11 +6366,11 @@ mod tests {
     }
 
     fn marketplace_modal_state(
-        source: xai_hooks_plugins_types::MarketplaceScanResult,
+        source: agent_tui_hooks_plugins_types::MarketplaceScanResult,
     ) -> ExtensionsModalState {
         let mut state = ExtensionsModalState::new(ExtensionsTab::Marketplace);
         state.marketplace_data =
-            TabDataState::Loaded(xai_hooks_plugins_types::MarketplaceListResponse {
+            TabDataState::Loaded(agent_tui_hooks_plugins_types::MarketplaceListResponse {
                 sources: vec![source],
             });
         state
@@ -6453,11 +6453,11 @@ mod tests {
     // ── Plugins: origin grouping ─────────────────────────────────────
 
     fn plugins_modal_state(
-        plugins: Vec<xai_hooks_plugins_types::PluginInfo>,
+        plugins: Vec<agent_tui_hooks_plugins_types::PluginInfo>,
     ) -> ExtensionsModalState {
         let mut state = ExtensionsModalState::new(ExtensionsTab::Plugins);
         state.plugins_data =
-            TabDataState::Loaded(xai_hooks_plugins_types::PluginsListResponse { plugins });
+            TabDataState::Loaded(agent_tui_hooks_plugins_types::PluginsListResponse { plugins });
         state
     }
 
@@ -6470,7 +6470,7 @@ mod tests {
 
     #[test]
     fn plugin_group_maps_each_origin_variant() {
-        use xai_hooks_plugins_types::PluginOrigin;
+        use agent_tui_hooks_plugins_types::PluginOrigin;
         for (origin, rank, key, label) in [
             (PluginOrigin::ProjectGrok, 0, "origin:project", "Project"),
             (
@@ -6530,7 +6530,7 @@ mod tests {
 
     #[test]
     fn plugin_group_merges_claude_marketplace_and_installed() {
-        use xai_hooks_plugins_types::PluginOrigin;
+        use agent_tui_hooks_plugins_types::PluginOrigin;
         let catalog = plugin_group(&make_plugin_with_origin(
             "a",
             PluginOrigin::ClaudeMarketplace {
@@ -6549,18 +6549,18 @@ mod tests {
     #[test]
     fn plugin_group_fallback_without_origin() {
         let mut project = make_plugin("proj");
-        project.scope = xai_hooks_plugins_types::PluginScope::Project;
+        project.scope = agent_tui_hooks_plugins_types::PluginScope::Project;
         assert_eq!(plugin_group(&project).key, "origin:project");
 
         let user = make_plugin("plain");
         assert_eq!(plugin_group(&user).key, "origin:user");
 
         let mut cli = make_plugin("cli-tool");
-        cli.scope = xai_hooks_plugins_types::PluginScope::Cli;
+        cli.scope = agent_tui_hooks_plugins_types::PluginScope::Cli;
         assert_eq!(plugin_group(&cli).key, "origin:cli");
 
         let mut config = make_plugin("cfg-tool");
-        config.scope = xai_hooks_plugins_types::PluginScope::Config;
+        config.scope = agent_tui_hooks_plugins_types::PluginScope::Config;
         assert_eq!(plugin_group(&config).key, "origin:config");
 
         let mut mp = make_plugin("mp-tool");
@@ -6578,7 +6578,7 @@ mod tests {
     fn plugin_group_unknown_origin_uses_scope_fallback() {
         let mut unknown = make_plugin_with_origin(
             "future-tool",
-            xai_hooks_plugins_types::PluginOrigin::Unknown,
+            agent_tui_hooks_plugins_types::PluginOrigin::Unknown,
         );
         assert_eq!(plugin_group(&unknown).key, "origin:user");
 
@@ -6588,7 +6588,7 @@ mod tests {
 
     #[test]
     fn plugins_render_groups_with_headers_in_rank_order() {
-        use xai_hooks_plugins_types::PluginOrigin;
+        use agent_tui_hooks_plugins_types::PluginOrigin;
         let mut state = plugins_modal_state(vec![
             make_plugin_with_origin(
                 "mp-tool",
@@ -6627,7 +6627,7 @@ mod tests {
 
     #[test]
     fn plugins_render_multiple_plugins_under_one_group() {
-        use xai_hooks_plugins_types::PluginOrigin;
+        use agent_tui_hooks_plugins_types::PluginOrigin;
         let mut state = plugins_modal_state(vec![
             make_plugin_with_origin("solo-tool", PluginOrigin::UserGrok),
             make_plugin_with_origin(
@@ -6684,7 +6684,7 @@ mod tests {
 
     #[test]
     fn plugins_collapsed_group_hides_rows_and_search_forces_open() {
-        use xai_hooks_plugins_types::PluginOrigin;
+        use agent_tui_hooks_plugins_types::PluginOrigin;
         let mut plugin = make_plugin_with_origin("user-tool", PluginOrigin::UserGrok);
         plugin.root = "/opt/p1".into();
         let mut state = plugins_modal_state(vec![plugin]);
@@ -6721,7 +6721,7 @@ mod tests {
 
     #[test]
     fn plugins_status_filter_omits_empty_groups() {
-        use xai_hooks_plugins_types::PluginOrigin;
+        use agent_tui_hooks_plugins_types::PluginOrigin;
         let mut disabled = make_plugin_with_origin("off-tool", PluginOrigin::UserClaude);
         disabled.enabled = false;
         let mut state = plugins_modal_state(vec![
@@ -6745,7 +6745,7 @@ mod tests {
     fn marketplace_placeholders_render_only_when_expanded() {
         let mut source = superpowers_source();
         source.plugins.truncate(2);
-        source.plugins[0].components = Some(xai_hooks_plugins_types::PluginComponents::default());
+        source.plugins[0].components = Some(agent_tui_hooks_plugins_types::PluginComponents::default());
         source.plugins[1].components = None;
         source.plugins[1].skill_count = 0;
         source.plugins[1].has_hooks = false;

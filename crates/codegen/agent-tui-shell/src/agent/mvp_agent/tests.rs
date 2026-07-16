@@ -156,7 +156,7 @@ fn post_unblock_jwt_retry_in_flight_guard_clears_on_drop() {
 }
 mod hunk_tracking_mode {
     use super::super::{plan_hunk_tracking, resolve_hunk_tracking_mode};
-    use xai_hunk_tracker::TrackingMode;
+    use agent_tui_hunk_tracker::TrackingMode;
     #[test]
     fn off_and_disabled_disable_tracking() {
         assert_eq!(resolve_hunk_tracking_mode(Some("off")), None);
@@ -1121,11 +1121,11 @@ fn make_test_handle(
     let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel();
     let (hunk_event_tx, _hunk_event_rx) = tokio::sync::mpsc::unbounded_channel();
     let hunk_cancel = tokio_util::sync::CancellationToken::new();
-    let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+    let hunk_tracker_handle = agent_tui_hunk_tracker::HunkTrackerActor::spawn(
         "test".to_string(),
         std::path::PathBuf::from("/tmp"),
         hunk_event_tx,
-        xai_hunk_tracker::TrackingMode::AllDirty,
+        agent_tui_hunk_tracker::TrackingMode::AllDirty,
         hunk_cancel,
     );
     crate::session::SessionHandle {
@@ -1141,7 +1141,7 @@ fn make_test_handle(
         },
         max_turns: None,
         hunk_tracker_handle,
-        chat_state_handle: xai_chat_state::ChatStateHandle::noop(),
+        chat_state_handle: agent_tui_chat_state::ChatStateHandle::noop(),
         signals_handle: crate::session::signals::SessionSignalsHandle::new(),
         gateway_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         mcp_servers: vec![],
@@ -1809,11 +1809,11 @@ async fn resident_activity_reports_needs_input_when_pending() {
 /// payload that carries an upserted entry (ignoring any unrelated
 /// notifications, which parse into an empty `RosterChanged`).
 fn drain_roster_changed(
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<agent_tui_acp_lib::AcpClientMessage>,
 ) -> Option<crate::agent::roster::RosterChanged> {
     let mut found = None;
     while let Ok(msg) = rx.try_recv() {
-        if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg {
+        if let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg {
             if found.is_none()
                 && let Ok(changed) = serde_json::from_str::<crate::agent::roster::RosterChanged>(
                     args.request.params.get(),
@@ -2292,7 +2292,7 @@ async fn auth_type_session_based_no_current_returns_session_token() {
         );
         assert_eq!(
             agent.auth_type(),
-            xai_chat_state::AuthType::SessionToken,
+            agent_tui_chat_state::AuthType::SessionToken,
             "{method_id}: session-based auth must report SessionToken even \
                  without a live token -- otherwise chat_state gets locked into \
                  auth_type = ApiKey and try_refresh_session_token will skip \
@@ -2313,7 +2313,7 @@ async fn auth_type_xai_api_key_no_current_returns_api_key() {
     assert!(agent.auth_manager.current().is_none());
     assert_eq!(
         agent.auth_type(),
-        xai_chat_state::AuthType::ApiKey,
+        agent_tui_chat_state::AuthType::ApiKey,
         "xai.api_key auth must report ApiKey -- BYOK has no session-token \
              behavior to fall back to."
     );
@@ -2330,7 +2330,7 @@ async fn auth_type_session_based_with_current_returns_session_token() {
     ));
     agent.auth_manager.hot_swap(GrokAuth::test_default());
     assert!(agent.auth_manager.current().is_some());
-    assert_eq!(agent.auth_type(), xai_chat_state::AuthType::SessionToken,);
+    assert_eq!(agent.auth_type(), agent_tui_chat_state::AuthType::SessionToken,);
 }
 /// Defensive case: no `auth_method_id` selected yet (pre-`authenticate`
 /// state) and no live credential. We default to `ApiKey` so callers
@@ -2342,7 +2342,7 @@ async fn auth_type_no_method_id_no_current_returns_api_key() {
     let agent = build_minimal_agent_for_tests();
     assert!(agent.auth_method_id.load().is_none());
     assert!(agent.auth_manager.current().is_none());
-    assert_eq!(agent.auth_type(), xai_chat_state::AuthType::ApiKey,);
+    assert_eq!(agent.auth_type(), agent_tui_chat_state::AuthType::ApiKey,);
 }
 /// Live credential present but `auth_method_id` is still `None`. The
 /// in-memory bearer takes precedence: this is the order observed during
@@ -2356,7 +2356,7 @@ async fn auth_type_no_method_id_with_current_returns_session_token() {
     agent.auth_manager.hot_swap(GrokAuth::test_default());
     assert!(agent.auth_method_id.load().is_none());
     assert!(agent.auth_manager.current().is_some());
-    assert_eq!(agent.auth_type(), xai_chat_state::AuthType::SessionToken,);
+    assert_eq!(agent.auth_type(), agent_tui_chat_state::AuthType::SessionToken,);
 }
 /// Minimal agent whose `grok_com_config` engages the api-key kill switch
 /// (`disable_api_key_auth = true`), mirroring a forced-IdP deployment.
@@ -3480,7 +3480,7 @@ fn reload_after_terminal_removal_starts_clean() {
 /// `x.ai/folder_trust/request` round-trip.
 fn build_agent_with_gateway_rx() -> (
     MvpAgent,
-    tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+    tokio::sync::mpsc::UnboundedReceiver<agent_tui_acp_lib::AcpClientMessage>,
 ) {
     use crate::agent::config::Config as AgentConfig;
     use crate::auth::{AuthManager, GrokComConfig};
@@ -3515,14 +3515,14 @@ fn folder_trust_on() -> crate::util::config::RemoteSettings {
 /// Pull the next `x.ai/folder_trust/request` reverse-request off the gateway and
 /// answer it with `outcome`. Returns the request's decoded params.
 async fn answer_folder_trust_request(
-    gw_rx: &mut tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+    gw_rx: &mut tokio::sync::mpsc::UnboundedReceiver<agent_tui_acp_lib::AcpClientMessage>,
     outcome: &str,
 ) -> serde_json::Value {
     let msg = tokio::time::timeout(std::time::Duration::from_secs(2), gw_rx.recv())
         .await
         .expect("trust request must be sent")
         .expect("gateway channel open");
-    let xai_acp_lib::AcpClientMessage::ExtMethod(args) = msg else {
+    let agent_tui_acp_lib::AcpClientMessage::ExtMethod(args) = msg else {
         panic!("expected an ext_method reverse-request, got a different message");
     };
     assert_eq!(args.request.method.as_ref(), "x.ai/folder_trust/request");
@@ -3732,7 +3732,7 @@ fn interactive_trust_prompt_client_error_fails_closed() {
             .await
             .expect("trust request must be sent")
             .expect("gateway channel open");
-        assert!(matches!(msg, xai_acp_lib::AcpClientMessage::ExtMethod(_)));
+        assert!(matches!(msg, agent_tui_acp_lib::AcpClientMessage::ExtMethod(_)));
         drop(msg);
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(300), cmd_rx.recv())
@@ -3771,7 +3771,7 @@ fn interactive_trust_prompt_dedups_same_workspace() {
         agent.maybe_spawn_interactive_trust_prompt(&sid, &repo_path, Some(&remote));
         let first = tokio::time::timeout(std::time::Duration::from_secs(2), gw_rx.recv()).await;
         assert!(
-            matches!(first, Ok(Some(xai_acp_lib::AcpClientMessage::ExtMethod(_)))),
+            matches!(first, Ok(Some(agent_tui_acp_lib::AcpClientMessage::ExtMethod(_)))),
             "first prompt for an untrusted workspace must emit a request"
         );
         agent.maybe_spawn_interactive_trust_prompt(&sid, &repo_path, Some(&remote));
@@ -3892,7 +3892,7 @@ fn interactive_trust_prompt_reloads_all_same_workspace_sessions() {
 #[serial_test::serial]
 fn interactive_trust_prompt_reprompts_after_untrust() {
     use agent_tui_test_support::EnvGuard;
-    use xai_hooks_plugins_types::HooksAction;
+    use agent_tui_hooks_plugins_types::HooksAction;
     let home = tempfile::tempdir().unwrap();
     let _env = EnvGuard::set("GROK_HOME", home.path());
     let _sim = EnvGuard::set(agent_tui_version::TEST_VERSION_ENV, "0.0-sim");
@@ -3912,7 +3912,7 @@ fn interactive_trust_prompt_reprompts_after_untrust() {
         assert!(
             matches!(
                 tokio::time::timeout(std::time::Duration::from_secs(2), gw_rx.recv()).await,
-                Ok(Some(xai_acp_lib::AcpClientMessage::ExtMethod(_)))
+                Ok(Some(agent_tui_acp_lib::AcpClientMessage::ExtMethod(_)))
             ),
             "first prompt must emit a request"
         );
@@ -3932,7 +3932,7 @@ fn interactive_trust_prompt_reprompts_after_untrust() {
         assert!(
             matches!(
                 tokio::time::timeout(std::time::Duration::from_secs(2), gw_rx.recv()).await,
-                Ok(Some(xai_acp_lib::AcpClientMessage::ExtMethod(_)))
+                Ok(Some(agent_tui_acp_lib::AcpClientMessage::ExtMethod(_)))
             ),
             "after untrust clears the dedup, the workspace must be promptable again"
         );
@@ -4219,9 +4219,9 @@ async fn emit_announcements_gate_emits_updates_baseline_and_bumps_gen() {
     let (agent, mut rx) = build_agent_with_gateway_rx();
     agent.cfg.borrow_mut().remote_settings = Some(settings_with(Some(vec![ann("a")])));
     let recv_gen =
-        |rx: &mut tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>| {
+        |rx: &mut tokio::sync::mpsc::UnboundedReceiver<agent_tui_acp_lib::AcpClientMessage>| {
             let msg = rx.try_recv().expect("expected an announcements push");
-            let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg else {
+            let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg else {
                 panic!("expected ExtNotification, got another message kind");
             };
             assert_eq!(args.request.method.as_ref(), "x.ai/announcements/update");
@@ -4277,7 +4277,7 @@ async fn emit_announcements_gate_keeps_baseline_on_failed_send_and_retries() {
     let msg = rx
         .try_recv()
         .expect("next gate call must re-push after a failed send");
-    let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg else {
+    let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg else {
         panic!("expected ExtNotification, got another message kind");
     };
     assert_eq!(args.request.method.as_ref(), "x.ai/announcements/update");
@@ -4407,7 +4407,7 @@ mod soft_default_settings_emit {
                 agent.cfg.borrow_mut().remote_settings = cfg.remote_settings.clone();
                 agent.emit_settings_update_notification();
                 let msg = rx.try_recv().expect("settings/update must be emitted");
-                let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg else {
+                let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg else {
                     panic!("expected ExtNotification, got {msg:?}");
                 };
                 assert_eq!(args.request.method.as_ref(), "x.ai/settings/update");

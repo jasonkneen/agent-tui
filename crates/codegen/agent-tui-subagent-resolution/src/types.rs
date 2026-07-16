@@ -27,7 +27,7 @@ pub struct EffectiveRuntimeConfig {
     // Currently stringly-typed for compatibility with the shell's existing API.
     pub reasoning_effort: Option<String>,
     /// Resolved capability mode controlling tool access.
-    pub capability_mode: Option<xai_tool_types::SubagentCapabilityMode>,
+    pub capability_mode: Option<agent_tui_tool_types::SubagentCapabilityMode>,
     /// Resolved persona name (for metadata/observability).
     pub persona: Option<String>,
     /// Resolved persona instructions text (for prompt assembly).
@@ -42,7 +42,7 @@ pub struct EffectiveRuntimeConfig {
     /// Unlike role prompts, persona errors are fatal: spawn is aborted.
     pub persona_error: Option<String>,
     /// Isolation mode for the child execution environment.
-    pub isolation: xai_tool_types::SubagentIsolationMode,
+    pub isolation: agent_tui_tool_types::SubagentIsolationMode,
 }
 
 /// Data about a completed source subagent, needed for resume validation
@@ -94,7 +94,7 @@ pub enum ResolutionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xai_tool_types::SubagentIsolationMode;
+    use agent_tui_tool_types::SubagentIsolationMode;
 
     #[test]
     fn effective_runtime_config_default_values() {

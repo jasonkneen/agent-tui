@@ -26,7 +26,7 @@ pub async fn run_document_extraction<F>(
     max_bytes: usize,
     timeout: std::time::Duration,
     extract_fn: F,
-) -> Result<ReadFileOutput, xai_tool_runtime::ToolError>
+) -> Result<ReadFileOutput, agent_tui_tool_runtime::ToolError>
 where
     F: FnOnce(Vec<u8>) -> Result<ReadFileOutput, String> + Send + 'static,
 {
@@ -81,7 +81,7 @@ pub(crate) async fn handle_pdf(
     path: &std::path::Path,
     pages: Option<String>,
     format: Option<&str>,
-) -> Result<ReadFileOutput, xai_tool_runtime::ToolError> {
+) -> Result<ReadFileOutput, agent_tui_tool_runtime::ToolError> {
     let extract_text = match format {
         None | Some("image") => false,
         Some("text") => true,

@@ -196,28 +196,28 @@ impl crate::types::tool_metadata::ToolMetadata for HashlineGrepTool {
     }
 }
 
-impl xai_tool_runtime::Tool for HashlineGrepTool {
+impl agent_tui_tool_runtime::Tool for HashlineGrepTool {
     type Args = GrepSearchInput;
     type Output = GrepSearchOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("hashline_grep").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("hashline_grep").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "hashline_grep",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: true,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Read),
             ..Default::default()
         }
     }
@@ -229,9 +229,9 @@ impl xai_tool_runtime::Tool for HashlineGrepTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: GrepSearchInput,
-    ) -> Result<GrepSearchOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<GrepSearchOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -240,15 +240,15 @@ impl xai_tool_runtime::Tool for HashlineGrepTool {
         // Delegate to standard GrepTool for ripgrep execution.
         let grep = GrepTool;
         let cwd = crate::types::tool_metadata::resolve_cwd(&ctx, &resources).await?;
-        let call_id = xai_tool_protocol::ToolCallId::new_v7();
-        let mut rt_ctx = xai_tool_runtime::ToolCallContext::new(call_id);
+        let call_id = agent_tui_tool_protocol::ToolCallId::new_v7();
+        let mut rt_ctx = agent_tui_tool_runtime::ToolCallContext::new(call_id);
         rt_ctx.extensions.insert(resources.clone());
-        rt_ctx.extensions.insert(xai_tool_runtime::Cwd(cwd));
-        let mut result = xai_tool_runtime::Tool::run(&grep, rt_ctx, input)
+        rt_ctx.extensions.insert(agent_tui_tool_runtime::Cwd(cwd));
+        let mut result = agent_tui_tool_runtime::Tool::run(&grep, rt_ctx, input)
             .await
             .map_err(|e| {
-                xai_tool_runtime::ToolError::execution(
-                    xai_tool_protocol::ToolId::new("grep").expect("valid"),
+                agent_tui_tool_runtime::ToolError::execution(
+                    agent_tui_tool_protocol::ToolId::new("grep").expect("valid"),
                     e.to_string(),
                 )
             })?;
@@ -269,7 +269,7 @@ impl xai_tool_runtime::Tool for HashlineGrepTool {
                 let scheme = params
                     .0
                     .build_scheme()
-                    .map_err(xai_tool_runtime::ToolError::invalid_arguments)?;
+                    .map_err(agent_tui_tool_runtime::ToolError::invalid_arguments)?;
                 (fs, scheme)
             };
             match tokio::time::timeout(
@@ -337,9 +337,9 @@ mod tests {
     fn tool_metadata() {
         use crate::types::tool_metadata::ToolMetadata;
         let tool = HashlineGrepTool;
-        assert_eq!(xai_tool_runtime::Tool::id(&tool).as_str(), "hashline_grep");
+        assert_eq!(agent_tui_tool_runtime::Tool::id(&tool).as_str(), "hashline_grep");
         assert_eq!(ToolMetadata::kind(&tool), ToolKind::Search);
-        assert!(xai_tool_runtime::Tool::capabilities(&tool).is_read_only);
+        assert!(agent_tui_tool_runtime::Tool::capabilities(&tool).is_read_only);
         assert!(matches!(
             ToolMetadata::tool_namespace(&tool),
             ToolNamespace::GrokBuildHashline

@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use chrono::{Local, SecondsFormat};
 use serde_json::json;
-use xai_mixpanel::Mixpanel;
+use agent_tui_mixpanel::Mixpanel;
 
 use crate::config::{TelemetryConfig, TelemetryMode, deployment_id_from_key};
 use crate::http::OriginClientInfo;

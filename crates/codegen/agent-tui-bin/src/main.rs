@@ -1020,7 +1020,7 @@ async fn run_agent_command(
                 let replay_state_stdin = replay_state.clone();
                 let cancel_stdin = cancel.clone();
                 let stdin_task = tokio::spawn(async move {
-                    let mut stdin_lines = xai_acp_lib::spawn_stdin_line_reader();
+                    let mut stdin_lines = agent_tui_acp_lib::spawn_stdin_line_reader();
                     loop {
                         tokio::select! {
                             biased; _ = cancel_stdin.cancelled() => break, maybe_line =
@@ -1484,17 +1484,17 @@ fn main() {
         disabled: agent_tui_shell::agent::config::is_error_reporting_disabled_sync(),
     });
     agent_tui_pager::docs::extract_user_guide_docs(&agent_tui_shell::util::grok_home::grok_home());
-    xai_crash_handler::install_terminal_restore_only();
+    agent_tui_crash_handler::install_terminal_restore_only();
     if agent_tui_shell::util::config::load_crash_handler_enabled_sync() {
         let crash_dir = agent_tui_shell::util::grok_home::grok_home().join("crash");
-        if let Some(report) = xai_crash_handler::check_previous_crash(&crash_dir) {
+        if let Some(report) = agent_tui_crash_handler::check_previous_crash(&crash_dir) {
             eprintln!("Grok crashed during your last session.");
             eprintln!("  Signal:  {}", report.signal_name);
             eprintln!("  Version: {}", report.app_version);
             eprintln!("  Report:  {}", report.report_path.display());
             eprintln!();
         }
-        if !xai_crash_handler::install(xai_crash_handler::CrashHandlerConfig {
+        if !agent_tui_crash_handler::install(agent_tui_crash_handler::CrashHandlerConfig {
             app_version: env!("VERSION_WITH_COMMIT").to_string(),
             crash_dir: crash_dir.clone(),
         }) {
@@ -1518,7 +1518,7 @@ fn main() {
     let result = run_and_shutdown(runtime, async_main(), RUNTIME_SHUTDOWN_GRACE);
     agent_tui_telemetry::debug_log::flush();
     if let Err(e) = result {
-        xai_tty_utils::restore_native_stderr();
+        agent_tui_tty_utils::restore_native_stderr();
         eprintln!("Error: {e:#}");
         drop(_sentry_guard);
         std::process::exit(1);

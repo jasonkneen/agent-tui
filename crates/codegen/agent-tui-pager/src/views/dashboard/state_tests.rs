@@ -842,7 +842,7 @@ fn peek_enter_with_text_emits_reply() {
 
 fn peek_test_image() -> crate::prompt_images::PastedImage {
     crate::prompt_images::PastedImage {
-        element_id: xai_ratatui_textarea::ElementId::from_raw(0),
+        element_id: agent_tui_ratatui_textarea::ElementId::from_raw(0),
         display_number: 0,
         mime_type: "image/png".into(),
         dimensions: Some((10, 10)),
@@ -3148,7 +3148,7 @@ fn bracketed_paste_with_peek_open_goes_to_reply() {
 fn pasted_image_chip_omits_full_path() {
     let mut state = DashboardState::new();
     let pasted = crate::prompt_images::PastedImage {
-        element_id: xai_ratatui_textarea::ElementId::from_raw(0),
+        element_id: agent_tui_ratatui_textarea::ElementId::from_raw(0),
         display_number: 0,
         mime_type: "image/png".into(),
         dimensions: Some((10, 10)),

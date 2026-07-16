@@ -305,15 +305,15 @@ fn marketplace_list_loaded_sanitizes_components_at_ingestion() {
         Some(ExtensionsModalState::new(ExtensionsTab::Marketplace));
 
     let mut entry = cta_entry("dirty", "not_installed");
-    entry.components = Some(xai_hooks_plugins_types::PluginComponents {
-        skills: vec![xai_hooks_plugins_types::ComponentItem {
+    entry.components = Some(agent_tui_hooks_plugins_types::PluginComponents {
+        skills: vec![agent_tui_hooks_plugins_types::ComponentItem {
             name: "evil\u{1b}[31mskill".into(),
             description: Some(format!("\u{7}{}", "d".repeat(300))),
         }],
         ..Default::default()
     });
-    let response = xai_hooks_plugins_types::MarketplaceListResponse {
-        sources: vec![xai_hooks_plugins_types::MarketplaceScanResult {
+    let response = agent_tui_hooks_plugins_types::MarketplaceListResponse {
+        sources: vec![agent_tui_hooks_plugins_types::MarketplaceScanResult {
             source_name: "s".into(),
             source_kind: "git".into(),
             source_url_or_path: "https://example.com/repo.git".into(),
@@ -359,8 +359,8 @@ fn plugins_action_success_sets_result_notice_and_autoreload_preserves_it() {
     dispatch(
         Action::TaskComplete(TaskResult::PluginsActionResult {
             agent_id: id,
-            result: Ok(xai_hooks_plugins_types::ActionOutcome {
-                status: xai_hooks_plugins_types::OutcomeStatus::Success,
+            result: Ok(agent_tui_hooks_plugins_types::ActionOutcome {
+                status: agent_tui_hooks_plugins_types::OutcomeStatus::Success,
                 message: "user/abcd1234/my-plugin: updated".into(),
                 requires_reload: true,
                 requires_restart: false,
@@ -383,8 +383,8 @@ fn plugins_action_success_sets_result_notice_and_autoreload_preserves_it() {
     dispatch(
         Action::TaskComplete(TaskResult::PluginsActionResult {
             agent_id: id,
-            result: Ok(xai_hooks_plugins_types::ActionOutcome {
-                status: xai_hooks_plugins_types::OutcomeStatus::Success,
+            result: Ok(agent_tui_hooks_plugins_types::ActionOutcome {
+                status: agent_tui_hooks_plugins_types::OutcomeStatus::Success,
                 message: "Plugin registry rebuilt: 5 plugin(s).".into(),
                 requires_reload: false,
                 requires_restart: false,
@@ -416,8 +416,8 @@ fn tab_wide_action_success_sets_tab_wide_result_notice() {
     dispatch(
         Action::TaskComplete(TaskResult::PluginsActionResult {
             agent_id: id,
-            result: Ok(xai_hooks_plugins_types::ActionOutcome {
-                status: xai_hooks_plugins_types::OutcomeStatus::Success,
+            result: Ok(agent_tui_hooks_plugins_types::ActionOutcome {
+                status: agent_tui_hooks_plugins_types::OutcomeStatus::Success,
                 message: "Plugin registry rebuilt: 7 plugin(s).".into(),
                 requires_reload: false,
                 requires_restart: false,
@@ -441,7 +441,7 @@ fn uninstall_result_notice_is_footer_only_not_row_anchored() {
         let mut modal = ExtensionsModalState::new(ExtensionsTab::Plugins);
         // A row action was in flight, but it's an uninstall — the row goes away.
         modal.pending_entry_index = Some(1);
-        modal.last_plugins_action = Some(xai_hooks_plugins_types::PluginsAction::Uninstall {
+        modal.last_plugins_action = Some(agent_tui_hooks_plugins_types::PluginsAction::Uninstall {
             plugin_id: "user/ab12/gone".into(),
             confirmed: true,
         });
@@ -451,8 +451,8 @@ fn uninstall_result_notice_is_footer_only_not_row_anchored() {
     dispatch(
         Action::TaskComplete(TaskResult::PluginsActionResult {
             agent_id: id,
-            result: Ok(xai_hooks_plugins_types::ActionOutcome {
-                status: xai_hooks_plugins_types::OutcomeStatus::Success,
+            result: Ok(agent_tui_hooks_plugins_types::ActionOutcome {
+                status: agent_tui_hooks_plugins_types::OutcomeStatus::Success,
                 message: "Uninstalled repo \"user/ab12/gone\" (1 plugin(s): gone)".into(),
                 requires_reload: true,
                 requires_restart: false,

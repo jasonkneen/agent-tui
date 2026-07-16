@@ -725,7 +725,7 @@ pub struct AgentDefinition {
     /// can use. Applied during subagent spawn in `handle_subagent_request`
     /// by filtering the definition's `tool_config` before session creation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capability_mode: Option<xai_tool_types::SubagentCapabilityMode>,
+    pub capability_mode: Option<agent_tui_tool_types::SubagentCapabilityMode>,
     #[serde(default)]
     pub permission_mode: PermissionMode,
     #[serde(default)]
@@ -1525,7 +1525,7 @@ impl AgentDefinition {
     pub fn general_purpose() -> Self {
         use crate::prompt::subagent_prompts;
         Self {
-            description: xai_tool_types::GENERAL_PURPOSE_SUBAGENT
+            description: agent_tui_tool_types::GENERAL_PURPOSE_SUBAGENT
                 .description
                 .to_string(),
             prompt_body: Some(subagent_prompts::GENERAL_PURPOSE_PROMPT.to_string()),
@@ -1536,7 +1536,7 @@ impl AgentDefinition {
     pub fn explore() -> Self {
         use crate::prompt::subagent_prompts;
         Self {
-            description: xai_tool_types::EXPLORE_SUBAGENT.description.to_string(),
+            description: agent_tui_tool_types::EXPLORE_SUBAGENT.description.to_string(),
             tool_config: explore_toolset(),
             permission_mode: PermissionMode::Plan,
             prompt_body: Some(subagent_prompts::EXPLORE_PROMPT.to_string()),
@@ -1548,7 +1548,7 @@ impl AgentDefinition {
     pub fn plan() -> Self {
         use crate::prompt::subagent_prompts;
         Self {
-            description: xai_tool_types::PLAN_SUBAGENT.description.to_string(),
+            description: agent_tui_tool_types::PLAN_SUBAGENT.description.to_string(),
             tool_config: plan_toolset(),
             permission_mode: PermissionMode::Plan,
             prompt_body: Some(subagent_prompts::PLAN_PROMPT.to_string()),

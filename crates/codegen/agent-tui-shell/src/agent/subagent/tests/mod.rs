@@ -99,7 +99,7 @@ async fn emit_subagent_notification_stamps_one_event_id_on_both_paths() {
     };
     assert!(persisted_id.starts_with("parent-sess-"));
     let broadcast_id = match gateway_rx.try_recv().expect("broadcast must fire") {
-        xai_acp_lib::AcpClientMessage::ExtNotification(args) => {
+        agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) => {
             let params: serde_json::Value = serde_json::from_str(
                     args.request.params.get(),
                 )
@@ -1069,7 +1069,7 @@ fn dummy_tracker(
         Some(acp::SessionId::new("test")),
         fs,
         terminal,
-        xai_hunk_tracker::HunkTrackerHandle::noop(),
+        agent_tui_hunk_tracker::HunkTrackerHandle::noop(),
     );
     let signals_handle = SessionSignalsHandle::new();
     let feedback_manager = FeedbackManager::new(
@@ -1089,8 +1089,8 @@ fn dummy_tracker(
             cwd: "/tmp".into(),
         },
         max_turns: None,
-        hunk_tracker_handle: xai_hunk_tracker::HunkTrackerHandle::noop(),
-        chat_state_handle: xai_chat_state::ChatStateHandle::noop(),
+        hunk_tracker_handle: agent_tui_hunk_tracker::HunkTrackerHandle::noop(),
+        chat_state_handle: agent_tui_chat_state::ChatStateHandle::noop(),
         signals_handle,
         gateway_enabled: Arc::new(AtomicBool::new(false)),
         mcp_servers: vec![],
@@ -1211,7 +1211,7 @@ async fn resolve_running_list_populates_fields_from_signals() {
 fn explicit_override_takes_precedence_over_role() {
     let overrides = SubagentRuntimeOverrides {
         model: Some("explicit-model".into()),
-        capability_mode: Some(xai_tool_types::SubagentCapabilityMode::All),
+        capability_mode: Some(agent_tui_tool_types::SubagentCapabilityMode::All),
         ..Default::default()
     };
     let role = agent_tui_subagent_resolution::config::SubagentRole {
@@ -1229,7 +1229,7 @@ fn explicit_override_takes_precedence_over_role() {
     );
     assert_eq!(resolved.model.as_deref(), Some("explicit-model"));
     assert_eq!(
-        resolved.capability_mode, Some(xai_tool_types::SubagentCapabilityMode::All)
+        resolved.capability_mode, Some(agent_tui_tool_types::SubagentCapabilityMode::All)
     );
 }
 #[test]
@@ -1250,7 +1250,7 @@ fn role_default_used_when_no_explicit_override() {
     );
     assert_eq!(resolved.model.as_deref(), Some("role-model"));
     assert_eq!(
-        resolved.capability_mode, Some(xai_tool_types::SubagentCapabilityMode::ReadOnly)
+        resolved.capability_mode, Some(agent_tui_tool_types::SubagentCapabilityMode::ReadOnly)
     );
 }
 #[test]
@@ -1287,7 +1287,7 @@ fn partial_override_fills_from_role() {
     );
     assert_eq!(resolved.model.as_deref(), Some("explicit-model"));
     assert_eq!(
-        resolved.capability_mode, Some(xai_tool_types::SubagentCapabilityMode::Execute)
+        resolved.capability_mode, Some(agent_tui_tool_types::SubagentCapabilityMode::Execute)
     );
 }
 #[test]
@@ -2708,7 +2708,7 @@ async fn background_unknown_type_emits_subagent_finished_notification() {
     assert!(found_persisted, "must persist SubagentFinished via parent_cmd_tx");
     let mut found_live = false;
     while let Ok(msg) = gateway_rx.try_recv() {
-        if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg {
+        if let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg {
             let req: &acp::ExtNotification = &args.request;
             assert_eq!(req.method.as_ref(), "x.ai/session_notification");
             let body = req.params.get();
@@ -2799,7 +2799,7 @@ async fn cancel_pending_subagent_at_promote_emits_exactly_one_cancelled_finish()
     assert_eq!(persisted, 1, "exactly one persisted SubagentFinished");
     let mut live = 0;
     while let Ok(msg) = gateway_rx.try_recv() {
-        if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg {
+        if let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg {
             let body = args.request.params.get();
             if body.contains("subagent_finished") {
                 assert!(body.contains(& subagent_id));
@@ -2896,7 +2896,7 @@ async fn run_promote_cancel_with_worktree(
     assert_eq!(persisted, 1, "exactly one persisted SubagentFinished");
     let mut live = 0;
     while let Ok(msg) = gateway_rx.try_recv() {
-        if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg
+        if let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg
             && args.request.params.get().contains("subagent_finished")
         {
             live += 1;
@@ -2917,8 +2917,8 @@ async fn run_promote_cancel_with_worktree(
 /// source's working state). Exactly one cancelled finish emits either way.
 #[tokio::test]
 async fn cancel_pending_at_promote_removes_fresh_worktree_preserves_resumed() {
-    xai_test_utils::require_git!();
-    use xai_test_utils::git::{git_commit_all, init_git_repo};
+    agent_tui_test_utils::require_git!();
+    use agent_tui_test_utils::git::{git_commit_all, init_git_repo};
     let temp = tempfile::TempDir::new().unwrap();
     let repo = temp.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
@@ -2926,7 +2926,7 @@ async fn cancel_pending_at_promote_removes_fresh_worktree_preserves_resumed() {
     std::fs::write(repo.join("tracked.txt"), "original").unwrap();
     git_commit_all(&repo, "initial");
     let fresh = temp.path().join("subagent-fresh");
-    xai_fast_worktree::WorktreeBuilder::new(&repo, &fresh)
+    agent_tui_fast_worktree::WorktreeBuilder::new(&repo, &fresh)
         .standalone(true)
         .create()
         .unwrap();
@@ -2936,7 +2936,7 @@ async fn cancel_pending_at_promote_removes_fresh_worktree_preserves_resumed() {
         ! fresh.exists(), "freshly-created worktree must be removed on pending-kill"
     );
     let resumed = temp.path().join("subagent-resumed");
-    xai_fast_worktree::WorktreeBuilder::new(&repo, &resumed)
+    agent_tui_fast_worktree::WorktreeBuilder::new(&repo, &resumed)
         .standalone(true)
         .create()
         .unwrap();
@@ -3128,7 +3128,7 @@ fn byok_model_entry(model_id: &str) -> crate::agent::config::ModelEntry {
 #[test]
 fn subagent_auth_type_rule() {
     use crate::agent::auth_method::{CACHED_TOKEN_AUTH_METHOD_ID, XAI_API_KEY_METHOD_ID};
-    use xai_chat_state::AuthType;
+    use agent_tui_chat_state::AuthType;
     let session = acp::AuthMethodId::new(CACHED_TOKEN_AUTH_METHOD_ID);
     let api_key = acp::AuthMethodId::new(XAI_API_KEY_METHOD_ID);
     let byok = byok_model_entry("grok-byok");
@@ -3319,11 +3319,11 @@ fn test_sampling_config(model_slug: &str) -> agent_tui_sampling_types::SamplingC
         stream_tool_calls: None,
     }
 }
-fn spawn_test_parent_chat_state(model_slug: &str) -> xai_chat_state::ChatStateHandle {
-    let (mock, _persistence_rx) = xai_chat_state::MockChatPersistence::new();
+fn spawn_test_parent_chat_state(model_slug: &str) -> agent_tui_chat_state::ChatStateHandle {
+    let (mock, _persistence_rx) = agent_tui_chat_state::MockChatPersistence::new();
     let (event_tx, _event_rx) = mpsc::unbounded_channel();
     let token = tokio_util::sync::CancellationToken::new();
-    xai_chat_state::ChatStateActor::spawn(
+    agent_tui_chat_state::ChatStateActor::spawn(
         vec![],
         test_sampling_config(model_slug),
         Box::new(mock),

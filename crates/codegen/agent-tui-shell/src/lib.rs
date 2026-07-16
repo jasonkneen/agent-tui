@@ -6,7 +6,7 @@
     dead_code
 )]
 pub(crate) use agent_tui_telemetry::unified_log;
-pub use xai_tracing_macros::{teprintln, timed, tprintln};
+pub use agent_tui_tracing_macros::{teprintln, timed, tprintln};
 pub mod active_sessions;
 pub mod agent;
 pub mod auth;

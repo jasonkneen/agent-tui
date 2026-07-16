@@ -94,7 +94,7 @@ fn queued_prompt_rpc_error_does_not_kill_running_turn() {
 #[test]
 fn cta_install_done_skills_only_settles_installed_without_fetch() {
     use crate::app::agent_view::CtaPhase;
-    use xai_hooks_plugins_types::OutcomeStatus;
+    use agent_tui_hooks_plugins_types::OutcomeStatus;
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     {
@@ -140,7 +140,7 @@ fn cta_install_done_skills_only_settles_installed_without_fetch() {
 #[test]
 fn cta_reload_done_skills_only_settles_installed_without_fetch() {
     use crate::app::agent_view::CtaPhase;
-    use xai_hooks_plugins_types::OutcomeStatus;
+    use agent_tui_hooks_plugins_types::OutcomeStatus;
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     {

@@ -239,7 +239,7 @@ fn build_preview_command(cfg: &PreviewArgs) -> io::Result<tokio::process::Comman
     {
         use std::os::unix::process::CommandExt;
 
-        // Raw pre_exec, NOT xai_tty_utils::detach_command: the proxy must stay in
+        // Raw pre_exec, NOT agent_tui_tty_utils::detach_command: the proxy must stay in
         // the workspace-server's session/pgid to share its reap-escape, so the
         // setsid that detach_command performs would be actively wrong here (and
         // the daemonized server owns no controlling TTY, so the detach rationale

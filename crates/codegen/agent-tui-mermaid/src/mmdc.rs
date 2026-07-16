@@ -5,8 +5,8 @@
 //! `mmdc` produces the SVG; we rasterize it through [`crate::rasterize`] so the
 //! same security posture (no file resolvers, bundled font) and sizing apply.
 //!
-//! Security: the subprocess is spawned with [`xai_tty_utils::detach_std_command`]
-//! (TTY/session detach) + [`xai_tty_utils::pager_env`] + null stdio, source is
+//! Security: the subprocess is spawned with [`agent_tui_tty_utils::detach_std_command`]
+//! (TTY/session detach) + [`agent_tui_tty_utils::pager_env`] + null stdio, source is
 //! passed via a private temp file, and the shared [`crate::run_with_timeout`]
 //! enforces a wall-clock budget and reaps the process group (including Chromium
 //! grandchildren) on breach.
@@ -90,9 +90,9 @@ impl MermaidEngine for MmdcEngine {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .envs(xai_tty_utils::pager_env());
+            .envs(agent_tui_tty_utils::pager_env());
         // setsid/console detach via the sanctioned helper (never a raw pre_exec).
-        xai_tty_utils::detach_std_command(&mut cmd);
+        agent_tui_tty_utils::detach_std_command(&mut cmd);
 
         // Source goes via the temp file, so no stdin payload.
         run_with_timeout(cmd, None, self.timeout).map_err(map_subprocess_error)?;

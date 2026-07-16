@@ -3,10 +3,10 @@ mod display;
 use anyhow::{Result, bail};
 use clap::Subcommand;
 use tokio_util::sync::CancellationToken;
-use xai_fast_worktree::WorktreeRecord;
+use agent_tui_fast_worktree::WorktreeRecord;
 
 use agent_client_protocol as acp;
-use xai_acp_lib::acp_send;
+use agent_tui_acp_lib::acp_send;
 use agent_tui_shell::agent::config::Config as AgentConfig;
 
 /// Local response types matching the ACP response shapes.
@@ -121,7 +121,7 @@ pub async fn run(args: WorktreeArgs, agent_config: &AgentConfig) -> Result<()> {
     result
 }
 
-async fn dispatch(command: WorktreeCommand, tx: &xai_acp_lib::AcpAgentTx) -> Result<()> {
+async fn dispatch(command: WorktreeCommand, tx: &agent_tui_acp_lib::AcpAgentTx) -> Result<()> {
     match command {
         WorktreeCommand::List {
             repo,
@@ -160,7 +160,7 @@ struct ExtEnvelope<T> {
 }
 
 async fn ext_call<T: serde::de::DeserializeOwned>(
-    tx: &xai_acp_lib::AcpAgentTx,
+    tx: &agent_tui_acp_lib::AcpAgentTx,
     method: &str,
     params: &impl serde::Serialize,
 ) -> Result<T> {
@@ -180,7 +180,7 @@ async fn ext_call<T: serde::de::DeserializeOwned>(
 }
 
 async fn cmd_list(
-    tx: &xai_acp_lib::AcpAgentTx,
+    tx: &agent_tui_acp_lib::AcpAgentTx,
     repo: Option<String>,
     types: Vec<String>,
     json: bool,
@@ -205,7 +205,7 @@ async fn cmd_list(
     Ok(())
 }
 
-async fn cmd_show(tx: &xai_acp_lib::AcpAgentTx, id_or_path: &str) -> Result<()> {
+async fn cmd_show(tx: &agent_tui_acp_lib::AcpAgentTx, id_or_path: &str) -> Result<()> {
     let rec: Option<WorktreeRecord> = ext_call(
         tx,
         "x.ai/git/worktree/show",
@@ -231,7 +231,7 @@ struct RemoveResponse {
 }
 
 async fn cmd_rm(
-    tx: &xai_acp_lib::AcpAgentTx,
+    tx: &agent_tui_acp_lib::AcpAgentTx,
     ids: Vec<String>,
     force: bool,
     dry_run: bool,
@@ -264,7 +264,7 @@ async fn cmd_rm(
 }
 
 async fn cmd_gc(
-    tx: &xai_acp_lib::AcpAgentTx,
+    tx: &agent_tui_acp_lib::AcpAgentTx,
     dry_run: bool,
     max_age: Option<String>,
     force: bool,
@@ -287,7 +287,7 @@ async fn cmd_gc(
     Ok(())
 }
 
-async fn cmd_db(tx: &xai_acp_lib::AcpAgentTx, command: WorktreeDbCommand) -> Result<()> {
+async fn cmd_db(tx: &agent_tui_acp_lib::AcpAgentTx, command: WorktreeDbCommand) -> Result<()> {
     match command {
         WorktreeDbCommand::Stats => {
             let stats: DbStats = ext_call(tx, "x.ai/git/worktree/db/stats", &()).await?;

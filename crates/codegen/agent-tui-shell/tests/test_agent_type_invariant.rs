@@ -231,7 +231,7 @@ async fn test_grok_agent_env_overrides_model_agent_type() {
             use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
             let outgoing = outgoing.compat_write();
             let incoming = incoming.compat();
-            let incoming = xai_acp_lib::LineBufferedRead::spawn_local(incoming);
+            let incoming = agent_tui_acp_lib::LineBufferedRead::spawn_local(incoming);
             use agent_client_protocol as acp;
             struct NoopClient;
             #[async_trait::async_trait(?Send)]

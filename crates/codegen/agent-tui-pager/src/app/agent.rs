@@ -11,7 +11,7 @@ use agent_client_protocol as acp;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
-use xai_acp_lib::AcpAgentTx;
+use agent_tui_acp_lib::AcpAgentTx;
 use agent_tui_shell::extensions::notification::GoalClassifierVerdict;
 use agent_tui_shell::sampling::types::ReasoningEffort;
 /// Unique local identifier for an agent.
@@ -743,7 +743,7 @@ pub struct InFlightPrompt {
 #[derive(Debug, Clone)]
 pub struct ChipElement {
     pub range: std::ops::Range<usize>,
-    pub kind: xai_ratatui_textarea::ElementKind,
+    pub kind: agent_tui_ratatui_textarea::ElementKind,
     pub display: Option<ratatui::text::Line<'static>>,
 }
 impl AgentSession {

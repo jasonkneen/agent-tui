@@ -24,7 +24,7 @@ pub struct SchedulerListOutput {
     pub tasks: Vec<ScheduledTaskSummary>,
 }
 
-impl xai_tool_runtime::ToolOutput for SchedulerListOutput {}
+impl agent_tui_tool_runtime::ToolOutput for SchedulerListOutput {}
 
 #[derive(Debug, Default)]
 pub struct SchedulerListTool;
@@ -47,34 +47,34 @@ impl crate::types::tool_metadata::ToolMetadata for SchedulerListTool {
         use crate::types::tool_metadata::ToolMetadata as TM;
         Expr::Value(ToolRequirement::Tool {
             namespace: TM::tool_namespace(&SchedulerCreateTool).to_string(),
-            id: xai_tool_runtime::Tool::id(&SchedulerCreateTool).to_string(),
+            id: agent_tui_tool_runtime::Tool::id(&SchedulerCreateTool).to_string(),
             if_params: None,
         })
     }
 }
 
-impl xai_tool_runtime::Tool for SchedulerListTool {
+impl agent_tui_tool_runtime::Tool for SchedulerListTool {
     type Args = SchedulerListInput;
     type Output = SchedulerListOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("scheduler_list").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("scheduler_list").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "scheduler_list",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: false,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Write),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Write),
             ..Default::default()
         }
     }
@@ -82,9 +82,9 @@ impl xai_tool_runtime::Tool for SchedulerListTool {
     #[tracing::instrument(name = "tool.scheduler_list", skip_all)]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         _input: SchedulerListInput,
-    ) -> Result<SchedulerListOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<SchedulerListOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -92,7 +92,7 @@ impl xai_tool_runtime::Tool for SchedulerListTool {
             let res = resources.lock().await;
             res.get::<SchedulerHandle>()
                 .ok_or_else(|| {
-                    xai_tool_runtime::ToolError::custom(
+                    agent_tui_tool_runtime::ToolError::custom(
                         "missing_dependency",
                         "missing dependency: SchedulerHandle",
                     )
@@ -105,15 +105,15 @@ impl xai_tool_runtime::Tool for SchedulerListTool {
         sender
             .send(SchedulerCommand::List { reply: reply_tx })
             .map_err(|_| {
-                xai_tool_runtime::ToolError::execution(
-                    xai_tool_protocol::ToolId::new("scheduler_list").expect("valid"),
+                agent_tui_tool_runtime::ToolError::execution(
+                    agent_tui_tool_protocol::ToolId::new("scheduler_list").expect("valid"),
                     "Scheduler actor stopped",
                 )
             })?;
 
         let tasks = reply_rx.await.map_err(|_| {
-            xai_tool_runtime::ToolError::execution(
-                xai_tool_protocol::ToolId::new("scheduler_list").expect("valid"),
+            agent_tui_tool_runtime::ToolError::execution(
+                agent_tui_tool_protocol::ToolId::new("scheduler_list").expect("valid"),
                 "Scheduler actor dropped reply",
             )
         })?;

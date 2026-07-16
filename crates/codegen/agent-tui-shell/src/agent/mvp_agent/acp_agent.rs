@@ -1980,7 +1980,7 @@ impl acp::Agent for MvpAgent {
     ) -> Result<acp::PromptResponse, acp::Error> {
         use crate::session::plan_mode::PromptMode;
         if let Some(meta) = arguments.meta.as_ref() {
-            xai_file_utils::trace_context::link_current_span_to_meta(
+            agent_tui_file_utils::trace_context::link_current_span_to_meta(
                 &serde_json::Value::Object(meta.clone()),
             );
         }
@@ -2302,7 +2302,7 @@ impl acp::Agent for MvpAgent {
                 client_identifier: prompt_client_identifier,
                 screen_mode: prompt_screen_mode,
                 verbatim,
-                traceparent: xai_file_utils::trace_context::current_traceparent(),
+                traceparent: agent_tui_file_utils::trace_context::current_traceparent(),
                 json_schema,
                 send_now,
                 respond_to: tx,
@@ -2448,7 +2448,7 @@ impl acp::Agent for MvpAgent {
                     .spawned_refs_for_prompt(&prompt_id);
                 let permission_events = self
                     .collect_permission_events(&arguments.session_id);
-                let turn_messages: Option<xai_chat_state::TurnCapture> = {
+                let turn_messages: Option<agent_tui_chat_state::TurnCapture> = {
                     let (tx, rx) = oneshot::channel();
                     if handle
                         .cmd_tx
@@ -2610,7 +2610,7 @@ impl acp::Agent for MvpAgent {
                         let sid = arguments.session_id.to_string();
                         tokio::spawn(async move {
                             let git_out = |args: &[&str]| -> Option<String> {
-                                xai_tty_utils::git_command()
+                                agent_tui_tty_utils::git_command()
                                     .current_dir(&cwd_str)
                                     .args(args)
                                     .output()
@@ -2712,7 +2712,7 @@ impl acp::Agent for MvpAgent {
                         turn: i32,
                         cwd: String,
                     ) {
-                        let repo_head_at_end = xai_tty_utils::git_command()
+                        let repo_head_at_end = agent_tui_tty_utils::git_command()
                             .current_dir(&cwd)
                             .args(["rev-parse", "HEAD"])
                             .output()
@@ -2898,7 +2898,7 @@ impl acp::Agent for MvpAgent {
                     .subagent_coordinator
                     .borrow()
                     .spawned_refs_for_prompt(&prompt_id);
-                let turn_messages: Option<xai_chat_state::TurnCapture> = {
+                let turn_messages: Option<agent_tui_chat_state::TurnCapture> = {
                     let (tx, rx) = oneshot::channel();
                     if handle
                         .cmd_tx
@@ -3155,7 +3155,7 @@ impl acp::Agent for MvpAgent {
             .ok()
             .and_then(|v| v.get("_meta").cloned());
         if let Some(meta) = &request_meta {
-            xai_file_utils::trace_context::link_current_span_to_meta(meta);
+            agent_tui_file_utils::trace_context::link_current_span_to_meta(meta);
         }
         tracing::info!("Received extension method call: method={}", args.method);
         #[allow(unused_mut)]

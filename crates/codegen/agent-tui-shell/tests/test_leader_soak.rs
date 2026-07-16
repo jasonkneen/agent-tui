@@ -22,7 +22,7 @@ use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tokio_util::sync::CancellationToken;
-use xai_acp_lib::{
+use agent_tui_acp_lib::{
     AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
     LineBufferedRead,
 };
@@ -43,7 +43,7 @@ fn env_u64(key: &str, default: u64) -> u64 {
 }
 
 /// Resident set size of THIS process (leader server + agent are in-process).
-/// Copied from `xai-codebase-graph/tests/memory_integration.rs`.
+/// Copied from `agent-tui-codebase-graph/tests/memory_integration.rs`.
 fn rss_bytes() -> Option<usize> {
     #[cfg(target_os = "linux")]
     {
@@ -214,7 +214,7 @@ async fn leader_soak_churning_clients_no_leaks_no_zombies() {
                 );
                 tokio::task::spawn_local(
                     GatewayReceiver::new(gw_rx, conn)
-                        .with_on_meta(xai_file_utils::trace_context::span_from_meta_traceparent)
+                        .with_on_meta(agent_tui_file_utils::trace_context::span_from_meta_traceparent)
                         .run(),
                 );
                 let _ = handle_io.await;

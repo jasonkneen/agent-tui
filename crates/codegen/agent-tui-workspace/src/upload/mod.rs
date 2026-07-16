@@ -4,11 +4,11 @@ use environment::WorkspaceIdentity;
 use prometheus::{IntCounterVec, IntGauge, register_int_counter_vec, register_int_gauge};
 use std::sync::Arc;
 use std::sync::LazyLock;
-use xai_computer_hub_sdk::auth::{AuthCredential, AuthProvider};
-use xai_file_utils::gcs::StorageConfig;
-use xai_file_utils::queue::{EnqueueOutcome, TraceExportSource, UploadQueue};
-use xai_file_utils::storage_client::Auth401AttributionCallback;
-use xai_file_utils::{TraceExportConfig, UploadMethod};
+use agent_tui_computer_hub_sdk::auth::{AuthCredential, AuthProvider};
+use agent_tui_file_utils::gcs::StorageConfig;
+use agent_tui_file_utils::queue::{EnqueueOutcome, TraceExportSource, UploadQueue};
+use agent_tui_file_utils::storage_client::Auth401AttributionCallback;
+use agent_tui_file_utils::{TraceExportConfig, UploadMethod};
 use agent_tui_auth::{AuthCredentialProvider, CredentialSnapshot};
 /// `…_pending_bytes` is the series the mandatory queue-memory alert fires on.
 static UPLOAD_QUEUE_PENDING_BYTES: LazyLock<IntGauge> = LazyLock::new(|| {
@@ -312,7 +312,7 @@ pub(crate) async fn upload_tool_state_queued(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xai_computer_hub_sdk::auth::AuthCredential;
+    use agent_tui_computer_hub_sdk::auth::AuthCredential;
     fn proxy_config() -> Arc<ProxyStorageConfig> {
         proxy_config_with_identity(WorkspaceIdentity::default())
     }
@@ -433,7 +433,7 @@ mod tests {
         Arc::new(UploadQueue::spawn(
             home,
             source,
-            xai_file_utils::queue::UploadRetryPolicy::default(),
+            agent_tui_file_utils::queue::UploadRetryPolicy::default(),
         ))
     }
     /// Pins the tool-state path contract: bytes enqueued at exactly
@@ -441,7 +441,7 @@ mod tests {
     /// `tool_state` artifact name (asserted via queue stat + sidecar manifest).
     #[tokio::test]
     async fn tool_state_enqueues_at_session_turn_gcs_path() {
-        use xai_file_utils::queue::{
+        use agent_tui_file_utils::queue::{
             QueueItemSidecar, SIDECAR_SUFFIX, UploadQueue, UploadRetryPolicy,
         };
         let home = tempfile::TempDir::new().unwrap();

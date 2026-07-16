@@ -204,9 +204,9 @@ fn flush_telemetry_and_exit(exit_code: i32) -> ! {
     // Reap detached (setsid) background children before the hard exit. This tail
     // runs on the force/second-signal and agent-mode paths that skip the
     // graceful quit; the graceful path reaps them in `app::run`'s teardown.
-    xai_tty_utils::global_process_scope().kill_all();
+    agent_tui_tty_utils::global_process_scope().kill_all();
     // Restore fd 2 so Sentry/OTEL flushes reach the terminal.
-    xai_tty_utils::restore_native_stderr();
+    agent_tui_tty_utils::restore_native_stderr();
     agent_tui_telemetry::sentry::flush_on_shutdown();
     agent_tui_telemetry::otel_layer::shutdown_otel();
     // Flush the --debug firehose on TUI signal exit (this path bypasses main's flush).

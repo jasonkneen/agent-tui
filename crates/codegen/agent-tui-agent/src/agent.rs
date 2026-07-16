@@ -204,7 +204,7 @@ impl Agent {
         context_window: std::num::NonZeroU64,
     ) -> bool {
         let cw = context_window.get();
-        xai_token_estimation::exceeds_threshold(
+        agent_tui_token_estimation::exceeds_threshold(
             total_tokens,
             cw,
             self.compaction_policy.auto_compact_threshold_percent as u8,

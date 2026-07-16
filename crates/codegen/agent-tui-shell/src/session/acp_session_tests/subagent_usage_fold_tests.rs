@@ -4,16 +4,16 @@ use super::*;
 
 async fn make_actor() -> SessionActor {
     let (gateway_tx, _gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
     let (persistence_tx, _persistence_rx) =
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await
 }
 
-fn usage_rows() -> Vec<(String, xai_chat_state::UsageTotals)> {
+fn usage_rows() -> Vec<(String, agent_tui_chat_state::UsageTotals)> {
     vec![(
         "m".into(),
-        xai_chat_state::UsageTotals {
+        agent_tui_chat_state::UsageTotals {
             input_tokens: 40,
             model_calls: 1,
             ..Default::default()
@@ -153,7 +153,7 @@ fn project_from_ledger_never_drops_incomplete_flag() {
             .usage_is_incomplete
     );
 
-    let mut ledger = xai_chat_state::UsageLedger::default();
+    let mut ledger = agent_tui_chat_state::UsageLedger::default();
     ledger.record_main_loop_call(
         "m",
         &agent_tui_sampling_types::TokenUsage {
@@ -217,7 +217,7 @@ fn for_error_path_shared_policy() {
             .usage_is_incomplete
     );
 
-    let mut ledger = xai_chat_state::UsageLedger::default();
+    let mut ledger = agent_tui_chat_state::UsageLedger::default();
     ledger.record_main_loop_call(
         "m",
         &agent_tui_sampling_types::TokenUsage {

@@ -30,7 +30,7 @@ use crate::views::list_pane::{
     ListItem, ListPane, ListPaneConfig, ListPaneState, ListPaneStyle, WrapMode,
 };
 
-use xai_ratatui_textarea::ElementId;
+use agent_tui_ratatui_textarea::ElementId;
 
 // ── Line item ───────────────────────────────────────────────────────────
 

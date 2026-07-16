@@ -555,7 +555,7 @@ fn sampling_config_uses_fallback_when_no_model_api_key() {
         ResolvedCredentials {
             api_key: Some("fallback-key".to_string()),
             base_url: model.info().base_url.clone(),
-            auth_type: xai_chat_state::AuthType::ApiKey,
+            auth_type: agent_tui_chat_state::AuthType::ApiKey,
             auth_scheme: AuthScheme::Bearer,
         },
         None,
@@ -584,7 +584,7 @@ fn default_models_dual_endpoint_routing() {
                 .api_base_url
                 .clone()
                 .unwrap_or(entry.info().base_url.clone()),
-            auth_type: xai_chat_state::AuthType::ApiKey,
+            auth_type: agent_tui_chat_state::AuthType::ApiKey,
             auth_scheme: AuthScheme::Bearer,
         };
         assert_eq!(
@@ -685,7 +685,7 @@ fn first_own_credential_empty_api_key_falls_through_to_env_key() {
 #[test]
 #[serial]
 fn resolve_credentials_multi_env_key_uses_lc_alias() {
-    use xai_chat_state::AuthType;
+    use agent_tui_chat_state::AuthType;
     let primary = "GROK_TEST_MULTI_ENV_PRIMARY";
     let alias = "GROK_TEST_MULTI_ENV_LC_ALIAS";
     unsafe {
@@ -720,7 +720,7 @@ fn resolve_credentials_multi_env_key_uses_lc_alias() {
 #[test]
 #[serial]
 fn resolve_credentials_empty_env_key_falls_through_to_session() {
-    use xai_chat_state::AuthType;
+    use agent_tui_chat_state::AuthType;
     use agent_tui_test_support::EnvGuard;
     let primary = "GROK_TEST_EMPTY_ENV_PRIMARY";
     let alias = "GROK_TEST_EMPTY_ENV_LC_ALIAS";
@@ -737,7 +737,7 @@ fn resolve_credentials_empty_env_key_falls_through_to_session() {
 #[serial]
 fn resolve_credentials_empty_env_key_falls_through_to_global_key() {
     use crate::agent::auth_method::{LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR};
-    use xai_chat_state::AuthType;
+    use agent_tui_chat_state::AuthType;
     use agent_tui_test_support::EnvGuard;
     let sentinel = "xai-global-sentinel-key";
     let primary = "GROK_TEST_EMPTY_ENV_GLOBAL_PRIMARY";
@@ -755,7 +755,7 @@ fn resolve_credentials_empty_env_key_falls_through_to_global_key() {
 }
 #[test]
 fn resolve_credentials_empty_api_key_falls_through_to_session() {
-    use xai_chat_state::AuthType;
+    use agent_tui_chat_state::AuthType;
     let model = test_model_entry("m", "https://inference.example/v1", Some(""), None, None);
     assert!(!model.has_own_credentials());
     let creds = resolve_credentials(&model, Some("session-jwt"));
@@ -785,7 +785,7 @@ fn config_toml_env_key_array_parses() {
 }
 #[test]
 fn resolve_credentials_sets_auth_type() {
-    use xai_chat_state::AuthType;
+    use agent_tui_chat_state::AuthType;
     let model = test_model_entry("m", "https://example.com/v1", None, None, None);
     let creds = resolve_credentials(&model, Some("tok"));
     assert_eq!(creds.auth_type, AuthType::SessionToken);
@@ -798,7 +798,7 @@ fn resolve_credentials_sets_auth_type() {
 #[test]
 #[serial_test::serial]
 fn resolve_credentials_env_key_byok_keeps_api_key_auth_with_session() {
-    use xai_chat_state::AuthType;
+    use agent_tui_chat_state::AuthType;
     let env_var = "REGRESSION_BYOK_TOKEN_FOR_AUTH_TYPE_TEST";
     unsafe {
         std::env::set_var(env_var, "sk-byok-test-value");
@@ -863,20 +863,20 @@ fn proxy_messages_models_use_bearer_auth_scheme() {
 fn resolve_credentials_no_session_key_returns_api_key() {
     let model = test_model_entry("m", "https://example.com/v1", None, None, None);
     let creds = resolve_credentials(&model, None);
-    assert_eq!(creds.auth_type, xai_chat_state::AuthType::ApiKey);
+    assert_eq!(creds.auth_type, agent_tui_chat_state::AuthType::ApiKey);
 }
 fn api_key_creds(base_url: &str) -> ResolvedCredentials {
     ResolvedCredentials {
         api_key: Some("xai-secret".to_string()),
         base_url: base_url.to_string(),
-        auth_type: xai_chat_state::AuthType::ApiKey,
+        auth_type: agent_tui_chat_state::AuthType::ApiKey,
         auth_scheme: Default::default(),
     }
 }
 /// `disable_api_key_auth` kill switch (Claude `forceLoginMethod` parity).
 #[test]
 fn enforce_disable_api_key_auth_blocks_first_party_only() {
-    use xai_chat_state::AuthType;
+    use agent_tui_chat_state::AuthType;
     let mut creds = api_key_creds("https://api.x.ai/v1");
     enforce_disable_api_key_auth(&mut creds, false, Some("session-jwt"));
     assert_eq!(creds.auth_type, AuthType::ApiKey);
@@ -908,7 +908,7 @@ fn enforce_disable_api_key_auth_blocks_first_party_only() {
 /// loads global config, so this exercises its resolve + enforce core.)
 #[test]
 fn try_resolve_model_credentials_swaps_first_party_own_key_under_kill_switch() {
-    use xai_chat_state::AuthType;
+    use agent_tui_chat_state::AuthType;
     let entry = test_model_entry(
         "m",
         "https://api.x.ai/v1",
@@ -955,7 +955,7 @@ fn x_api_key_auth_scheme_flows_from_config_to_sampler() {
     model.info.auth_scheme = AuthScheme::XApiKey;
     let creds = resolve_credentials(&model, None);
     assert_eq!(creds.auth_scheme, AuthScheme::XApiKey);
-    assert_eq!(creds.auth_type, xai_chat_state::AuthType::ApiKey);
+    assert_eq!(creds.auth_type, agent_tui_chat_state::AuthType::ApiKey);
     assert_eq!(creds.api_key, Some("sk-ant-test-key".to_string()));
     let config = sampling_config_for_model(&model, creds, None, None, None, None);
     assert_eq!(config.auth_scheme, AuthScheme::XApiKey);
@@ -1195,22 +1195,22 @@ fn parses_auto_compact_threshold_percent() {
 }
 #[test]
 fn compaction_mode_precedence_env_over_config_over_remote_over_default() {
-    use xai_chat_state::CompactionMode;
+    use agent_tui_chat_state::CompactionMode;
     assert_eq!(
         resolve_compaction_mode_from(Some("transcript"), Some("segments"), Some("summary")),
         CompactionMode::Transcript
     );
     assert_eq!(
         resolve_compaction_mode_from(None, Some("segments"), Some("summary")),
-        CompactionMode::Segments(xai_chat_state::CompactionDetail::default())
+        CompactionMode::Segments(agent_tui_chat_state::CompactionDetail::default())
     );
     assert_eq!(
         resolve_compaction_mode_from(None, None, Some("segments")),
-        CompactionMode::Segments(xai_chat_state::CompactionDetail::default())
+        CompactionMode::Segments(agent_tui_chat_state::CompactionDetail::default())
     );
     assert_eq!(
         resolve_compaction_mode_from(Some("garbage"), None, Some("segments")),
-        CompactionMode::Segments(xai_chat_state::CompactionDetail::default())
+        CompactionMode::Segments(agent_tui_chat_state::CompactionDetail::default())
     );
     assert_eq!(
         resolve_compaction_mode_from(None, None, None),
@@ -1222,7 +1222,7 @@ fn compaction_mode_precedence_env_over_config_over_remote_over_default() {
 /// `Verbose` default (with unrecognized values falling through).
 #[test]
 fn compaction_detail_resolves_remote_settings_and_verbose_default() {
-    use xai_chat_state::CompactionDetail;
+    use agent_tui_chat_state::CompactionDetail;
     assert_eq!(
         resolve_compaction_detail_from(None, None, Some("minimal")),
         CompactionDetail::Minimal

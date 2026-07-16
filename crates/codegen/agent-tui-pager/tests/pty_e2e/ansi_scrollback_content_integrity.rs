@@ -4,9 +4,9 @@ use super::common::*;
 
 /// **ANSI scrollback content integrity (minimal mode).**
 ///
-/// Regression guard for the `xai-ratatui-inline` rewrite (termwiz →
+/// Regression guard for the `agent-tui-ratatui-inline` rewrite (termwiz →
 /// anstyle-parse). Minimal mode commits finalized assistant blocks into the
-/// terminal's NATIVE scrollback through `xai_ratatui_inline::Terminal::
+/// terminal's NATIVE scrollback through `agent_tui_ratatui_inline::Terminal::
 /// insert_before` — the production seam of the rewritten crate — so a parsing
 /// or offset regression there shows up as truncated, duplicated, or corrupted
 /// committed content.

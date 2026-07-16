@@ -451,25 +451,25 @@ fn render_truncated_root(root: &DirNode, max_chars: usize, top_k: usize, notice:
     out.push_str(notice);
     out
 }
-impl xai_tool_runtime::Tool for ListDirTool {
+impl agent_tui_tool_runtime::Tool for ListDirTool {
     type Args = ListDirInput;
     type Output = ListDirOutput;
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("list_dir").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("list_dir").expect("valid tool id")
     }
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "list_dir",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: true,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Read),
             ..Default::default()
         }
     }
@@ -480,9 +480,9 @@ impl xai_tool_runtime::Tool for ListDirTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: ListDirInput,
-    ) -> Result<ListDirOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<ListDirOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::{behavior_version, resolve_cwd, shared_resources};
         let resources = shared_resources(&ctx)?;
         let cwd = resolve_cwd(&ctx, &resources).await?;
@@ -1123,7 +1123,7 @@ mod tests {
         let mut resources = Resources::new();
         resources.insert(Cwd(tmp.path().to_path_buf()));
         let tool = ListDirTool;
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             ListDirInput {
@@ -1148,10 +1148,10 @@ mod tests {
         resources.insert(Cwd(tmp.path().to_path_buf()));
         let tool = ListDirTool;
         let mut ctx = test_ctx(resources.into_shared());
-        ctx.extensions.insert(xai_tool_runtime::BehaviorVersion(
+        ctx.extensions.insert(agent_tui_tool_runtime::BehaviorVersion(
             "legacy-0.4.10".to_string(),
         ));
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             ctx,
             ListDirInput {
@@ -1179,10 +1179,10 @@ mod tests {
         resources.insert(Cwd(tmp.path().to_path_buf()));
         let tool = ListDirTool;
         let mut ctx = test_ctx(resources.into_shared());
-        ctx.extensions.insert(xai_tool_runtime::BehaviorVersion(
+        ctx.extensions.insert(agent_tui_tool_runtime::BehaviorVersion(
             "legacy-0.4.10".to_string(),
         ));
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             ctx,
             ListDirInput {
@@ -1208,7 +1208,7 @@ mod tests {
         let mut resources = Resources::new();
         resources.insert(Cwd(tmp.path().to_path_buf()));
         let tool = ListDirTool;
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             ListDirInput {
@@ -1231,7 +1231,7 @@ mod tests {
         let mut resources = Resources::new();
         resources.insert(Cwd(tmp.path().to_path_buf()));
         let tool = ListDirTool;
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             ListDirInput {
@@ -1263,7 +1263,7 @@ mod tests {
             max_output_chars: Some(200),
         }));
         let tool = ListDirTool;
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             ListDirInput {
@@ -1289,7 +1289,7 @@ mod tests {
         let mut resources = Resources::new();
         resources.insert(Cwd(tmp.path().to_path_buf()));
         let tool = ListDirTool;
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             ListDirInput {
@@ -1314,7 +1314,7 @@ mod tests {
         let mut resources = Resources::new();
         resources.insert(Cwd(PathBuf::from("/does/not/matter")));
         let tool = ListDirTool;
-        let output = xai_tool_runtime::Tool::run(
+        let output = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             ListDirInput {
@@ -1335,7 +1335,7 @@ mod tests {
     fn tool_name_and_description() {
         use crate::types::tool_metadata::ToolMetadata;
         let tool = ListDirTool;
-        assert_eq!(xai_tool_runtime::Tool::id(&tool).as_str(), "list_dir");
+        assert_eq!(agent_tui_tool_runtime::Tool::id(&tool).as_str(), "list_dir");
         assert!(ToolMetadata::description_template(&tool).contains("Lists files and directories"));
         assert!(ToolMetadata::description_template(&tool).contains(".gitignore"));
         assert!(

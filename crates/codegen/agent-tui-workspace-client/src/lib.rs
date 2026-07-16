@@ -19,7 +19,7 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use xai_computer_hub_sdk::harness::ToolHarness;
+use agent_tui_computer_hub_sdk::harness::ToolHarness;
 use agent_tui_workspace_types::rpc::agents_md::{AgentConfigFile, DiscoverAgentsMdReq};
 use agent_tui_workspace_types::rpc::code_nav::{
     CodeFindDefinitionsReq, CodeFindReferencesReq, CodeGotoDefinitionReq, CodeGotoReferencesReq,
@@ -60,7 +60,7 @@ use agent_tui_workspace_types::rpc::worktree::{
     WorktreeGcReq, WorktreeListReq, WorktreeShowReq,
 };
 use agent_tui_workspace_types::rpc::{RpcEnvelope, RpcError, WORKSPACE_RPC_TOOL_ID, WorkspaceRpc};
-use xai_tool_runtime::{ToolCallContext, ToolStreamItem, TypedToolOutput};
+use agent_tui_tool_runtime::{ToolCallContext, ToolStreamItem, TypedToolOutput};
 #[derive(Debug, thiserror::Error)]
 pub enum WorkspaceClientError {
     /// A previous call observed a fatal transport error and no
@@ -87,22 +87,22 @@ pub enum WorkspaceClientError {
 /// Returns the terminal result, or a `ToolError::NetworkError` if the
 /// stream ended without producing a terminal item.
 pub async fn consume_stream_terminal(
-    stream: &mut xai_tool_runtime::ToolStream<TypedToolOutput>,
-) -> Result<TypedToolOutput, xai_tool_runtime::ToolError> {
+    stream: &mut agent_tui_tool_runtime::ToolStream<TypedToolOutput>,
+) -> Result<TypedToolOutput, agent_tui_tool_runtime::ToolError> {
     loop {
         let item = std::future::poll_fn(|cx| stream.as_mut().poll_next(cx)).await;
         match item {
             Some(ToolStreamItem::Progress(_)) => {}
             Some(ToolStreamItem::Terminal(result)) => return result,
             None => {
-                return Err(xai_tool_runtime::ToolError::network_error(
+                return Err(agent_tui_tool_runtime::ToolError::network_error(
                     "stream ended without terminal item",
                 ));
             }
         }
     }
 }
-/// Check whether a [`ToolError`](xai_tool_runtime::ToolError) indicates
+/// Check whether a [`ToolError`](agent_tui_tool_runtime::ToolError) indicates
 /// a fatal transport failure that should mark the hub as disconnected.
 ///
 /// Returns `true` for:
@@ -110,10 +110,10 @@ pub async fn consume_stream_terminal(
 ///   ended without terminal item, etc.)
 /// - `Custom` with `details.code == "protocol_error"` — half-closed
 ///   WebSocket producing malformed frames
-pub fn is_transport_fatal(err: &xai_tool_runtime::ToolError) -> bool {
+pub fn is_transport_fatal(err: &agent_tui_tool_runtime::ToolError) -> bool {
     match err.kind {
-        xai_tool_runtime::ToolErrorKind::NetworkError => true,
-        xai_tool_runtime::ToolErrorKind::Custom => err
+        agent_tui_tool_runtime::ToolErrorKind::NetworkError => true,
+        agent_tui_tool_runtime::ToolErrorKind::Custom => err
             .details
             .as_ref()
             .and_then(|d| d.get("code"))
@@ -189,7 +189,7 @@ impl WorkspaceClient {
         if !self.is_connected() {
             return Err(WorkspaceClientError::NotConnected);
         }
-        let tool_id = xai_tool_protocol::ToolId::new(WORKSPACE_RPC_TOOL_ID)
+        let tool_id = agent_tui_tool_protocol::ToolId::new(WORKSPACE_RPC_TOOL_ID)
             .expect("constant tool id is valid");
         let args = serde_json::json!({ "method" : method, "params" : params });
         tracing::debug!(method, "WorkspaceClient::rpc");
@@ -556,11 +556,11 @@ mod tests {
     use super::*;
     use schemars::JsonSchema;
     use serde::Deserialize;
-    use xai_computer_hub_sdk::harness::LocalRegistry;
+    use agent_tui_computer_hub_sdk::harness::LocalRegistry;
     use agent_tui_workspace_types::rpc::skills::SkillScope;
-    use xai_tool_protocol::{SessionId, ToolId};
-    use xai_tool_runtime::{Tool, ToolError};
-    use xai_tool_types::ToolDescription;
+    use agent_tui_tool_protocol::{SessionId, ToolId};
+    use agent_tui_tool_runtime::{Tool, ToolError};
+    use agent_tui_tool_types::ToolDescription;
     #[derive(Debug, Deserialize, JsonSchema)]
     struct RpcArgs {
         method: String,
@@ -569,7 +569,7 @@ mod tests {
     #[derive(Debug, serde::Serialize)]
     #[serde(transparent)]
     struct RawOut(serde_json::Value);
-    impl xai_tool_runtime::ToolOutput for RawOut {}
+    impl agent_tui_tool_runtime::ToolOutput for RawOut {}
     #[derive(Debug)]
     struct FakeWorkspaceRpc;
     impl Tool for FakeWorkspaceRpc {
@@ -578,7 +578,7 @@ mod tests {
         fn id(&self) -> ToolId {
             ToolId::new(WORKSPACE_RPC_TOOL_ID).unwrap()
         }
-        fn description(&self, _ctx: &::xai_tool_runtime::ListToolsContext) -> ToolDescription {
+        fn description(&self, _ctx: &::agent_tui_tool_runtime::ListToolsContext) -> ToolDescription {
             ToolDescription::new(WORKSPACE_RPC_TOOL_ID, "fake workspace rpc")
         }
         async fn run(&self, _ctx: ToolCallContext, args: Self::Args) -> Result<RawOut, ToolError> {
@@ -782,7 +782,7 @@ mod tests {
     async fn consume_stream_terminal_returns_ok() {
         let value = serde_json::json!({ "result" : "hello" });
         let typed = TypedToolOutput::from_value(ToolId::new("t").unwrap(), value.clone());
-        let mut stream = xai_tool_runtime::terminal_only(Ok(typed));
+        let mut stream = agent_tui_tool_runtime::terminal_only(Ok(typed));
         assert_eq!(
             consume_stream_terminal(&mut stream).await.unwrap().value,
             value
@@ -790,15 +790,15 @@ mod tests {
     }
     #[tokio::test]
     async fn consume_stream_terminal_returns_err() {
-        let mut stream: xai_tool_runtime::ToolStream<TypedToolOutput> =
-            xai_tool_runtime::terminal_only(Err(ToolError::network_error("oops")));
+        let mut stream: agent_tui_tool_runtime::ToolStream<TypedToolOutput> =
+            agent_tui_tool_runtime::terminal_only(Err(ToolError::network_error("oops")));
         let err = consume_stream_terminal(&mut stream).await.unwrap_err();
         assert!(err.to_string().contains("oops"));
     }
     #[tokio::test]
     async fn consume_stream_terminal_exhausted_stream_is_network_error() {
         let typed = TypedToolOutput::from_value(ToolId::new("t").unwrap(), Value::Null);
-        let mut stream = xai_tool_runtime::terminal_only::<TypedToolOutput>(Ok(typed));
+        let mut stream = agent_tui_tool_runtime::terminal_only::<TypedToolOutput>(Ok(typed));
         let _ = consume_stream_terminal(&mut stream).await;
         let err = consume_stream_terminal(&mut stream).await.unwrap_err();
         assert!(

@@ -277,7 +277,7 @@ fn search_db_path(root_dir: &Path) -> PathBuf {
     // Pre-resolve the per-host sibling (network mounts) so search_remote_sync's
     // raw file ops (exists/compress/replace) target the same file the index
     // opens; resolution is idempotent, so the open re-resolving is a no-op.
-    xai_sqlite_journal::JournalMode::for_db_path(&path).effective_db_path(&path)
+    agent_tui_sqlite_journal::JournalMode::for_db_path(&path).effective_db_path(&path)
 }
 
 fn sqlite_to_io_error(error: rusqlite::Error) -> io::Error {

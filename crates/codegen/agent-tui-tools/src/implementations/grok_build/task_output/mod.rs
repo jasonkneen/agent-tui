@@ -21,7 +21,7 @@ use crate::types::requirements::{Expr, ToolParamsRequirement, ToolRequirement};
 use crate::types::resources::{SharedResources, Terminal, TruncationCfg};
 use crate::types::template_renderer::TemplateRenderer;
 use crate::types::tool::{ToolKind, ToolNamespace};
-use xai_tool_types::{
+use agent_tui_tool_types::{
     MultiTaskOutputResult, TaskOutputOutput, TaskOutputResult, TaskOutputToolInput,
 };
 
@@ -60,7 +60,7 @@ pub(crate) fn background_bash_requires_exprs() -> Vec<Expr<ToolRequirement>> {
     use crate::types::tool_metadata::ToolMetadata;
     let grok_build_bash = Expr::Value(ToolRequirement::Tool {
         namespace: ToolMetadata::tool_namespace(&BashTool).to_string(),
-        id: xai_tool_runtime::Tool::id(&BashTool).as_str().to_string(),
+        id: agent_tui_tool_runtime::Tool::id(&BashTool).as_str().to_string(),
         if_params: Some(Expr::Value(ToolParamsRequirement {
             key: "enabled_background".to_string(),
             value: Expr::Value(serde_json::Value::Bool(true)),
@@ -68,7 +68,7 @@ pub(crate) fn background_bash_requires_exprs() -> Vec<Expr<ToolRequirement>> {
     });
     let grok_build_concise_bash = Expr::Value(ToolRequirement::Tool {
         namespace: ToolMetadata::tool_namespace(&BashConciseTool).to_string(),
-        id: xai_tool_runtime::Tool::id(&BashConciseTool)
+        id: agent_tui_tool_runtime::Tool::id(&BashConciseTool)
             .as_str()
             .to_string(),
         if_params: Some(Expr::Value(ToolParamsRequirement {
@@ -78,7 +78,7 @@ pub(crate) fn background_bash_requires_exprs() -> Vec<Expr<ToolRequirement>> {
     });
     let opencode_bash = Expr::Value(ToolRequirement::Tool {
         namespace: ToolMetadata::tool_namespace(&OpenCodeBashTool).to_string(),
-        id: xai_tool_runtime::Tool::id(&OpenCodeBashTool)
+        id: agent_tui_tool_runtime::Tool::id(&OpenCodeBashTool)
             .as_str()
             .to_string(),
         if_params: None,
@@ -91,7 +91,7 @@ pub(crate) fn task_output_requires_expr() -> Expr<ToolRequirement> {
     use crate::types::tool_metadata::ToolMetadata;
     let task_tool = Expr::Value(ToolRequirement::Tool {
         namespace: ToolMetadata::tool_namespace(&TaskTool).to_string(),
-        id: xai_tool_runtime::Tool::id(&TaskTool).as_str().to_string(),
+        id: agent_tui_tool_runtime::Tool::id(&TaskTool).as_str().to_string(),
         if_params: None,
     });
     let mut arms = background_bash_requires_exprs();
@@ -107,12 +107,12 @@ impl TaskOutputTool {
         &self,
         task_id: &str,
         timeout_ms: Option<u64>,
-        ctx: &xai_tool_runtime::ToolCallContext,
+        ctx: &agent_tui_tool_runtime::ToolCallContext,
         resources: SharedResources,
-    ) -> Result<TaskOutputOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<TaskOutputOutput, agent_tui_tool_runtime::ToolError> {
         let contract_version = ctx
             .extensions
-            .get::<xai_tool_runtime::BehaviorVersion>()
+            .get::<agent_tui_tool_runtime::BehaviorVersion>()
             .map(|v| v.0.clone());
         let is_legacy = crate::versions::is_legacy_contract(contract_version.as_deref());
         let terminal;
@@ -120,7 +120,7 @@ impl TaskOutputTool {
             terminal = resources.lock().await.require::<Terminal>()?.0.clone();
         }
 
-        let waits = xai_tool_types::task_output_waits(timeout_ms);
+        let waits = agent_tui_tool_types::task_output_waits(timeout_ms);
         let snapshot = if waits {
             // Cap the blocking wait so a large `timeout_ms` can't wedge the turn;
             // the model is pinged on completion regardless (see `capped_wait_timeout`).
@@ -137,7 +137,7 @@ impl TaskOutputTool {
                 let renderer = res.require::<TemplateRenderer>()?;
                 read_file_name = renderer
                     .render("${{ tools.by_kind.read }}")
-                    .map_err(|e| xai_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
+                    .map_err(|e| agent_tui_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
             }
             let max_output_bytes = resources
                 .lock()
@@ -207,8 +207,8 @@ impl TaskOutputTool {
         timeout_ms: Option<u64>,
         resources: SharedResources,
         tool_name_for_truncation: &str,
-    ) -> Result<TaskOutputOutput, xai_tool_runtime::ToolError> {
-        let waits = xai_tool_types::task_output_waits(timeout_ms);
+    ) -> Result<TaskOutputOutput, agent_tui_tool_runtime::ToolError> {
+        let waits = agent_tui_tool_types::task_output_waits(timeout_ms);
         let timeout = capped_wait_timeout(timeout_ms);
 
         let (terminal, backend, read_file_name, max_output_bytes) = {
@@ -218,7 +218,7 @@ impl TaskOutputTool {
             let renderer = res.require::<TemplateRenderer>()?;
             let rfn = renderer
                 .render("${{ tools.by_kind.read }}")
-                .map_err(|e| xai_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
+                .map_err(|e| agent_tui_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
             let mob = res
                 .get::<TruncationCfg>()
                 .map(|cfg| {
@@ -279,7 +279,7 @@ impl TaskOutputTool {
     }
 }
 
-pub(crate) use xai_tool_types::MAX_MULTI_WAIT_IDS;
+pub(crate) use agent_tui_tool_types::MAX_MULTI_WAIT_IDS;
 
 pub(crate) fn not_found_result(task_id: &str) -> TaskOutputResult {
     TaskOutputResult {
@@ -586,7 +586,7 @@ fn format_subagent_snapshot(snap: &SubagentSnapshot) -> TaskOutputOutput {
                 output.push_str(&format!("\n<worktree_path>{wt}</worktree_path>"));
             }
             output.push_str("\n\n");
-            output.push_str(&xai_tool_types::format_resume_footer(
+            output.push_str(&agent_tui_tool_types::format_resume_footer(
                 &snap.subagent_id,
                 &snap.subagent_type,
                 snap.persona.as_deref(),
@@ -677,7 +677,7 @@ impl crate::types::tool_metadata::ToolMetadata for TaskOutputTool {
         // renders it context-aware from the finalized toolset. This static
         // fallback mirrors the default grok-build toolset.
         static DESC: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-            xai_tool_types::build_task_output_description(&xai_tool_types::TaskOutputToolNaming {
+            agent_tui_tool_types::build_task_output_description(&agent_tui_tool_types::TaskOutputToolNaming {
                 monitor_tool: Some("monitor"),
                 read_tool: Some("read_file"),
                 bash_background_param: Some("is_background"),
@@ -721,7 +721,7 @@ impl crate::types::tool_metadata::ToolMetadata for TaskOutputTool {
 
 /// Resolve the model-facing `get_task_output` description from the finalized
 /// toolset, honoring an explicit config override. Wording lives in the shared
-/// [`xai_tool_types::build_task_output_description`] builder so the CLI and
+/// [`agent_tui_tool_types::build_task_output_description`] builder so the CLI and
 /// prod-chat can't drift; presence-gated clauses (monitor note, subagent
 /// source, read-file hint) follow the tools actually registered this turn.
 fn task_output_description(
@@ -734,7 +734,7 @@ fn task_output_description(
             ovr.to_string()
         });
     }
-    xai_tool_types::build_task_output_description(&xai_tool_types::TaskOutputToolNaming {
+    agent_tui_tool_types::build_task_output_description(&agent_tui_tool_types::TaskOutputToolNaming {
         monitor_tool: renderer.tool_for_kind(ToolKind::Monitor),
         read_tool: renderer.tool_for_kind(ToolKind::Read),
         bash_background_param: renderer.param_for_kind(ToolKind::Execute, "is_background"),
@@ -742,28 +742,28 @@ fn task_output_description(
     })
 }
 
-impl xai_tool_runtime::Tool for TaskOutputTool {
+impl agent_tui_tool_runtime::Tool for TaskOutputTool {
     type Args = TaskOutputToolInput;
     type Output = TaskOutputOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("get_task_output").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("get_task_output").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "get_task_output",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: true,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Read),
             ..Default::default()
         }
     }
@@ -775,20 +775,20 @@ impl xai_tool_runtime::Tool for TaskOutputTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: TaskOutputToolInput,
-    ) -> Result<TaskOutputOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<TaskOutputOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
         let ids = input.resolved_task_ids();
         if ids.is_empty() {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(
                 "Provide a non-empty task_ids list.".to_string(),
             ));
         }
         if ids.len() > MAX_MULTI_WAIT_IDS {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "task_ids exceeds maximum of {MAX_MULTI_WAIT_IDS} entries."
             )));
         }
@@ -956,7 +956,7 @@ mod tests {
     fn tool_name_and_description() {
         let tool = TaskOutputTool;
         assert_eq!(
-            xai_tool_runtime::Tool::id(&tool).as_str(),
+            agent_tui_tool_runtime::Tool::id(&tool).as_str(),
             "get_task_output"
         );
         // The static fallback is the shared builder's default grok-build
@@ -1076,7 +1076,7 @@ mod tests {
         let resources = resources_with_terminal(Some(snapshot));
         let tool = TaskOutputTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             TaskOutputToolInput {
@@ -1104,7 +1104,7 @@ mod tests {
         let resources = resources_with_terminal(Some(snapshot));
         let tool = TaskOutputTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             TaskOutputToolInput {
@@ -1131,7 +1131,7 @@ mod tests {
         let resources = resources_with_terminal(Some(snapshot));
         let tool = TaskOutputTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             TaskOutputToolInput {
@@ -1156,7 +1156,7 @@ mod tests {
         let resources = resources_with_terminal(None);
         let tool = TaskOutputTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             TaskOutputToolInput {
@@ -1233,7 +1233,7 @@ mod tests {
         ));
 
         let tool = TaskOutputTool;
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             TaskOutputToolInput {
@@ -1306,7 +1306,7 @@ mod tests {
         ));
 
         let tool = TaskOutputTool;
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             TaskOutputToolInput {
@@ -1331,7 +1331,7 @@ mod tests {
         let resources = Resources::new();
         let tool = TaskOutputTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             TaskOutputToolInput {
@@ -1364,7 +1364,7 @@ mod tests {
         ));
 
         let tool = TaskOutputTool;
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             TaskOutputToolInput {
@@ -1394,7 +1394,7 @@ mod tests {
         let resources = resources_with_terminal(Some(snapshot));
         let tool = TaskOutputTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             TaskOutputToolInput {
@@ -1482,7 +1482,7 @@ mod tests {
         resources.insert(TruncationCfg(trunc));
 
         let tool = TaskOutputTool;
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             TaskOutputToolInput {
@@ -1521,11 +1521,11 @@ mod tests {
         let tool = TaskOutputTool;
 
         let mut ctx = test_ctx(resources.into_shared());
-        ctx.extensions.insert(xai_tool_runtime::BehaviorVersion(
+        ctx.extensions.insert(agent_tui_tool_runtime::BehaviorVersion(
             "legacy-0.4.10".to_string(),
         ));
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             ctx,
             TaskOutputToolInput {
@@ -1552,7 +1552,7 @@ mod tests {
         let resources = resources_with_terminal(None);
         let tool = TaskOutputTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             TaskOutputToolInput {
@@ -1724,7 +1724,7 @@ mod tests {
         let resources = resources_with_terminal(None);
         let tool = TaskOutputTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             TaskOutputToolInput {
@@ -1748,7 +1748,7 @@ mod tests {
     async fn multi_task_ids_poll_returns_multi_result_mode_poll() {
         let resources = resources_with_terminal(None);
         let tool = TaskOutputTool;
-        let out = xai_tool_runtime::Tool::run(
+        let out = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             TaskOutputToolInput {
@@ -1772,7 +1772,7 @@ mod tests {
     async fn one_element_task_ids_returns_single_result_not_multi() {
         let resources = resources_with_terminal(None);
         let tool = TaskOutputTool;
-        let out = xai_tool_runtime::Tool::run(
+        let out = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             TaskOutputToolInput {
@@ -1850,7 +1850,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskOutputTool,
             test_ctx(shared),
             TaskOutputToolInput {
@@ -1901,7 +1901,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskOutputTool,
             test_ctx(shared),
             TaskOutputToolInput {
@@ -1934,7 +1934,7 @@ mod tests {
             req.respond_to.send(None).unwrap();
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskOutputTool,
             test_ctx(shared),
             TaskOutputToolInput {

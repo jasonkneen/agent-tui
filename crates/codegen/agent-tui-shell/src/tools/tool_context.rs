@@ -11,11 +11,11 @@ use crate::terminal::AsyncTerminalRunner;
 use agent_client_protocol as acp;
 use std::collections::HashMap;
 use std::sync::Arc;
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use agent_tui_paths::AbsPathBuf;
 use agent_tui_workspace::file_system::{AsyncFileSystem, AsyncFsWrapper};
 use agent_tui_workspace::session::file_state::FileStateHandle;
-use xai_hunk_tracker::HunkTrackerHandle;
+use agent_tui_hunk_tracker::HunkTrackerHandle;
 /// RAII marker: the turn is blocked inside an interruptible wait. Increments
 /// [`ToolContext::blocking_wait_depth`] for its lifetime; `Drop` decrements
 /// (a cancelled turn can't leak the count).
@@ -211,7 +211,7 @@ mod tests {
     use std::sync::Arc;
     use agent_tui_paths::AbsPathBuf;
     use agent_tui_workspace::file_system::{AsyncFileSystem, AsyncFsWrapper};
-    use xai_hunk_tracker::HunkTrackerHandle;
+    use agent_tui_hunk_tracker::HunkTrackerHandle;
     impl ToolContext {
         pub fn new_local_context(
             cwd: AbsPathBuf,

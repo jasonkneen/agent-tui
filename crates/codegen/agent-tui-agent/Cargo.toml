@@ -10,7 +10,7 @@ dunce = { workspace = true }
 agent-tui-hooks = { path = "../agent-tui-hooks" }
 agent-tui-sampling-types = { path = "../agent-tui-sampling-types" }
 agent-tui-tools = { path = "../agent-tui-tools" }
-xai-token-estimation = { workspace = true }
+agent-tui-token-estimation = { workspace = true }
 minijinja = { version = "2", features = ["custom_syntax"] }
 git2 = { version = "0.20", default-features = false, features = ["vendored-libgit2"] }
 regex = { workspace = true }
@@ -27,7 +27,7 @@ sha2 = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
 zeroize = "1"
-xai-tool-types.workspace = true
+agent-tui-tool-types.workspace = true
 
 [features]
 default = []

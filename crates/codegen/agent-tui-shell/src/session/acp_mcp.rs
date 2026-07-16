@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use agent_client_protocol as acp;
-use xai_acp_lib::AcpAgentGatewaySender;
+use agent_tui_acp_lib::AcpAgentGatewaySender;
 use agent_tui_mcp::acp_transport::AcpReverseInvoker;
 use agent_tui_mcp::servers::AcpServerEntry;
 use agent_tui_mcp::wire;

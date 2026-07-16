@@ -4,7 +4,7 @@
 //! Delegates to `agent-tui-plugin-marketplace` crate for scanning and install logic.
 
 use agent_client_protocol as acp;
-use xai_hooks_plugins_types::{
+use agent_tui_hooks_plugins_types::{
     MarketplaceAction, MarketplaceActionRequest, MarketplaceListResponse, MarketplacePluginEntry,
     MarketplaceScanResult,
 };
@@ -159,8 +159,8 @@ async fn handle_action(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
                     errors.join("; ")
                 )
             };
-            xai_hooks_plugins_types::ActionOutcome {
-                status: xai_hooks_plugins_types::OutcomeStatus::Success,
+            agent_tui_hooks_plugins_types::ActionOutcome {
+                status: agent_tui_hooks_plugins_types::OutcomeStatus::Success,
                 message: msg,
                 requires_reload: false,
                 requires_restart: false,
@@ -192,9 +192,9 @@ async fn handle_update(
     sid: &acp::SessionId,
     source_url_or_path: &str,
     plugin_relative_path: &str,
-) -> xai_hooks_plugins_types::ActionOutcome {
+) -> agent_tui_hooks_plugins_types::ActionOutcome {
     use agent_tui_plugin_marketplace::installer;
-    use xai_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
+    use agent_tui_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
 
     let sources = load_filtered_marketplace_sources();
 
@@ -303,7 +303,7 @@ async fn handle_update(
                 tracing::warn!("{w}");
             }
             let reload_outcome = agent
-                .execute_plugins_action(sid, xai_hooks_plugins_types::PluginsAction::Reload)
+                .execute_plugins_action(sid, agent_tui_hooks_plugins_types::PluginsAction::Reload)
                 .await;
             let mut msg = format!(
                 "Updated {} ({} -> {})",
@@ -344,9 +344,9 @@ async fn handle_install(
     sid: &acp::SessionId,
     source_url_or_path: &str,
     plugin_relative_path: &str,
-) -> xai_hooks_plugins_types::ActionOutcome {
+) -> agent_tui_hooks_plugins_types::ActionOutcome {
     use agent_tui_plugin_marketplace::installer;
-    use xai_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
+    use agent_tui_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
 
     let sources = load_filtered_marketplace_sources();
 
@@ -414,7 +414,7 @@ async fn handle_install(
                     tracing::warn!("{w}");
                 }
                 let _ = agent
-                    .execute_plugins_action(sid, xai_hooks_plugins_types::PluginsAction::Reload)
+                    .execute_plugins_action(sid, agent_tui_hooks_plugins_types::PluginsAction::Reload)
                     .await;
                 ActionOutcome {
                     status: OutcomeStatus::Success,
@@ -532,7 +532,7 @@ async fn handle_install(
                     tracing::warn!("{w}");
                 }
                 let _ = agent
-                    .execute_plugins_action(sid, xai_hooks_plugins_types::PluginsAction::Reload)
+                    .execute_plugins_action(sid, agent_tui_hooks_plugins_types::PluginsAction::Reload)
                     .await;
                 ActionOutcome {
                     status: OutcomeStatus::Success,
@@ -569,9 +569,9 @@ async fn handle_uninstall(
     sid: &acp::SessionId,
     source_url_or_path: &str,
     plugin_relative_path: &str,
-) -> xai_hooks_plugins_types::ActionOutcome {
+) -> agent_tui_hooks_plugins_types::ActionOutcome {
     use agent_tui_plugin_marketplace::installer;
-    use xai_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
+    use agent_tui_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
 
     let mut registry = agent_tui_agent::plugins::install_registry::InstallRegistry::load();
 
@@ -620,7 +620,7 @@ async fn handle_uninstall(
 
     // Trigger plugin reload so the removed plugin disappears from the session.
     let _ = agent
-        .execute_plugins_action(sid, xai_hooks_plugins_types::PluginsAction::Reload)
+        .execute_plugins_action(sid, agent_tui_hooks_plugins_types::PluginsAction::Reload)
         .await;
 
     ActionOutcome {
@@ -735,7 +735,7 @@ async fn auto_install_defaults(
     // Trigger plugin reload if we auto-installed anything.
     if any_changed && let Some(sid) = session_id {
         let _ = agent
-            .execute_plugins_action(sid, xai_hooks_plugins_types::PluginsAction::Reload)
+            .execute_plugins_action(sid, agent_tui_hooks_plugins_types::PluginsAction::Reload)
             .await;
     }
 }
@@ -883,9 +883,9 @@ fn to_plugin_entry(
 }
 
 /// Add a new git or local-path marketplace source to `~/.grok/config.toml`.
-async fn handle_add_source(url: &str) -> xai_hooks_plugins_types::ActionOutcome {
+async fn handle_add_source(url: &str) -> agent_tui_hooks_plugins_types::ActionOutcome {
     use crate::plugin::{self, MarketplaceAddInput};
-    use xai_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
+    use agent_tui_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
 
     let url = url.trim();
     if url.is_empty() {
@@ -1096,14 +1096,14 @@ fn add_marketplace_source(
 
 /// Remove a marketplace source from `~/.grok/config.toml` and uninstall all
 /// plugins that were installed from it.
-async fn handle_remove_source(source_url_or_path: &str) -> xai_hooks_plugins_types::ActionOutcome {
+async fn handle_remove_source(source_url_or_path: &str) -> agent_tui_hooks_plugins_types::ActionOutcome {
     let src = source_url_or_path.to_string();
     // Lock + run the blocking FS work off the reactor.
     let _save_guard = crate::util::config::lock_config_writes().await;
     match tokio::task::spawn_blocking(move || remove_source_locked(&src)).await {
         Ok(outcome) => outcome,
-        Err(e) => xai_hooks_plugins_types::ActionOutcome {
-            status: xai_hooks_plugins_types::OutcomeStatus::InternalError,
+        Err(e) => agent_tui_hooks_plugins_types::ActionOutcome {
+            status: agent_tui_hooks_plugins_types::OutcomeStatus::InternalError,
             message: format!("Config write task failed: {e}"),
             requires_reload: false,
             requires_restart: false,
@@ -1114,9 +1114,9 @@ async fn handle_remove_source(source_url_or_path: &str) -> xai_hooks_plugins_typ
 /// Sync body of [`handle_remove_source`], run on a blocking thread under the
 /// flock for the whole read-modify-write so a concurrent auto-register can't
 /// re-add the source mid-removal.
-fn remove_source_locked(source_url_or_path: &str) -> xai_hooks_plugins_types::ActionOutcome {
+fn remove_source_locked(source_url_or_path: &str) -> agent_tui_hooks_plugins_types::ActionOutcome {
     use crate::plugin;
-    use xai_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
+    use agent_tui_hooks_plugins_types::{ActionOutcome, OutcomeStatus};
 
     let grok_home = agent_tui_config::grok_home();
     let _flock = acquire_init_lock(&grok_home).ok();
@@ -1692,8 +1692,8 @@ mod conversion_tests {
             remote_ref: None,
             remote_sha: None,
             remote_subdir: Some("plugins/acme".into()),
-            components: Some(xai_hooks_plugins_types::PluginComponents {
-                skills: vec![xai_hooks_plugins_types::ComponentItem::new(
+            components: Some(agent_tui_hooks_plugins_types::PluginComponents {
+                skills: vec![agent_tui_hooks_plugins_types::ComponentItem::new(
                     "code-review",
                     Some("Review staged changes".to_string()),
                 )],

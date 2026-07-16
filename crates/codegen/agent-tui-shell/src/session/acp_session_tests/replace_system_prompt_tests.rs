@@ -1,6 +1,6 @@
 //! Actor-path coverage for `handle_replace_system_prompt` — the
 //! resident-reconnect `systemPromptOverride` guard. Head-swap semantics are
-//! unit-tested in `xai_chat_state` (`conversation_util` and the actor tests);
+//! unit-tested in `agent_tui_chat_state` (`conversation_util` and the actor tests);
 //! these cover only what is unique to the `SessionActor` seam: zero-inference
 //! application and the history/preserve-inherited guards.
 
@@ -18,7 +18,7 @@ fn head_text(conv: &[ConversationItem]) -> Option<String> {
 
 async fn actor_with_history(history: Vec<ConversationItem>) -> SessionActor {
     let (gateway_tx, _grx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
     let (persistence_tx, _prx) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
     actor.chat_state_handle.replace_conversation(history);

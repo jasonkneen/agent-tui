@@ -5263,7 +5263,7 @@ mod tests {
 
         // Reasoning now lives as a sibling `ConversationItem::Reasoning`,
         // so "stripping reasoning" means filtering those siblings out — see
-        // `strip_reasoning_blocks` in xai-chat-state. Here the assistant
+        // `strip_reasoning_blocks` in agent-tui-chat-state. Here the assistant
         // never had a sibling Reasoning, so the strip is a no-op.
         let stripped = with_reasoning;
 

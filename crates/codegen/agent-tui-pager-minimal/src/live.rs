@@ -596,7 +596,7 @@ fn render_prompt_info(
     if let (Some(used), Some(total)) = (used, total)
         && total > 0
     {
-        let pct = xai_token_estimation::usage_percentage(used, total);
+        let pct = agent_tui_token_estimation::usage_percentage(used, total);
         segs.push((
             format!("{} / {} ({:.0}%)", fmt_tokens(used), fmt_tokens(total), pct),
             base,

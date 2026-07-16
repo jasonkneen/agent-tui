@@ -144,7 +144,7 @@ pub struct CompactionConfig {
     /// `Cell` because `SessionActor` is `!Send`.
     pub previous_model: Cell<Option<PreviousModelInfo>>,
     /// The resolved mode; `Segments` carries its detail level inline.
-    pub compaction_mode: xai_chat_state::CompactionMode,
+    pub compaction_mode: agent_tui_chat_state::CompactionMode,
     /// When `true`, feed the summarizer the verbatim conversation instead of the lossy rewrite (the retry loop may still fall back).
     pub verbatim_input: bool,
     /// Prefire two-pass state (background NOTE₁ cache + in-flight guard).

@@ -732,8 +732,8 @@ impl AgentView {
                 if total > 0 {
                     snap.total = total;
                 }
-                snap.usage_pct = xai_token_estimation::usage_percentage_u8(used, snap.total);
-                snap.free_tokens = xai_token_estimation::free_tokens(snap.total, used);
+                snap.usage_pct = agent_tui_token_estimation::usage_percentage_u8(used, snap.total);
+                snap.free_tokens = agent_tui_token_estimation::free_tokens(snap.total, used);
             }
             None => {
                 self.context_state = Some(agent_tui_shell::session::ContextInfo::from_notification(

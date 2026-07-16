@@ -492,12 +492,12 @@ fn clone_repo_to_path(
     }
 
     let mut cmd = Command::new("git");
-    xai_tty_utils::detach_std_command(&mut cmd);
+    agent_tui_tty_utils::detach_std_command(&mut cmd);
     cmd.arg("clone")
         .arg("--depth")
         .arg("1")
         .stdin(std::process::Stdio::null())
-        .envs(xai_tty_utils::pager_env());
+        .envs(agent_tui_tty_utils::pager_env());
     if let Some(r) = git_ref {
         cmd.arg("--branch").arg(r);
     }
@@ -559,11 +559,11 @@ fn run_git_in(cwd: &Path, args: &[&str]) -> Result<(), String> {
 
 fn run_git_in_capture(cwd: &Path, args: &[&str]) -> Result<std::process::Output, String> {
     let mut cmd = Command::new("git");
-    xai_tty_utils::detach_std_command(&mut cmd);
+    agent_tui_tty_utils::detach_std_command(&mut cmd);
     cmd.args(args)
         .current_dir(cwd)
         .stdin(std::process::Stdio::null())
-        .envs(xai_tty_utils::pager_env());
+        .envs(agent_tui_tty_utils::pager_env());
     let output = cmd
         .output()
         .map_err(|e| format!("failed to run git {}: {e}", args.first().unwrap_or(&"")))?;

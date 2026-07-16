@@ -31,7 +31,7 @@ use parking_lot::Mutex;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
-use xai_computer_hub_sdk::{AuthCredential, AuthIdentity, AuthProvider};
+use agent_tui_computer_hub_sdk::{AuthCredential, AuthIdentity, AuthProvider};
 use agent_tui_workspace::WorkspaceHandle;
 const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(30);
 /// Separator for namespacing request IDs. Using pipe character which is:

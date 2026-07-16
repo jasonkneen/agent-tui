@@ -12,10 +12,10 @@ pub(crate) const HARNESS_VERIFIES_SENTENCE: &str =
 pub(crate) const PLAN_SEED_TODOS_PHRASE: &str =
     "Seed todos from the plan's acceptance criteria via";
 #[cfg(test)]
-pub(crate) fn noop_observability_bridge() -> xai_computer_hub_sdk::ObservabilityBridge {
-    xai_computer_hub_sdk::ObservabilityBridge::new(
+pub(crate) fn noop_observability_bridge() -> agent_tui_computer_hub_sdk::ObservabilityBridge {
+    agent_tui_computer_hub_sdk::ObservabilityBridge::new(
         None,
-        xai_tool_protocol::SessionId::new("test").expect("valid"),
+        agent_tui_tool_protocol::SessionId::new("test").expect("valid"),
     )
 }
 #[cfg(test)]
@@ -140,7 +140,7 @@ pub(crate) async fn create_test_actor_ex(
     total_tokens: u64,
     context_window: u64,
     threshold_percent: u8,
-    gateway_tx: tokio::sync::mpsc::UnboundedSender<xai_acp_lib::AcpClientMessage>,
+    gateway_tx: tokio::sync::mpsc::UnboundedSender<agent_tui_acp_lib::AcpClientMessage>,
     persistence_tx: tokio::sync::mpsc::UnboundedSender<PersistenceMsg>,
 ) -> (
     SessionActor,
@@ -152,11 +152,11 @@ pub(crate) async fn create_test_actor_ex(
     ));
     let terminal = Arc::new(DummyTerminal {});
     let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
-    let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+    let hunk_tracker_handle = agent_tui_hunk_tracker::HunkTrackerActor::spawn(
         "test-actor".to_string(),
         cwd.to_path_buf(),
         hunk_tx,
-        xai_hunk_tracker::TrackingMode::AgentOnly,
+        agent_tui_hunk_tracker::TrackingMode::AgentOnly,
         tokio_util::sync::CancellationToken::new(),
     );
     let tool_context = ToolContext::new(cwd.clone(), None, None, fs, terminal, hunk_tracker_handle);
@@ -170,7 +170,7 @@ pub(crate) async fn create_test_actor_ex(
     });
     let (chat_event_tx, _chat_event_rx) = tokio::sync::mpsc::unbounded_channel();
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<SessionEvent>();
-    let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+    let chat_state_handle = agent_tui_chat_state::ChatStateActor::spawn(
         vec![],
         agent_tui_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
@@ -185,7 +185,7 @@ pub(crate) async fn create_test_actor_ex(
             reasoning_effort: None,
             stream_tool_calls: None,
         },
-        Box::new(xai_chat_state::NullChatPersistence),
+        Box::new(agent_tui_chat_state::NullChatPersistence),
         chat_event_tx,
         tokio_util::sync::CancellationToken::new(),
     );
@@ -233,7 +233,7 @@ pub(crate) async fn create_test_actor_ex(
             count: std::sync::atomic::AtomicU64::new(0),
             auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
             previous_model: std::cell::Cell::new(None),
-            compaction_mode: xai_chat_state::CompactionMode::Transcript,
+            compaction_mode: agent_tui_chat_state::CompactionMode::Transcript,
             verbatim_input: true,
             prefire: crate::session::compaction_config::PrefireState::default(),
             prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -329,7 +329,7 @@ pub(crate) async fn create_test_actor_ex(
         user_input_generation: std::sync::atomic::AtomicU64::new(0),
         laziness_debug_log: None,
         deferred_prefix: TaskSlot::new(),
-        extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+        extension_registry: agent_tui_agent_lifecycle::LocalExtensionRegistry::default(),
         last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
         last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
         last_api_request_at: std::sync::atomic::AtomicI64::new(0),
@@ -365,7 +365,7 @@ pub(crate) async fn create_test_actor(
     total_tokens: u64,
     context_window: u64,
     threshold_percent: u8,
-    gateway_tx: tokio::sync::mpsc::UnboundedSender<xai_acp_lib::AcpClientMessage>,
+    gateway_tx: tokio::sync::mpsc::UnboundedSender<agent_tui_acp_lib::AcpClientMessage>,
     persistence_tx: tokio::sync::mpsc::UnboundedSender<PersistenceMsg>,
 ) -> SessionActor {
     create_test_actor_ex(
@@ -462,10 +462,10 @@ pub(crate) fn running_task_stub(prompt_id: &str) -> AgentTask {
 #[cfg(test)]
 pub(crate) async fn build_actor() -> (
     std::sync::Arc<SessionActor>,
-    tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+    tokio::sync::mpsc::UnboundedReceiver<agent_tui_acp_lib::AcpClientMessage>,
 ) {
     let (gateway_tx, gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
     let (persistence_tx, _prx) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     let actor =
         std::sync::Arc::new(create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await);

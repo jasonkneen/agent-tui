@@ -253,7 +253,7 @@ fn compute_snapshot(cwd: &Path) -> GitSnapshot {
 /// reused for many path lookups, avoiding a DB open per candidate.
 pub fn worktree_label_index() -> std::collections::HashMap<PathBuf, String> {
     let mut map = std::collections::HashMap::new();
-    let Ok(db) = xai_fast_worktree::db::WorktreeDb::open_default() else {
+    let Ok(db) = agent_tui_fast_worktree::db::WorktreeDb::open_default() else {
         return map;
     };
     let Ok(records) = db.list(&Default::default()) else {
@@ -280,7 +280,7 @@ pub fn worktree_label_index() -> std::collections::HashMap<PathBuf, String> {
 /// Returns `None` silently on any error (missing DB, no record, no label in
 /// metadata). This is called from `spawn_blocking` so DB I/O is fine.
 fn lookup_worktree_label(cwd: &Path) -> Option<String> {
-    let db = xai_fast_worktree::db::WorktreeDb::open_default().ok()?;
+    let db = agent_tui_fast_worktree::db::WorktreeDb::open_default().ok()?;
     // Try exact match first, then walk up ancestors to find the worktree root.
     for ancestor in cwd.ancestors() {
         if let Ok(Some(record)) = db.get(&ancestor.to_string_lossy()) {

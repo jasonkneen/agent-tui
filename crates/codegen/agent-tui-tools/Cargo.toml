@@ -14,13 +14,13 @@ dunce = { workspace = true }
 fs2 = { workspace = true }
 educe = { workspace = true, features = ["Debug"] }
 async-openai = { workspace = true }
-xai-tty-utils = { workspace = true }
+agent-tui-tty-utils = { workspace = true }
 agent-tui-config = { path = "../agent-tui-config" }
 agent-tui-tools-api = { path = "../agent-tui-tools-api" }
 agent-tui-workspace-types = { path = "../agent-tui-workspace-types" }
 agent-tui-version = { workspace = true }
-xai-interjection-core = { workspace = true }
-xai-token-estimation = { workspace = true }
+agent-tui-interjection-core = { workspace = true }
+agent-tui-token-estimation = { workspace = true }
 async-lsp = { workspace = true }
 async-stream = { workspace = true }
 async-trait = { workspace = true }
@@ -49,11 +49,11 @@ schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_path_to_error = { workspace = true }
-xai-tool-runtime = { workspace = true }
-xai-tool-types = { workspace = true }
-xai-tool-protocol = { workspace = true }
-xai-computer-hub-core = { workspace = true }
-xai-computer-hub-sdk = { workspace = true }
+agent-tui-tool-runtime = { workspace = true }
+agent-tui-tool-types = { workspace = true }
+agent-tui-tool-protocol = { workspace = true }
+agent-tui-computer-hub-core = { workspace = true }
+agent-tui-computer-hub-sdk = { workspace = true }
 
 futures = { workspace = true }
 similar = { workspace = true }
@@ -83,7 +83,7 @@ which = { workspace = true }
 chrono = { workspace = true }
 futures-util = { workspace = true }
 agent-tui-sandbox = { path = "../agent-tui-sandbox", default-features = false }
-xai-file-utils = { path = "../xai-file-utils" }
+agent-tui-file-utils = { path = "../agent-tui-file-utils" }
 
 [target.'cfg(unix)'.dependencies]
 command-fds = { version = "0.3", features = ["tokio"] }
@@ -103,7 +103,7 @@ dirs = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 wiremock = { workspace = true }
-xai-test-utils = { workspace = true }
+agent-tui-test-utils = { workspace = true }
 
 [build-dependencies]
 reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }

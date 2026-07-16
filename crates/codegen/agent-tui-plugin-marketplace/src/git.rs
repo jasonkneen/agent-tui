@@ -251,9 +251,9 @@ pub const GIT_AUTH_SUPPRESSION_ENVS: [(&str, &str); 4] = [
 /// Git command with auth/LFS/SSH prompt suppression and `--no-optional-locks`.
 pub fn git_command() -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
-    xai_tty_utils::detach_std_command(&mut cmd);
+    agent_tui_tty_utils::detach_std_command(&mut cmd);
     cmd.stdin(std::process::Stdio::null());
-    cmd.envs(xai_tty_utils::pager_env());
+    cmd.envs(agent_tui_tty_utils::pager_env());
     for &(key, val) in &GIT_AUTH_SUPPRESSION_ENVS {
         cmd.env(key, val);
     }

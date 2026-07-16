@@ -87,11 +87,11 @@ impl WorkspaceIdentity {
 }
 
 /// Derive the workspace owner identity from the server auth provider's
-/// [`AuthIdentity`](xai_computer_hub_sdk::AuthIdentity). The two types carry the
+/// [`AuthIdentity`](agent_tui_computer_hub_sdk::AuthIdentity). The two types carry the
 /// same principal fields; this is the single conversion point so the workspace
 /// reads identity from `HubConfig.auth` instead of a separate auth.json read.
-impl From<xai_computer_hub_sdk::AuthIdentity> for WorkspaceIdentity {
-    fn from(id: xai_computer_hub_sdk::AuthIdentity) -> Self {
+impl From<agent_tui_computer_hub_sdk::AuthIdentity> for WorkspaceIdentity {
+    fn from(id: agent_tui_computer_hub_sdk::AuthIdentity) -> Self {
         Self::new(id.user_id, id.principal_type, id.principal_id)
     }
 }

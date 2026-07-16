@@ -21,7 +21,7 @@ fn ext_response(outcome: &str) -> Arc<serde_json::value::RawValue> {
 /// `build_actor` drops persistence).
 async fn actor_with_channels() -> (
     std::sync::Arc<SessionActor>,
-    tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+    tokio::sync::mpsc::UnboundedReceiver<agent_tui_acp_lib::AcpClientMessage>,
     tokio::sync::mpsc::UnboundedReceiver<PersistenceMsg>,
 ) {
     let (gateway_tx, gateway_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -58,7 +58,7 @@ async fn request_plan_approval_issues_reverse_request_and_clears_flag() {
                 let mut seen_session = None;
                 while let Some(msg) = gateway_rx.recv().await {
                     match msg {
-                        xai_acp_lib::AcpClientMessage::ExtMethod(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::ExtMethod(args) => {
                             seen_method = Some(args.request.method.to_string());
                             let req: serde_json::Value =
                                 serde_json::from_str(args.request.params.get()).unwrap();
@@ -71,7 +71,7 @@ async fn request_plan_approval_issues_reverse_request_and_clears_flag() {
                                 .send(Ok(acp::ExtResponse::new(ext_response("approved"))));
                             break;
                         }
-                        xai_acp_lib::AcpClientMessage::SessionNotification(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::SessionNotification(args) => {
                             let _ = args.response_tx.send(Ok(()));
                         }
                         _ => {}
@@ -113,13 +113,13 @@ async fn request_plan_approval_clears_flag_on_request_changes() {
             let responder = tokio::task::spawn_local(async move {
                 while let Some(msg) = gateway_rx.recv().await {
                     match msg {
-                        xai_acp_lib::AcpClientMessage::ExtMethod(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::ExtMethod(args) => {
                             let _ = args
                                 .response_tx
                                 .send(Ok(acp::ExtResponse::new(ext_response("cancelled"))));
                             break;
                         }
-                        xai_acp_lib::AcpClientMessage::SessionNotification(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::SessionNotification(args) => {
                             let _ = args.response_tx.send(Ok(()));
                         }
                         _ => {}
@@ -153,7 +153,7 @@ async fn request_plan_approval_parse_fallback_fails_closed() {
             let responder = tokio::task::spawn_local(async move {
                 while let Some(msg) = gateway_rx.recv().await {
                     match msg {
-                        xai_acp_lib::AcpClientMessage::ExtMethod(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::ExtMethod(args) => {
                             // Garbage payload that does not deserialize to ExitPlanModeExtResponse.
                             let garbage: Arc<serde_json::value::RawValue> =
                                 serde_json::value::to_raw_value(&serde_json::json!(
@@ -164,7 +164,7 @@ async fn request_plan_approval_parse_fallback_fails_closed() {
                             let _ = args.response_tx.send(Ok(acp::ExtResponse::new(garbage)));
                             break;
                         }
-                        xai_acp_lib::AcpClientMessage::SessionNotification(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::SessionNotification(args) => {
                             let _ = args.response_tx.send(Ok(()));
                         }
                         _ => {}
@@ -210,11 +210,11 @@ async fn real_exit_plan_mode_disconnect_keeps_awaiting_persisted() {
             let responder = tokio::task::spawn_local(async move {
                 while let Some(msg) = gateway_rx.recv().await {
                     match msg {
-                        xai_acp_lib::AcpClientMessage::ExtMethod(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::ExtMethod(args) => {
                             drop(args); // no response -> "unable to receive response"
                             break;
                         }
-                        xai_acp_lib::AcpClientMessage::SessionNotification(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::SessionNotification(args) => {
                             let _ = args.response_tx.send(Ok(()));
                         }
                         _ => {}
@@ -310,11 +310,11 @@ async fn request_plan_approval_keeps_flag_when_client_disconnects() {
             let responder = tokio::task::spawn_local(async move {
                 while let Some(msg) = gateway_rx.recv().await {
                     match msg {
-                        xai_acp_lib::AcpClientMessage::ExtMethod(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::ExtMethod(args) => {
                             drop(args); // no response -> ext_method sees Err
                             break;
                         }
-                        xai_acp_lib::AcpClientMessage::SessionNotification(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::SessionNotification(args) => {
                             let _ = args.response_tx.send(Ok(()));
                         }
                         _ => {}
@@ -356,12 +356,12 @@ async fn request_plan_approval_future_drop_clears_flag() {
             let responder = tokio::task::spawn_local(async move {
                 while let Some(msg) = gateway_rx.recv().await {
                     match msg {
-                        xai_acp_lib::AcpClientMessage::ExtMethod(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::ExtMethod(args) => {
                             // Hold the response sender open: never resolve.
                             std::mem::forget(args);
                             break;
                         }
-                        xai_acp_lib::AcpClientMessage::SessionNotification(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::SessionNotification(args) => {
                             let _ = args.response_tx.send(Ok(()));
                         }
                         _ => {}

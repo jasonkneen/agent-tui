@@ -1346,7 +1346,7 @@ impl AgentView {
             ButtonAction::HooksAction(hooks_action) => {
                 if let Some(ref mut state) = self.extensions_modal {
                     state.modal_message = None;
-                    if matches!(hooks_action, xai_hooks_plugins_types::HooksAction::Reload) {
+                    if matches!(hooks_action, agent_tui_hooks_plugins_types::HooksAction::Reload) {
                         // Reload rebuilds the entire plugin registry -- show
                         // tab-level "Loading..." instead of a single-entry badge.
                         state.pending_action = Some("Reloading...".into());
@@ -1367,7 +1367,7 @@ impl AgentView {
                     state.last_plugins_action = Some(plugins_action.clone());
                     if matches!(
                         plugins_action,
-                        xai_hooks_plugins_types::PluginsAction::Reload
+                        agent_tui_hooks_plugins_types::PluginsAction::Reload
                     ) {
                         // Reload rebuilds the entire plugin registry -- show
                         // tab-level "Loading..." instead of a single-entry badge.
@@ -1382,7 +1382,7 @@ impl AgentView {
                         // sees the fetch is underway, not a generic spinner.
                         let label = if matches!(
                             plugins_action,
-                            xai_hooks_plugins_types::PluginsAction::Update { .. }
+                            agent_tui_hooks_plugins_types::PluginsAction::Update { .. }
                         ) {
                             "Updating..."
                         } else {
@@ -1530,14 +1530,14 @@ impl AgentView {
                         // Refresh re-syncs every source and reloads the whole
                         // list, so show a tab-level loading state instead of
                         // decorating the single row under the cursor.
-                        xai_hooks_plugins_types::MarketplaceAction::Refresh { .. } => {
+                        agent_tui_hooks_plugins_types::MarketplaceAction::Refresh { .. } => {
                             state.pending_action = None;
                             state.pending_entry_index = None;
                             state.marketplace_data = TabDataState::Loading;
                         }
                         // No pending_entry_index: the new source doesn't exist
                         // yet, so any index would decorate an unrelated row.
-                        xai_hooks_plugins_types::MarketplaceAction::AddSource { .. } => {
+                        agent_tui_hooks_plugins_types::MarketplaceAction::AddSource { .. } => {
                             state.pending_action = Some("Adding source...".into());
                         }
                         _ => {
@@ -1559,7 +1559,7 @@ impl AgentView {
                         let path = hook.source_dir.clone();
                         return self.execute_modal_button_action(
                             crate::views::extensions_modal::ButtonAction::HooksAction(
-                                xai_hooks_plugins_types::HooksAction::Remove { path },
+                                agent_tui_hooks_plugins_types::HooksAction::Remove { path },
                             ),
                         );
                     }
@@ -1578,7 +1578,7 @@ impl AgentView {
 
                     if is_collapsed {
                         // Group toggle: collect all hooks in this source group.
-                        let group_hooks: Vec<&xai_hooks_plugins_types::HookInfo> = data
+                        let group_hooks: Vec<&agent_tui_hooks_plugins_types::HookInfo> = data
                             .hooks
                             .iter()
                             .filter(|h| h.source_dir == *source)
@@ -1586,7 +1586,7 @@ impl AgentView {
                         let any_enabled = group_hooks.iter().any(|h| !h.disabled);
                         let hook_names: Vec<String> =
                             group_hooks.iter().map(|h| h.name.clone()).collect();
-                        let action = xai_hooks_plugins_types::HooksAction::ToggleSource {
+                        let action = agent_tui_hooks_plugins_types::HooksAction::ToggleSource {
                             hook_names,
                             disable: any_enabled,
                         };
@@ -1594,11 +1594,11 @@ impl AgentView {
                     } else {
                         // Single hook toggle.
                         let action = if hook.disabled {
-                            xai_hooks_plugins_types::HooksAction::Enable {
+                            agent_tui_hooks_plugins_types::HooksAction::Enable {
                                 hook_name: hook.name.clone(),
                             }
                         } else {
-                            xai_hooks_plugins_types::HooksAction::Disable {
+                            agent_tui_hooks_plugins_types::HooksAction::Disable {
                                 hook_name: hook.name.clone(),
                             }
                         };
@@ -1615,11 +1615,11 @@ impl AgentView {
                     && let Some(plugin) = data.plugins.get(idx)
                 {
                     let action = if plugin.enabled {
-                        xai_hooks_plugins_types::PluginsAction::Disable {
+                        agent_tui_hooks_plugins_types::PluginsAction::Disable {
                             plugin_id: plugin.id.clone(),
                         }
                     } else {
-                        xai_hooks_plugins_types::PluginsAction::Enable {
+                        agent_tui_hooks_plugins_types::PluginsAction::Enable {
                             plugin_id: plugin.id.clone(),
                         }
                     };
@@ -1651,7 +1651,7 @@ impl AgentView {
                     && let Some(idx) = state.selected_data_index()
                     && let Some(plugin) = data.plugins.get(idx)
                 {
-                    let action = xai_hooks_plugins_types::PluginsAction::Uninstall {
+                    let action = agent_tui_hooks_plugins_types::PluginsAction::Uninstall {
                         plugin_id: plugin.id.clone(),
                         confirmed: false,
                     };
@@ -1669,7 +1669,7 @@ impl AgentView {
                     && let Some(idx) = state.selected_data_index()
                     && let Some(plugin) = data.plugins.get(idx)
                 {
-                    let action = xai_hooks_plugins_types::PluginsAction::Update {
+                    let action = agent_tui_hooks_plugins_types::PluginsAction::Update {
                         plugin_id: Some(plugin.id.clone()),
                     };
                     return self.execute_modal_button_action(ButtonAction::PluginsAction(action));
@@ -1815,7 +1815,7 @@ impl AgentView {
                 .execute_selected_marketplace_plugin_action(
                     "Installing...",
                     |source_url_or_path, plugin_relative_path| {
-                        xai_hooks_plugins_types::MarketplaceAction::Install {
+                        agent_tui_hooks_plugins_types::MarketplaceAction::Install {
                             source_url_or_path,
                             plugin_relative_path,
                         }
@@ -1825,7 +1825,7 @@ impl AgentView {
                 .execute_selected_marketplace_plugin_action(
                     "Updating...",
                     |source_url_or_path, plugin_relative_path| {
-                        xai_hooks_plugins_types::MarketplaceAction::Update {
+                        agent_tui_hooks_plugins_types::MarketplaceAction::Update {
                             source_url_or_path,
                             plugin_relative_path,
                         }
@@ -1845,7 +1845,7 @@ impl AgentView {
                 .execute_selected_marketplace_plugin_action(
                     "Uninstalling...",
                     |source_url_or_path, plugin_relative_path| {
-                        xai_hooks_plugins_types::MarketplaceAction::Uninstall {
+                        agent_tui_hooks_plugins_types::MarketplaceAction::Uninstall {
                             source_url_or_path,
                             plugin_relative_path,
                         }
@@ -1867,7 +1867,7 @@ impl AgentView {
                                 crate::views::extensions_modal::ModalMessage::MarketplaceConfirmation {
                                     message: msg,
                                     action:
-                                        xai_hooks_plugins_types::MarketplaceAction::RemoveSource {
+                                        agent_tui_hooks_plugins_types::MarketplaceAction::RemoveSource {
                                             source_url_or_path: source.source_url_or_path.clone(),
                                         },
                                 },
@@ -1884,7 +1884,7 @@ impl AgentView {
     fn execute_selected_marketplace_plugin_action(
         &mut self,
         pending_label: &'static str,
-        make_action: impl FnOnce(String, String) -> xai_hooks_plugins_types::MarketplaceAction,
+        make_action: impl FnOnce(String, String) -> agent_tui_hooks_plugins_types::MarketplaceAction,
     ) -> InputOutcome {
         if let Some(ref mut state) = self.extensions_modal {
             use crate::views::extensions_modal::TabDataState;
@@ -1917,8 +1917,8 @@ mod marketplace_modal_action_tests {
     pub(super) fn marketplace_plugin(
         name: &str,
         relative_path: &str,
-    ) -> xai_hooks_plugins_types::MarketplacePluginEntry {
-        xai_hooks_plugins_types::MarketplacePluginEntry {
+    ) -> agent_tui_hooks_plugins_types::MarketplacePluginEntry {
+        agent_tui_hooks_plugins_types::MarketplacePluginEntry {
             name: name.into(),
             version: Some("2.0.0".into()),
             description: None,
@@ -1948,8 +1948,8 @@ mod marketplace_modal_action_tests {
         let mut agent = super::test_fixtures::make_agent();
         let mut modal = ExtensionsModalState::new(ExtensionsTab::Marketplace);
         modal.marketplace_data =
-            TabDataState::Loaded(xai_hooks_plugins_types::MarketplaceListResponse {
-                sources: vec![xai_hooks_plugins_types::MarketplaceScanResult {
+            TabDataState::Loaded(agent_tui_hooks_plugins_types::MarketplaceListResponse {
+                sources: vec![agent_tui_hooks_plugins_types::MarketplaceScanResult {
                     source_name: "test-source".into(),
                     source_kind: "git".into(),
                     source_url_or_path: "https://example.com/plugins.git".into(),
@@ -1968,7 +1968,7 @@ mod marketplace_modal_action_tests {
 
         match outcome {
             InputOutcome::Action(Action::ExecuteMarketplaceAction(
-                xai_hooks_plugins_types::MarketplaceAction::Update {
+                agent_tui_hooks_plugins_types::MarketplaceAction::Update {
                     source_url_or_path,
                     plugin_relative_path,
                 },
@@ -1991,8 +1991,8 @@ mod marketplace_modal_action_tests {
         let mut agent = super::test_fixtures::make_agent();
         let mut modal = ExtensionsModalState::new(ExtensionsTab::Marketplace);
         modal.marketplace_data =
-            TabDataState::Loaded(xai_hooks_plugins_types::MarketplaceListResponse {
-                sources: vec![xai_hooks_plugins_types::MarketplaceScanResult {
+            TabDataState::Loaded(agent_tui_hooks_plugins_types::MarketplaceListResponse {
+                sources: vec![agent_tui_hooks_plugins_types::MarketplaceScanResult {
                     source_name: "test-source".into(),
                     source_kind: "git".into(),
                     source_url_or_path: "https://example.com/plugins.git".into(),
@@ -2007,7 +2007,7 @@ mod marketplace_modal_action_tests {
         agent.extensions_modal = Some(modal);
 
         let outcome = agent.execute_modal_button_action(ButtonAction::MarketplaceAction(
-            xai_hooks_plugins_types::MarketplaceAction::Refresh {
+            agent_tui_hooks_plugins_types::MarketplaceAction::Refresh {
                 source_url_or_path: None,
             },
         ));
@@ -2015,7 +2015,7 @@ mod marketplace_modal_action_tests {
         assert!(matches!(
             outcome,
             InputOutcome::Action(Action::ExecuteMarketplaceAction(
-                xai_hooks_plugins_types::MarketplaceAction::Refresh {
+                agent_tui_hooks_plugins_types::MarketplaceAction::Refresh {
                     source_url_or_path: None
                 }
             ))
@@ -2036,12 +2036,12 @@ mod extensions_action_target_tests {
         ButtonAction, ExtensionsModalState, ExtensionsTab, TabDataState,
     };
 
-    fn plugin_info(name: &str, enabled: bool) -> xai_hooks_plugins_types::PluginInfo {
-        xai_hooks_plugins_types::PluginInfo {
+    fn plugin_info(name: &str, enabled: bool) -> agent_tui_hooks_plugins_types::PluginInfo {
+        agent_tui_hooks_plugins_types::PluginInfo {
             name: name.into(),
             id: format!("user/abcd1234/{name}"),
             root: "/tmp/p".into(),
-            scope: xai_hooks_plugins_types::PluginScope::User,
+            scope: agent_tui_hooks_plugins_types::PluginScope::User,
             trusted: true,
             enabled,
             version: None,
@@ -2050,10 +2050,10 @@ mod extensions_action_target_tests {
             skill_names: Vec::new(),
             agent_count: 0,
             agent_names: Vec::new(),
-            hook_status: xai_hooks_plugins_types::HookStatus::None,
+            hook_status: agent_tui_hooks_plugins_types::HookStatus::None,
             hook_count: 0,
             mcp_server_count: 0,
-            mcp_status: xai_hooks_plugins_types::McpStatus::None,
+            mcp_status: agent_tui_hooks_plugins_types::McpStatus::None,
             marketplace_source: None,
             origin: None,
             conflict: None,
@@ -2079,7 +2079,7 @@ mod extensions_action_target_tests {
     #[test]
     fn plugins_toggle_and_uninstall_resolve_name_and_state() {
         let mut modal = ExtensionsModalState::new(ExtensionsTab::Plugins);
-        modal.plugins_data = TabDataState::Loaded(xai_hooks_plugins_types::PluginsListResponse {
+        modal.plugins_data = TabDataState::Loaded(agent_tui_hooks_plugins_types::PluginsListResponse {
             plugins: vec![plugin_info("my-plugin", true)],
         });
         modal.entry_data_indices = vec![Some(0)];
@@ -2101,7 +2101,7 @@ mod extensions_action_target_tests {
     fn update_selected_plugin_dispatches_update_with_selected_id_and_pending_state() {
         let mut agent = super::test_fixtures::make_agent();
         let mut modal = ExtensionsModalState::new(ExtensionsTab::Plugins);
-        modal.plugins_data = TabDataState::Loaded(xai_hooks_plugins_types::PluginsListResponse {
+        modal.plugins_data = TabDataState::Loaded(agent_tui_hooks_plugins_types::PluginsListResponse {
             plugins: vec![plugin_info("my-plugin", true)],
         });
         modal.entry_data_indices = vec![Some(0)];
@@ -2119,7 +2119,7 @@ mod extensions_action_target_tests {
         match outcome {
             crate::app::app_view::InputOutcome::Action(
                 crate::app::actions::Action::ExecutePluginsAction(
-                    xai_hooks_plugins_types::PluginsAction::Update { plugin_id },
+                    agent_tui_hooks_plugins_types::PluginsAction::Update { plugin_id },
                 ),
             ) => assert_eq!(plugin_id.as_deref(), Some("user/abcd1234/my-plugin")),
             other => panic!("expected plugins update action, got {other:?}"),
@@ -2133,7 +2133,7 @@ mod extensions_action_target_tests {
     fn plugins_cycle_filter_resets_selection_to_top() {
         let mut agent = super::test_fixtures::make_agent();
         let mut modal = ExtensionsModalState::new(ExtensionsTab::Plugins);
-        modal.plugins_data = TabDataState::Loaded(xai_hooks_plugins_types::PluginsListResponse {
+        modal.plugins_data = TabDataState::Loaded(agent_tui_hooks_plugins_types::PluginsListResponse {
             plugins: vec![plugin_info("my-plugin", true)],
         });
         modal.picker_state.selected = 5;
@@ -2152,7 +2152,7 @@ mod extensions_action_target_tests {
     fn plugins_toggle_expand_folds_group_header_and_expands_row_details() {
         let mut agent = super::test_fixtures::make_agent();
         let mut modal = ExtensionsModalState::new(ExtensionsTab::Plugins);
-        modal.plugins_data = TabDataState::Loaded(xai_hooks_plugins_types::PluginsListResponse {
+        modal.plugins_data = TabDataState::Loaded(agent_tui_hooks_plugins_types::PluginsListResponse {
             plugins: vec![plugin_info("my-plugin", true)],
         });
         modal.entry_data_indices = vec![None, Some(0)];
@@ -2244,8 +2244,8 @@ mod extensions_action_target_tests {
     fn marketplace_actions_resolve_plugin_and_source_names() {
         let mut modal = ExtensionsModalState::new(ExtensionsTab::Marketplace);
         modal.marketplace_data =
-            TabDataState::Loaded(xai_hooks_plugins_types::MarketplaceListResponse {
-                sources: vec![xai_hooks_plugins_types::MarketplaceScanResult {
+            TabDataState::Loaded(agent_tui_hooks_plugins_types::MarketplaceListResponse {
+                sources: vec![agent_tui_hooks_plugins_types::MarketplaceScanResult {
                     source_name: "test-source".into(),
                     source_kind: "git".into(),
                     source_url_or_path: "https://example.com/plugins.git".into(),
@@ -2283,11 +2283,11 @@ mod extensions_action_target_tests {
         name: &str,
         source_dir: &str,
         disabled: bool,
-    ) -> xai_hooks_plugins_types::HookInfo {
-        xai_hooks_plugins_types::HookInfo {
+    ) -> agent_tui_hooks_plugins_types::HookInfo {
+        agent_tui_hooks_plugins_types::HookInfo {
             name: name.into(),
-            event: xai_hooks_plugins_types::HookEvent::PreToolUse,
-            handler_type: xai_hooks_plugins_types::HookHandlerType::Command,
+            event: agent_tui_hooks_plugins_types::HookEvent::PreToolUse,
+            handler_type: agent_tui_hooks_plugins_types::HookHandlerType::Command,
             matcher: None,
             command: None,
             url: None,
@@ -2297,9 +2297,9 @@ mod extensions_action_target_tests {
         }
     }
 
-    fn hooks_modal(hooks: Vec<xai_hooks_plugins_types::HookInfo>) -> ExtensionsModalState {
+    fn hooks_modal(hooks: Vec<agent_tui_hooks_plugins_types::HookInfo>) -> ExtensionsModalState {
         let mut modal = ExtensionsModalState::new(ExtensionsTab::Hooks);
-        modal.hooks_data = TabDataState::Loaded(xai_hooks_plugins_types::HooksListResponse {
+        modal.hooks_data = TabDataState::Loaded(agent_tui_hooks_plugins_types::HooksListResponse {
             hooks,
             project_trusted: true,
             load_errors: Vec::new(),
@@ -2367,7 +2367,7 @@ mod extensions_action_target_tests {
             ButtonAction::ToggleSelectedSkill,
             ButtonAction::ToggleSelectedMcpServer,
             ButtonAction::InstallSelectedMarketplacePlugin,
-            ButtonAction::PluginsAction(xai_hooks_plugins_types::PluginsAction::Reload),
+            ButtonAction::PluginsAction(agent_tui_hooks_plugins_types::PluginsAction::Reload),
         ] {
             let (target, enabled) = AgentView::extensions_action_target(&modal, &action);
             assert_eq!(target, None, "{action:?}");

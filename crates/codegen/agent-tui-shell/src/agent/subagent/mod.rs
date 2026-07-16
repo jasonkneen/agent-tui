@@ -34,10 +34,10 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use agent_tui_tools::implementations::grok_build::task::types::*;
 use agent_tui_workspace::file_system::AsyncFileSystem;
-use xai_hunk_tracker::HunkTrackerHandle;
+use agent_tui_hunk_tracker::HunkTrackerHandle;
 mod coordinator_lifecycle;
 mod coordinator_query;
 mod handle_request;
@@ -249,7 +249,7 @@ pub(crate) struct SubagentSpawnContext {
     /// Parent session's ChatStateHandle — used to read the actual live
     /// sampling config and credentials from the parent session actor (async).
     /// Cheap Clone (mpsc sender). `None` when parent SessionHandle not found.
-    pub parent_chat_state: Option<xai_chat_state::ChatStateHandle>,
+    pub parent_chat_state: Option<agent_tui_chat_state::ChatStateHandle>,
     /// Parent session's resolved turn limit, for subagent inheritance.
     pub parent_max_turns: Option<usize>,
     /// All available models for resolving model IDs from overrides.
@@ -992,13 +992,13 @@ async fn read_parent_sampling_config(
 fn subagent_auth_type(
     model: Option<&crate::agent::config::ModelEntry>,
     auth_method_id: &acp::AuthMethodId,
-) -> xai_chat_state::AuthType {
+) -> agent_tui_chat_state::AuthType {
     if model.is_some_and(|m| m.has_own_credentials()) {
-        xai_chat_state::AuthType::ApiKey
+        agent_tui_chat_state::AuthType::ApiKey
     } else if crate::agent::auth_method::is_session_based_method(auth_method_id) {
-        xai_chat_state::AuthType::SessionToken
+        agent_tui_chat_state::AuthType::SessionToken
     } else {
-        xai_chat_state::AuthType::ApiKey
+        agent_tui_chat_state::AuthType::ApiKey
     }
 }
 /// Resolve a model override string (config key or model ID) to a
@@ -1159,7 +1159,7 @@ fn verbatim_or_normalize_fork(
             verbatim_fork: false,
         };
     }
-    let estimated_tokens = xai_chat_state::estimate_conversation_tokens(&items);
+    let estimated_tokens = agent_tui_chat_state::estimate_conversation_tokens(&items);
     const SAFE_FORK_PERCENT: u64 = 80;
     let threshold = child_context_window * SAFE_FORK_PERCENT / 100;
     if estimated_tokens <= threshold && conversation_tail_is_complete(&items) {
@@ -1308,7 +1308,7 @@ async fn bootstrap_initial_context(
                         ));
                     }
                 };
-                let estimated_tokens = xai_chat_state::estimate_conversation_tokens(&conversation);
+                let estimated_tokens = agent_tui_chat_state::estimate_conversation_tokens(&conversation);
                 const SAFE_RESUME_PERCENT: u64 = 80;
                 let threshold = child_context_window * SAFE_RESUME_PERCENT / 100;
                 if estimated_tokens > threshold {
@@ -1921,10 +1921,10 @@ async fn signals_snapshot_counts(child_handle: &SessionHandle) -> (u32, u32) {
         .unwrap_or((0, 0))
 }
 fn cancellation_error_message(
-    category: Option<xai_file_utils::events::types::CancellationCategory>,
+    category: Option<agent_tui_file_utils::events::types::CancellationCategory>,
     context: Option<&crate::session::commands::CancellationContext>,
 ) -> String {
-    use xai_file_utils::events::types::CancellationCategory;
+    use agent_tui_file_utils::events::types::CancellationCategory;
     let detail = context.and_then(|ctx| {
         let tool = ctx.tool_name.as_deref();
         let reason = ctx.reason.as_deref();

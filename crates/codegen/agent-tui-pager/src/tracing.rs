@@ -414,7 +414,7 @@ pub fn init_tracing() -> TracingHandle {
     let (make_writer, rx) = TracingChannelMakeWriter::new();
     let payload_level = if false { "debug" } else { "off" };
     let directives = format!(
-        "agent_tui_shell=info,agent_tui_pager=trace,agent_tui_tools=info,xai_acp_lib=info,{RMCP_SSE_NOISE_TARGET}=error,sampling_log=off,{ACP_UPDATE_TARGET}=debug,{ACP_UPDATE_PAYLOAD_TARGET}={payload_level}"
+        "agent_tui_shell=info,agent_tui_pager=trace,agent_tui_tools=info,agent_tui_acp_lib=info,{RMCP_SSE_NOISE_TARGET}=error,sampling_log=off,{ACP_UPDATE_TARGET}=debug,{ACP_UPDATE_PAYLOAD_TARGET}={payload_level}"
     );
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::WARN.into())

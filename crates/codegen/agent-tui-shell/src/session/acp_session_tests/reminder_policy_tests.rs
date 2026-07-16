@@ -294,7 +294,7 @@ async fn same_session_rolls_over_once_when_local_date_advances() {
     local
         .run_until(async {
             let (gateway_tx, _) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(50_000, 256_000, 85, gateway_tx, persistence_tx).await;
             let today = chrono::Local::now().date_naive();

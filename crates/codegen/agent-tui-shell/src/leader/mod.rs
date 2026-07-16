@@ -1423,7 +1423,7 @@ fn spawn_leader_subprocess(env_urls: &LeaderEnvUrls) -> Result<u32, ConnectionEr
     }
     let leader_log = std::env::var("GROK_LEADER_LOG")
         .or_else(|_| std::env::var("RUST_LOG"))
-        .unwrap_or_else(|_| "agent_tui_shell=info,xai_acp_lib=warn,agent_tui_mcp=warn".into());
+        .unwrap_or_else(|_| "agent_tui_shell=info,agent_tui_acp_lib=warn,agent_tui_mcp=warn".into());
     cmd.env("RUST_LOG", leader_log);
     #[cfg(unix)]
     {

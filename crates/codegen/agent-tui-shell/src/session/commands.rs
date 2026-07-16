@@ -25,7 +25,7 @@ pub struct CancellationContext {
 pub enum PromptCompletionKind {
     Completed,
     Cancelled {
-        category: Option<xai_file_utils::events::types::CancellationCategory>,
+        category: Option<agent_tui_file_utils::events::types::CancellationCategory>,
         context: Option<CancellationContext>,
     },
     MaxTurnsReached {
@@ -225,7 +225,7 @@ pub enum SessionCommand {
         responds_to: oneshot::Sender<PromptMode>,
     },
     GetModelMetadata {
-        responds_to: oneshot::Sender<xai_chat_state::ModelMetadata>,
+        responds_to: oneshot::Sender<agent_tui_chat_state::ModelMetadata>,
     },
     /// Snapshot for `/session-info`.
     GetSessionInfo {
@@ -278,7 +278,7 @@ pub enum SessionCommand {
     RepairHistory {
         dry_run: bool,
         respond_to:
-            oneshot::Sender<anyhow::Result<xai_chat_state::compaction_utils::HistoryRepairReport>>,
+            oneshot::Sender<anyhow::Result<agent_tui_chat_state::compaction_utils::HistoryRepairReport>>,
     },
     GetRewindPoints {
         respond_to: oneshot::Sender<RewindPointsResponse>,
@@ -312,7 +312,7 @@ pub enum SessionCommand {
     /// applied (prompt-attributed or session-only). Drop the oneshot on failure
     /// so the child treats the fold as not landed.
     RecordSubagentUsage {
-        by_model: Vec<(String, xai_chat_state::UsageTotals)>,
+        by_model: Vec<(String, agent_tui_chat_state::UsageTotals)>,
         parent_prompt_id: Option<String>,
         /// Nested subagent bill may under-count.
         incomplete: bool,
@@ -457,12 +457,12 @@ pub enum SessionCommand {
         respond_to: oneshot::Sender<bool>,
     },
     GetHooksList {
-        respond_to: oneshot::Sender<xai_hooks_plugins_types::HooksListResponse>,
+        respond_to: oneshot::Sender<agent_tui_hooks_plugins_types::HooksListResponse>,
     },
     /// Execute a hooks management action from the pager modal.
     HooksAction {
-        action: xai_hooks_plugins_types::HooksAction,
-        respond_to: oneshot::Sender<xai_hooks_plugins_types::ActionOutcome>,
+        action: agent_tui_hooks_plugins_types::HooksAction,
+        respond_to: oneshot::Sender<agent_tui_hooks_plugins_types::ActionOutcome>,
     },
     /// Broadcast a plugin updates notification to the session.
     NotifyPluginUpdates {
@@ -470,8 +470,8 @@ pub enum SessionCommand {
     },
     /// Execute a plugins management action from the pager modal.
     PluginsAction {
-        action: xai_hooks_plugins_types::PluginsAction,
-        respond_to: oneshot::Sender<xai_hooks_plugins_types::ActionOutcome>,
+        action: agent_tui_hooks_plugins_types::PluginsAction,
+        respond_to: oneshot::Sender<agent_tui_hooks_plugins_types::ActionOutcome>,
     },
     /// This session's plugin registry, as served by `x.ai/plugins/list`.
     PluginsList {
@@ -692,7 +692,7 @@ pub enum SessionCommand {
     },
     /// Take turn messages from the chat state actor (proxied from mvp_agent).
     TakeTurnMessages {
-        respond_to: oneshot::Sender<Option<xai_chat_state::TurnCapture>>,
+        respond_to: oneshot::Sender<Option<agent_tui_chat_state::TurnCapture>>,
     },
     /// Drain the sealed harness trace turns (goal planner + verifier panels)
     /// from the chat state actor (proxied from mvp_agent). Routed through the

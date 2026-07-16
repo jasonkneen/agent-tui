@@ -1195,8 +1195,8 @@ impl AgentBuilder {
         ))
     }
 }
-/// CLI naming for the shared [`xai_tool_types::build_task_description`] builder.
-const TASK_TOOL_NAMING: xai_tool_types::TaskToolNaming<'static> = xai_tool_types::TaskToolNaming {
+/// CLI naming for the shared [`agent_tui_tool_types::build_task_description`] builder.
+const TASK_TOOL_NAMING: agent_tui_tool_types::TaskToolNaming<'static> = agent_tui_tool_types::TaskToolNaming {
     task_tool: "${{ tools.by_kind.task }}",
     subagent_type_param: "${{ params.task.subagent_type }}",
     run_in_background_param: "${{ params.task.run_in_background }}",
@@ -1220,12 +1220,12 @@ Prefer doing the work yourself unless delegation is clearly necessary.\n\
 Usage: specify ${{ params.task.subagent_type }} (\"general-purpose\", \"explore\", or \"plan\"), \n\
 a short ${{ params.task.description }}, and a detailed ${{ params.task.prompt }}.\n\
 ${{ params.task.run_in_background }}: Returns immediately with a subagent_id. Use the task output tool to retrieve results. This is set to true by default.";
-/// CLI [`xai_tool_types::SubagentToolNaming`]: each kind maps to its
+/// CLI [`agent_tui_tool_types::SubagentToolNaming`]: each kind maps to its
 /// `${{ tools.by_kind.* }}` template placeholder, so rendering a built-in's
 /// `tools_template` reproduces the placeholders for the CLI's `TemplateRenderer`
 /// to resolve at finalize time.
-const SUBAGENT_TOOL_NAMING: xai_tool_types::SubagentToolNaming<'static> =
-    xai_tool_types::SubagentToolNaming {
+const SUBAGENT_TOOL_NAMING: agent_tui_tool_types::SubagentToolNaming<'static> =
+    agent_tui_tool_types::SubagentToolNaming {
         execute: "${{ tools.by_kind.execute }}",
         read: "${{ tools.by_kind.read }}",
         edit: "${{ tools.by_kind.edit }}",
@@ -1235,14 +1235,14 @@ const SUBAGENT_TOOL_NAMING: xai_tool_types::SubagentToolNaming<'static> =
         plan: "${{ tools.by_kind.plan }}",
     };
 /// Return the tool-access fragment for a built-in subagent type, sourced from the
-/// shared [`xai_tool_types`] catalog and rendered with [`SUBAGENT_TOOL_NAMING`]
+/// shared [`agent_tui_tool_types`] catalog and rendered with [`SUBAGENT_TOOL_NAMING`]
 /// (which re-emits the `${{ tools.by_kind.* }}` placeholders for the CLI's
 /// `TemplateRenderer` to resolve at finalize time).
 fn builtin_tools_fragment(name: BuiltinAgentName) -> String {
     let subagent = match name {
-        BuiltinAgentName::GeneralPurpose => xai_tool_types::GENERAL_PURPOSE_SUBAGENT,
-        BuiltinAgentName::Explore => xai_tool_types::EXPLORE_SUBAGENT,
-        BuiltinAgentName::Plan => xai_tool_types::PLAN_SUBAGENT,
+        BuiltinAgentName::GeneralPurpose => agent_tui_tool_types::GENERAL_PURPOSE_SUBAGENT,
+        BuiltinAgentName::Explore => agent_tui_tool_types::EXPLORE_SUBAGENT,
+        BuiltinAgentName::Plan => agent_tui_tool_types::PLAN_SUBAGENT,
         _ => return String::new(),
     };
     subagent.render_tools(&SUBAGENT_TOOL_NAMING)
@@ -1272,8 +1272,8 @@ fn task_model_guidance(model_slugs: &[String]) -> String {
 /// Build the Task tool description with the effective subagent list.
 ///
 /// Maps each [`SubagentEntry`] to the shared
-/// [`xai_tool_types::SubagentDescriptor`] and defers to
-/// [`xai_tool_types::build_task_description`] so the CLI and the prod chat
+/// [`agent_tui_tool_types::SubagentDescriptor`] and defers to
+/// [`agent_tui_tool_types::build_task_description`] so the CLI and the prod chat
 /// stack share one builder. Built-in (unshadowed) entries carry the hardcoded
 /// tool-name fragment; user-defined entries carry `None` so their raw
 /// `description` is used verbatim (markdown is fine — it's model-facing text).
@@ -1281,21 +1281,21 @@ pub(crate) fn build_task_description(
     subagents: &[SubagentEntry],
     model_slugs: &[String],
 ) -> String {
-    let descriptors: Vec<xai_tool_types::SubagentDescriptor> = subagents
+    let descriptors: Vec<agent_tui_tool_types::SubagentDescriptor> = subagents
         .iter()
         .map(|entry| {
             let tools = match &entry.source {
                 SubagentSource::Builtin(b) => Some(builtin_tools_fragment(*b)),
                 SubagentSource::UserDefined { .. } => None,
             };
-            xai_tool_types::SubagentDescriptor {
+            agent_tui_tool_types::SubagentDescriptor {
                 name: entry.name.clone(),
                 description: entry.description.clone(),
                 tools,
             }
         })
         .collect();
-    let mut description = xai_tool_types::build_task_description(&descriptors, &TASK_TOOL_NAMING);
+    let mut description = agent_tui_tool_types::build_task_description(&descriptors, &TASK_TOOL_NAMING);
     description.push_str(&task_model_guidance(model_slugs));
     description
 }
@@ -1344,11 +1344,11 @@ mod tests {
         ];
         let desc = build_task_description(&subagents, &[]);
         assert!(
-            desc.contains(xai_tool_types::GENERAL_PURPOSE_SUBAGENT.tools_template),
+            desc.contains(agent_tui_tool_types::GENERAL_PURPOSE_SUBAGENT.tools_template),
             "should include general-purpose tool names"
         );
         assert!(
-            desc.contains(xai_tool_types::EXPLORE_SUBAGENT.tools_template),
+            desc.contains(agent_tui_tool_types::EXPLORE_SUBAGENT.tools_template),
             "should include explore tool names"
         );
         assert!(
@@ -1406,7 +1406,7 @@ mod tests {
             "shadowed built-in should use user description"
         );
         assert!(
-            !desc.contains(xai_tool_types::EXPLORE_SUBAGENT.tools_template),
+            !desc.contains(agent_tui_tool_types::EXPLORE_SUBAGENT.tools_template),
             "shadowed built-in should NOT include built-in tool fragment"
         );
     }

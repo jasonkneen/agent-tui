@@ -299,7 +299,7 @@ fn convert_via_sips(image_data: &[u8]) -> Option<Vec<u8>> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    xai_tty_utils::detach_std_command(&mut sips_cmd);
+    agent_tui_tty_utils::detach_std_command(&mut sips_cmd);
     let status = sips_cmd.status().ok()?;
 
     let _ = std::fs::remove_file(&src);

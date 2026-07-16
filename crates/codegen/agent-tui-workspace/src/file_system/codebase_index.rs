@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 
-use xai_codebase_graph::{IndexManager, IndexManagerConfig, IndexManagerHandle};
+use agent_tui_codebase_graph::{IndexManager, IndexManagerConfig, IndexManagerHandle};
 
 use agent_tui_tools::util::grok_home::grok_home;
 

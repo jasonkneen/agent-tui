@@ -47,28 +47,28 @@ impl crate::types::tool_metadata::ToolMetadata for SearchReplaceConciseTool {
     }
 }
 
-impl xai_tool_runtime::Tool for SearchReplaceConciseTool {
+impl agent_tui_tool_runtime::Tool for SearchReplaceConciseTool {
     type Args = SearchReplaceInput;
     type Output = SearchReplaceOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("search_replace").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("search_replace").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "search_replace",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: false,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Write),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Write),
             ..Default::default()
         }
     }
@@ -83,9 +83,9 @@ impl xai_tool_runtime::Tool for SearchReplaceConciseTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: SearchReplaceInput,
-    ) -> Result<SearchReplaceOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<SearchReplaceOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -152,7 +152,7 @@ mod tests {
         let resources = test_resources(tmp.path());
 
         let input = make_input("test.txt", "hello", "goodbye");
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+        let result = agent_tui_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
             .await
             .unwrap();
 
@@ -183,7 +183,7 @@ mod tests {
             new_string: "ccc".to_string(),
             replace_all: true,
         };
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+        let result = agent_tui_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
             .await
             .unwrap();
 

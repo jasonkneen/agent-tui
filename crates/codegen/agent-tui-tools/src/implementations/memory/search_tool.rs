@@ -31,37 +31,37 @@ impl crate::types::tool_metadata::ToolMetadata for MemorySearchImpl {
     }
 }
 
-impl xai_tool_runtime::Tool for MemorySearchImpl {
+impl agent_tui_tool_runtime::Tool for MemorySearchImpl {
     type Args = MemorySearchInput;
     type Output = ToolOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("memory_search").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("memory_search").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "memory_search",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: true,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Read),
             ..Default::default()
         }
     }
 
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: MemorySearchInput,
-    ) -> Result<ToolOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<ToolOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
         let Some(memory) = resources
@@ -85,8 +85,8 @@ impl xai_tool_runtime::Tool for MemorySearchImpl {
             .search(&input.query, max_results, min_score)
             .await
             .map_err(|e| {
-                xai_tool_runtime::ToolError::execution(
-                    xai_tool_protocol::ToolId::new("memory_search").expect("valid"),
+                agent_tui_tool_runtime::ToolError::execution(
+                    agent_tui_tool_protocol::ToolId::new("memory_search").expect("valid"),
                     format!("memory search failed: {e}"),
                 )
             })?;

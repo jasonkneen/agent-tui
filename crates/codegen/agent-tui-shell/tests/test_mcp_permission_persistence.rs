@@ -11,7 +11,7 @@ use std::sync::{Arc, OnceLock};
 use agent_client_protocol as acp;
 use serial_test::serial;
 use tokio::sync::{mpsc, oneshot};
-use xai_acp_lib::{AcpAgentGatewaySender, AcpClientMessage};
+use agent_tui_acp_lib::{AcpAgentGatewaySender, AcpClientMessage};
 use agent_tui_paths::AbsPathBuf;
 use agent_tui_workspace::permission::types::{
     PatternMode, PermissionConfig, PermissionRule, RuleAction, ToolFilter,

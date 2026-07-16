@@ -64,7 +64,7 @@ use std::sync::OnceLock;
 use tokio::sync::{Mutex as TokioMutex, mpsc, oneshot};
 use tokio::time::{Duration, sleep};
 use tokio_retry::strategy::ExponentialBackoff;
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use agent_tui_agent::AgentDefinition;
 use agent_tui_agent::prompt::agents_md::LEGACY_AGENTS_MD_REMINDER_PREFIX;
 use agent_tui_agent::prompt::skills::SkillsConfig;
@@ -372,7 +372,7 @@ impl agent_tui_tools::types::resources::ManagedGatewayToolCaller for ShellManage
         caller: &str,
     ) -> Result<
         agent_tui_tools::types::resources::ManagedGatewayToolCallResponse,
-        xai_tool_runtime::ToolError,
+        agent_tui_tool_runtime::ToolError,
     > {
         let auth_key = self
             .auth_manager
@@ -380,7 +380,7 @@ impl agent_tui_tools::types::resources::ManagedGatewayToolCaller for ShellManage
             .await
             .ok()
             .or_else(|| self.auth_manager.current_or_expired().map(|a| a.key))
-            .ok_or_else(|| xai_tool_runtime::ToolError::unauthorized("no auth token available"))?;
+            .ok_or_else(|| agent_tui_tool_runtime::ToolError::unauthorized("no auth token available"))?;
         let response = crate::session::managed_mcp::call_gateway_tool(
             &self.proxy_base_url,
             &auth_key,
@@ -400,18 +400,18 @@ impl agent_tui_tools::types::resources::ManagedGatewayToolCaller for ShellManage
 fn managed_gateway_error_to_tool_error(
     error: crate::session::managed_mcp::ManagedMcpFetchError,
     caller: &str,
-) -> xai_tool_runtime::ToolError {
+) -> agent_tui_tool_runtime::ToolError {
     match error {
         crate::session::managed_mcp::ManagedMcpFetchError::Status { status, message } => {
             let detail = format!("Managed MCP gateway tool call failed: {message}");
             let mut err = if status == reqwest::StatusCode::UNAUTHORIZED {
-                xai_tool_runtime::ToolError::unauthorized(detail)
+                agent_tui_tool_runtime::ToolError::unauthorized(detail)
             } else if status == reqwest::StatusCode::FORBIDDEN {
-                xai_tool_runtime::ToolError::permission_denied(detail)
+                agent_tui_tool_runtime::ToolError::permission_denied(detail)
             } else {
-                let tool_id = xai_tool_protocol::ToolId::new(caller)
-                    .unwrap_or_else(|_| xai_tool_protocol::ToolId::new("use_tool").expect("valid"));
-                xai_tool_runtime::ToolError::execution(tool_id, detail)
+                let tool_id = agent_tui_tool_protocol::ToolId::new(caller)
+                    .unwrap_or_else(|_| agent_tui_tool_protocol::ToolId::new("use_tool").expect("valid"));
+                agent_tui_tool_runtime::ToolError::execution(tool_id, detail)
             };
             match err.details.as_mut() {
                 Some(serde_json::Value::Object(map)) => {
@@ -428,13 +428,13 @@ fn managed_gateway_error_to_tool_error(
             err
         }
         crate::session::managed_mcp::ManagedMcpFetchError::Transport(e) => {
-            xai_tool_runtime::ToolError::network_error(format!(
+            agent_tui_tool_runtime::ToolError::network_error(format!(
                 "Managed MCP gateway tool call failed: {}",
                 e.without_url()
             ))
         }
         crate::session::managed_mcp::ManagedMcpFetchError::NoAuth => {
-            xai_tool_runtime::ToolError::unauthorized("no auth token available")
+            agent_tui_tool_runtime::ToolError::unauthorized("no auth token available")
         }
     }
 }
@@ -450,7 +450,7 @@ mod managed_gateway_error_tests {
     #[test]
     fn unauthorized_status_maps_to_unauthorized_and_carries_status() {
         let err = managed_gateway_error_to_tool_error(status_error(401, "expired"), "use_tool");
-        assert_eq!(err.kind, xai_tool_runtime::ToolErrorKind::Unauthorized);
+        assert_eq!(err.kind, agent_tui_tool_runtime::ToolErrorKind::Unauthorized);
         assert!(err.detail.contains("expired"));
         let details = err.details.as_ref().unwrap();
         assert_eq!(
@@ -461,7 +461,7 @@ mod managed_gateway_error_tests {
     #[test]
     fn forbidden_status_maps_to_permission_denied_and_carries_status() {
         let err = managed_gateway_error_to_tool_error(status_error(403, "denied"), "use_tool");
-        assert_eq!(err.kind, xai_tool_runtime::ToolErrorKind::PermissionDenied);
+        assert_eq!(err.kind, agent_tui_tool_runtime::ToolErrorKind::PermissionDenied);
         let details = err.details.as_ref().unwrap();
         assert_eq!(
             details.get(HTTP_STATUS_DETAILS_KEY),
@@ -471,7 +471,7 @@ mod managed_gateway_error_tests {
     #[test]
     fn general_status_maps_to_execution_with_caller_tool_id() {
         let err = managed_gateway_error_to_tool_error(status_error(500, "boom"), "CallMcpTool");
-        assert_eq!(err.kind, xai_tool_runtime::ToolErrorKind::Execution);
+        assert_eq!(err.kind, agent_tui_tool_runtime::ToolErrorKind::Execution);
         let details = err.details.as_ref().unwrap();
         assert_eq!(
             details.get(HTTP_STATUS_DETAILS_KEY),
@@ -485,7 +485,7 @@ mod managed_gateway_error_tests {
     #[test]
     fn general_status_falls_back_to_use_tool_for_unknown_caller() {
         let err = managed_gateway_error_to_tool_error(status_error(500, "boom"), "not a tool id");
-        assert_eq!(err.kind, xai_tool_runtime::ToolErrorKind::Execution);
+        assert_eq!(err.kind, agent_tui_tool_runtime::ToolErrorKind::Execution);
         let details = err.details.as_ref().unwrap();
         assert_eq!(details.get("tool_id"), Some(&serde_json::json!("use_tool")));
     }
@@ -495,7 +495,7 @@ mod managed_gateway_error_tests {
             crate::session::managed_mcp::ManagedMcpFetchError::NoAuth,
             "use_tool",
         );
-        assert_eq!(err.kind, xai_tool_runtime::ToolErrorKind::Unauthorized);
+        assert_eq!(err.kind, agent_tui_tool_runtime::ToolErrorKind::Unauthorized);
     }
     #[tokio::test]
     async fn transport_error_maps_to_network_error_without_url() {
@@ -508,7 +508,7 @@ mod managed_gateway_error_tests {
             crate::session::managed_mcp::ManagedMcpFetchError::Transport(transport),
             "use_tool",
         );
-        assert_eq!(err.kind, xai_tool_runtime::ToolErrorKind::NetworkError);
+        assert_eq!(err.kind, agent_tui_tool_runtime::ToolErrorKind::NetworkError);
         assert!(err.detail.contains("Managed MCP gateway tool call failed"));
         assert!(
             !err.detail.contains("http://"),
@@ -608,7 +608,7 @@ pub(crate) struct SessionActor {
     /// Actor-based chat state handle — manages conversation, tokens, timing, and persistence.
     /// Also stores credentials (api_key, optional extra access key,
     /// client_version) opaquely.
-    pub(crate) chat_state_handle: xai_chat_state::ChatStateHandle,
+    pub(crate) chat_state_handle: agent_tui_chat_state::ChatStateHandle,
     /// Current running prompt/turn id, shared with SessionHandle.
     pub(crate) current_prompt_id: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// Open blocking reverse-requests (permission / question / plan-approval),
@@ -686,7 +686,7 @@ pub(crate) struct SessionActor {
     /// Feedback manager for signal tracking and feedback request heuristics
     pub(crate) feedback_manager: Arc<FeedbackManager>,
     pub(crate) upload_queue:
-        std::sync::Arc<std::sync::OnceLock<xai_file_utils::queue::UploadQueue>>,
+        std::sync::Arc<std::sync::OnceLock<agent_tui_file_utils::queue::UploadQueue>>,
     /// Cancellation token for the feedback sync loop (None if no feedback client)
     pub(crate) sync_loop_cancel: Option<tokio_util::sync::CancellationToken>,
     /// The fully-built Agent: owns the ToolBridge, system prompt, policies,
@@ -896,7 +896,7 @@ pub(crate) struct SessionActor {
     /// Background-computed user-message prefix, injected before the first prompt.
     pub(crate) deferred_prefix: TaskSlot<String>,
     /// Extensions to notify at turn and session lifecycle edges. Built once by `session_extension_registry` at actor construction and frozen after.
-    pub(crate) extension_registry: xai_agent_lifecycle::LocalExtensionRegistry,
+    pub(crate) extension_registry: agent_tui_agent_lifecycle::LocalExtensionRegistry,
     /// Local calendar date last surfaced to the model — either stamped into the
     /// `<user_info>` prefix (at session start, compaction, or resume) or
     /// announced via a date-rollover `<system-reminder>`. Drives
@@ -941,7 +941,7 @@ pub(crate) struct SessionActor {
     pub(crate) events: crate::session::events::EventTracker,
     /// Optional hub-side session event emitter (always constructed without a
     /// harness client in the agent; methods no-op with `None` transport).
-    pub(crate) observability_bridge: xai_computer_hub_sdk::ObservabilityBridge,
+    pub(crate) observability_bridge: agent_tui_computer_hub_sdk::ObservabilityBridge,
     /// Turn number captured at the start of each turn (before prompt index
     /// increment).  Used by `ToolCallStarted` bridge emissions so they
     /// report the same turn number as `TurnStarted` / `TurnEnded`.
@@ -1121,7 +1121,7 @@ impl SessionActor {
     /// Fire-and-forget — failures are logged but do not interrupt the turn.
     async fn send_before_turn_event(
         &self,
-        payload: xai_tool_protocol::turn_hook::BeforeTurnPayload,
+        payload: agent_tui_tool_protocol::turn_hook::BeforeTurnPayload,
     ) {
         self.workspace_ops
             .on_before_turn(&self.session_id_string(), &payload)
@@ -1129,7 +1129,7 @@ impl SessionActor {
     }
     /// Send an after-turn hook via the local workspace channel.
     /// Fire-and-forget — failures are logged but do not interrupt the turn.
-    async fn send_after_turn_event(&self, payload: xai_tool_protocol::turn_hook::AfterTurnPayload) {
+    async fn send_after_turn_event(&self, payload: agent_tui_tool_protocol::turn_hook::AfterTurnPayload) {
         self.workspace_ops
             .on_after_turn(&self.session_id_string(), &payload)
             .await;
@@ -1371,23 +1371,23 @@ mod managed_gateway_descriptor_tests {
             "fixture"
         }
     }
-    impl xai_tool_runtime::Tool for FixtureMcpTool {
+    impl agent_tui_tool_runtime::Tool for FixtureMcpTool {
         type Args = serde_json::Value;
         type Output = ToolOutput;
-        fn id(&self) -> xai_tool_protocol::ToolId {
-            xai_tool_protocol::ToolId::new("server__tool").expect("valid")
+        fn id(&self) -> agent_tui_tool_protocol::ToolId {
+            agent_tui_tool_protocol::ToolId::new("server__tool").expect("valid")
         }
         fn description(
             &self,
-            _ctx: &::xai_tool_runtime::ListToolsContext,
-        ) -> xai_tool_types::ToolDescription {
-            xai_tool_types::ToolDescription::new("server__tool", "fixture")
+            _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+        ) -> agent_tui_tool_types::ToolDescription {
+            agent_tui_tool_types::ToolDescription::new("server__tool", "fixture")
         }
         async fn run(
             &self,
-            _ctx: xai_tool_runtime::ToolCallContext,
+            _ctx: agent_tui_tool_runtime::ToolCallContext,
             _args: serde_json::Value,
-        ) -> Result<ToolOutput, xai_tool_runtime::ToolError> {
+        ) -> Result<ToolOutput, agent_tui_tool_runtime::ToolError> {
             Ok(ToolOutput::MCP(MCPOutput::okay_output(
                 "server__tool".to_string(),
                 "server".to_string(),
@@ -1859,23 +1859,23 @@ mod managed_gateway_tool_tests {
             "fixture"
         }
     }
-    impl xai_tool_runtime::Tool for FixtureMcpTool {
+    impl agent_tui_tool_runtime::Tool for FixtureMcpTool {
         type Args = serde_json::Value;
         type Output = ToolOutput;
-        fn id(&self) -> xai_tool_protocol::ToolId {
-            xai_tool_protocol::ToolId::new("server__tool").expect("valid")
+        fn id(&self) -> agent_tui_tool_protocol::ToolId {
+            agent_tui_tool_protocol::ToolId::new("server__tool").expect("valid")
         }
         fn description(
             &self,
-            _ctx: &::xai_tool_runtime::ListToolsContext,
-        ) -> xai_tool_types::ToolDescription {
-            xai_tool_types::ToolDescription::new("server__tool", "fixture")
+            _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+        ) -> agent_tui_tool_types::ToolDescription {
+            agent_tui_tool_types::ToolDescription::new("server__tool", "fixture")
         }
         async fn run(
             &self,
-            _ctx: xai_tool_runtime::ToolCallContext,
+            _ctx: agent_tui_tool_runtime::ToolCallContext,
             _args: serde_json::Value,
-        ) -> Result<ToolOutput, xai_tool_runtime::ToolError> {
+        ) -> Result<ToolOutput, agent_tui_tool_runtime::ToolError> {
             Ok(ToolOutput::MCP(MCPOutput::okay_output(
                 "server__tool".to_string(),
                 "server".to_string(),

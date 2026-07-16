@@ -13,7 +13,7 @@ use clap::ValueEnum;
 use tokio_util::sync::CancellationToken;
 
 use agent_client_protocol as acp;
-use xai_acp_lib::{AcpAgentTx, AcpClientMessageBox, acp_send};
+use agent_tui_acp_lib::{AcpAgentTx, AcpClientMessageBox, acp_send};
 use agent_tui_shell::agent::auth_method::AuthMethodKind;
 use agent_tui_shell::agent::config::Config as AgentConfig;
 use agent_tui_shell::extensions::task::{CancelSubagentRequest, KillTaskRequest};
@@ -1568,7 +1568,7 @@ enum ExtEvent {
 }
 
 fn handle_ext_notification(
-    notif: &xai_acp_lib::AcpArgsBox<acp::ExtNotification>,
+    notif: &agent_tui_acp_lib::AcpArgsBox<acp::ExtNotification>,
     format: OutputFormat,
 ) -> ExtEvent {
     let method = notif.request.method.as_ref();
@@ -2009,14 +2009,14 @@ mod tests {
     fn make_ext_notif(
         method: &str,
         update: serde_json::Value,
-    ) -> xai_acp_lib::AcpArgsBox<acp::ExtNotification> {
+    ) -> agent_tui_acp_lib::AcpArgsBox<acp::ExtNotification> {
         let payload = serde_json::json!({
             "sessionId": "sess-1",
             "update": update,
         });
         let raw = serde_json::value::to_raw_value(&payload).unwrap();
         let (tx, _rx) = tokio::sync::oneshot::channel();
-        xai_acp_lib::AcpArgs {
+        agent_tui_acp_lib::AcpArgs {
             request: acp::ExtNotification::new(method, raw.into()),
             response_tx: tx,
         }
@@ -2123,7 +2123,7 @@ mod tests {
         });
         let raw = serde_json::value::to_raw_value(&payload).unwrap();
         let (tx, _rx) = tokio::sync::oneshot::channel();
-        let notif = xai_acp_lib::AcpArgs {
+        let notif = agent_tui_acp_lib::AcpArgs {
             request: acp::ExtNotification::new("x.ai/other", raw.into()),
             response_tx: tx,
         }

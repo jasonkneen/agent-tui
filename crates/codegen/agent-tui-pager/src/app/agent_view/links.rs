@@ -86,7 +86,7 @@ impl AgentView {
     /// owns the `hyperlink_route().emit_osc8` check.
     pub(super) fn push_promo_cta_link_span(
         &self,
-        link_spans_out: &mut Vec<xai_ratatui_inline::LinkSpan>,
+        link_spans_out: &mut Vec<agent_tui_ratatui_inline::LinkSpan>,
         banner_announcements: &[agent_tui_announcements::RemoteAnnouncement],
         hidden_announcement_ids: &std::collections::BTreeSet<String>,
     ) {
@@ -102,7 +102,7 @@ impl AgentView {
     /// CTA so hyperlink-capable terminals can open the promo from the header.
     pub(super) fn push_upgrade_cta_link_span(
         &self,
-        link_spans_out: &mut Vec<xai_ratatui_inline::LinkSpan>,
+        link_spans_out: &mut Vec<agent_tui_ratatui_inline::LinkSpan>,
         banner_announcements: &[agent_tui_announcements::RemoteAnnouncement],
         hidden_announcement_ids: &std::collections::BTreeSet<String>,
     ) {
@@ -119,14 +119,14 @@ impl AgentView {
     /// goal-detail overlay can reach the top/bottom rows on short terminals).
     fn push_cta_link_span(
         &self,
-        link_spans_out: &mut Vec<xai_ratatui_inline::LinkSpan>,
+        link_spans_out: &mut Vec<agent_tui_ratatui_inline::LinkSpan>,
         rect: Option<ratatui::layout::Rect>,
         url: &str,
     ) {
         if let Some(rect) = rect
             && !self.rect_occluded(rect)
         {
-            link_spans_out.push(xai_ratatui_inline::LinkSpan {
+            link_spans_out.push(agent_tui_ratatui_inline::LinkSpan {
                 row: rect.y,
                 col_start: rect.x,
                 col_end: rect.x.saturating_add(rect.width),

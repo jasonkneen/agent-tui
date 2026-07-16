@@ -488,7 +488,7 @@ fn tool_result_gates_off_collapses_and_reduces() {
         &stream,
         &events::ToolCallCompleted {
             tool_name: "nebula__post_message".into(),
-            outcome: xai_file_utils::events::types::ToolOutcome::Success,
+            outcome: agent_tui_file_utils::events::types::ToolOutcome::Success,
             duration_ms: 42,
             file_path: Some("/Users/alice/secret-project/main.rs".into()),
             parameters: Some(serde_json::json!({"text": "CANARY_TOOL_ARGS"})),
@@ -526,7 +526,7 @@ fn tool_result_details_gate_exposes_verbatim_scrubbed() {
         &stream,
         &events::ToolCallCompleted {
             tool_name: "nebula__post_message".into(),
-            outcome: xai_file_utils::events::types::ToolOutcome::Success,
+            outcome: agent_tui_file_utils::events::types::ToolOutcome::Success,
             duration_ms: 42,
             file_path: Some(path.clone()),
             parameters: Some(serde_json::json!({"key": "sk-CANARYabcdefghij1234567890"})),

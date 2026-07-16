@@ -11,7 +11,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::StatefulWidgetRef;
 use unicode_width::UnicodeWidthStr;
-use xai_ratatui_textarea::{TextArea, TextAreaState};
+use agent_tui_ratatui_textarea::{TextArea, TextAreaState};
 
 use crate::key;
 use crate::scrollback::block::RenderBlock;

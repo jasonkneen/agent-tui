@@ -17,7 +17,7 @@ tracing = { workspace = true }
 which = { workspace = true }
 # Subprocess infra (MmdcEngine + the out-of-process render child): detached
 # spawning + wall-clock timeout + process-group reaping.
-xai-tty-utils = { workspace = true }
+agent-tui-tty-utils = { workspace = true }
 wait-timeout = { workspace = true }
 tempfile = { workspace = true }
 # Vendored dagre-based Mermaid -> SVG engine (third_party/mermaid-to-svg, MIT).
@@ -25,7 +25,7 @@ tempfile = { workspace = true }
 mermaid-to-svg = { workspace = true }
 
 # Subprocess process-group reaping (killpg) for the sync subprocess path, since
-# xai-tty-utils' ProcessGroup only wraps tokio children.
+# agent-tui-tty-utils' ProcessGroup only wraps tokio children.
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 

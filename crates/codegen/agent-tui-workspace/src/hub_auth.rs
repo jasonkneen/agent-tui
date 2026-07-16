@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use url::Url;
-use xai_computer_hub_sdk::{
+use agent_tui_computer_hub_sdk::{
     AuthCredential, AuthIdentity, AuthProvider, OidcAuthProviderBuilder, RefreshEvent,
 };
 
@@ -379,7 +379,7 @@ mod tests {
         let provider = build_oidc_provider("oidc".into(), &entry, PathBuf::from("/tmp/x")).unwrap();
         let cred = provider.current();
         match cred {
-            xai_computer_hub_sdk::AuthCredential::Bearer { token } => {
+            agent_tui_computer_hub_sdk::AuthCredential::Bearer { token } => {
                 assert_eq!(token, "eyJ.tok");
             }
             _ => panic!("expected Bearer"),

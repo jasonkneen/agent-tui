@@ -515,7 +515,7 @@ impl FeedbackClient {
         request: RequestBuilder,
         context: &'static str,
     ) -> Result<T> {
-        let request = xai_file_utils::trace_context::inject_trace_context_into_request(request);
+        let request = agent_tui_file_utils::trace_context::inject_trace_context_into_request(request);
         let req = request.build().context(context)?;
         let response = self.client.execute(req).await.context(context)?;
 
@@ -547,7 +547,7 @@ impl FeedbackClient {
     }
 
     async fn send_empty(&self, request: RequestBuilder, context: &'static str) -> Result<()> {
-        let request = xai_file_utils::trace_context::inject_trace_context_into_request(request);
+        let request = agent_tui_file_utils::trace_context::inject_trace_context_into_request(request);
         let req = request.build().context(context)?;
         let response = self.client.execute(req).await.context(context)?;
 

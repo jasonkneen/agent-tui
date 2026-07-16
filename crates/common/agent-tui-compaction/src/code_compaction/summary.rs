@@ -1,6 +1,6 @@
 //! Summary output cleaning and carrier formatting.
 //!
-//! Moved verbatim from `xai-chat-state`'s `compaction_utils`. Covers:
+//! Moved verbatim from `agent-tui-chat-state`'s `compaction_utils`. Covers:
 //!
 //! - cleaning the compaction model's raw output ([`format_compact_summary`]),
 //! - the grok-build continuation carrier ([`format_compact_summary_content`]),

@@ -36,7 +36,7 @@ agent-tui-http = { workspace = true }
 agent-tui-telemetry = { workspace = true }
 agent-tui-tools = { workspace = true }
 agent-tui-version = { workspace = true }
-xai-sqlite-journal = { workspace = true }
+agent-tui-sqlite-journal = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }

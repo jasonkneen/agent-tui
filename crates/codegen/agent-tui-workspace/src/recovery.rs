@@ -14,7 +14,7 @@ use std::sync::LazyLock;
 use std::time::{Duration, SystemTime};
 
 use prometheus::{IntCounter, IntCounterVec, register_int_counter, register_int_counter_vec};
-use xai_file_utils::queue::{
+use agent_tui_file_utils::queue::{
     DEFAULT_MAX_AGE, EnqueueOutcome, QueueItemSidecar, SIDECAR_SUFFIX, UploadQueue,
     temp_path_for_sidecar, try_remove_temp,
 };
@@ -187,7 +187,7 @@ pub async fn run_startup_recovery(workspace_home: &Path, queue: &UploadQueue) ->
         };
 
         // Corruption guard: the bytes must hash to the recorded sha256.
-        let actual_sha = xai_file_utils::sha256_hex(&bytes);
+        let actual_sha = agent_tui_file_utils::sha256_hex(&bytes);
         if actual_sha != sidecar.sha256 {
             tracing::warn!(
                 temp = %temp_path.display(),
@@ -441,8 +441,8 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use xai_file_utils::queue::{TraceExportSource, UploadRetryPolicy, sidecar_path_for};
-    use xai_file_utils::{TraceExportConfig, UploadMethod};
+    use agent_tui_file_utils::queue::{TraceExportSource, UploadRetryPolicy, sidecar_path_for};
+    use agent_tui_file_utils::{TraceExportConfig, UploadMethod};
 
     /// Resolver pointing at an unreachable proxy; these tests only assert on
     /// the synchronous re-enqueue / file-deletion path, never upload completion.
@@ -500,7 +500,7 @@ mod tests {
             content_type: "application/gzip".to_string(),
             artifact_name: artifact_name.to_string(),
             enqueued_at,
-            sha256: xai_file_utils::sha256_hex(content),
+            sha256: agent_tui_file_utils::sha256_hex(content),
         };
         let sidecar_path = sidecar_path_for(&temp);
         std::fs::write(&sidecar_path, serde_json::to_vec(&sidecar).unwrap()).unwrap();

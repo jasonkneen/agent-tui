@@ -38,28 +38,28 @@ impl crate::types::tool_metadata::ToolMetadata for ReadFileConciseTool {
     }
 }
 
-impl xai_tool_runtime::Tool for ReadFileConciseTool {
+impl agent_tui_tool_runtime::Tool for ReadFileConciseTool {
     type Args = ReadFileInput;
     type Output = ReadFileOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("read_file").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("read_file").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "read_file",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: true,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Read),
             ..Default::default()
         }
     }
@@ -71,16 +71,16 @@ impl xai_tool_runtime::Tool for ReadFileConciseTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: ReadFileInput,
-    ) -> Result<ReadFileOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<ReadFileOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
         // GrokBuildConcise is not version-managed — always pass None.
         let cwd_override = ctx
             .extensions
-            .get::<xai_tool_runtime::Cwd>()
+            .get::<agent_tui_tool_runtime::Cwd>()
             .map(|c| c.0.clone());
         // `None`: the concise tool does not stream, so it needs no
         // text-path streamability signal (see `run_read_file`).
@@ -149,7 +149,7 @@ mod tests {
             format: None,
         };
 
-        let result = xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
+        let result = agent_tui_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), input)
             .await
             .unwrap();
         match result {

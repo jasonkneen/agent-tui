@@ -19,7 +19,7 @@ use git2::{DiffOptions, Oid, Repository};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as TokioMutex;
 use tokio_util::sync::CancellationToken;
-use xai_fast_worktree::{BtrfsDelegate, IgnoredFilesMode, WorkingTreeMode, WorktreeBuilder};
+use agent_tui_fast_worktree::{BtrfsDelegate, IgnoredFilesMode, WorkingTreeMode, WorktreeBuilder};
 
 use crate::session::git::{
     GitFileChange, change_type_from_git2_delta, find_git_root_from_path,
@@ -37,11 +37,11 @@ pub use agent_tui_workspace_types::rpc::worktree::{
 const WORKTREE_LOG: &str = "xai_worktree";
 
 /// Map a [`WorktreeType`] to the fast-worktree crate's `CreationMode`.
-pub(crate) fn to_creation_mode(t: WorktreeType) -> xai_fast_worktree::CreationMode {
+pub(crate) fn to_creation_mode(t: WorktreeType) -> agent_tui_fast_worktree::CreationMode {
     match t {
-        WorktreeType::Linked => xai_fast_worktree::CreationMode::Linked,
-        WorktreeType::Standalone => xai_fast_worktree::CreationMode::Standalone,
-        WorktreeType::Git => xai_fast_worktree::CreationMode::GitCheckout,
+        WorktreeType::Linked => agent_tui_fast_worktree::CreationMode::Linked,
+        WorktreeType::Standalone => agent_tui_fast_worktree::CreationMode::Standalone,
+        WorktreeType::Git => agent_tui_fast_worktree::CreationMode::GitCheckout,
     }
 }
 
@@ -619,12 +619,12 @@ pub fn resolve_label_collision(base_dir: &Path, label: &str) -> String {
 // ============================================================================
 
 /// Resolve the grok home for worktree paths via the **same** resolver used for
-/// `worktrees.db` (`xai_fast_worktree::resolve_grok_home`), so checkout dirs and
+/// `worktrees.db` (`agent_tui_fast_worktree::resolve_grok_home`), so checkout dirs and
 /// the metadata DB always live under the same `.grok` tree. That resolver
 /// canonicalizes its `$HOME` fallback to match `agent_tui_config::grok_home()`,
 /// so worktree paths also agree with trust/hooks and other grok-home paths.
 fn grok_home() -> std::path::PathBuf {
-    xai_fast_worktree::resolve_grok_home().unwrap_or_else(|_| {
+    agent_tui_fast_worktree::resolve_grok_home().unwrap_or_else(|_| {
         dirs::home_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
             .join(".agent-tui")
@@ -925,13 +925,13 @@ pub async fn create_worktree_streaming<N: WorktreeNotificationSender>(
         })
         .await;
 
-    // Map WorktreeCopyMode to xai_fast_worktree::WorkingTreeMode
+    // Map WorktreeCopyMode to agent_tui_fast_worktree::WorkingTreeMode
     let working_tree_mode = match req.copy_mode {
         WorktreeCopyMode::Dirty => WorkingTreeMode::PreserveWorkingTree,
         WorktreeCopyMode::Clean => WorkingTreeMode::CleanAll,
     };
 
-    // Use xai-fast-worktree for high-performance worktree creation
+    // Use agent-tui-fast-worktree for high-performance worktree creation
     // Note: WorktreeBuilder::create() is a blocking operation, so we use spawn_blocking
     let source_path = req.source_path.clone();
     let dest_path = worktree_path_str.clone();
@@ -986,7 +986,7 @@ pub async fn create_worktree_streaming<N: WorktreeNotificationSender>(
             .working_tree_mode(working_tree_mode)
             .ignored_files_mode(IgnoredFilesMode::Skip)
             .creation_mode(to_creation_mode(creation_mode))
-            .worktree_kind(xai_fast_worktree::WorktreeKind::Session)
+            .worktree_kind(agent_tui_fast_worktree::WorktreeKind::Session)
             .session_id(session_id_for_builder)
             .metadata(label_metadata);
 
@@ -1183,7 +1183,7 @@ pub async fn remove_worktree(
     // (rootless hosts lack CAP_SYS_ADMIN for direct subvolume ops).
     let delegate = btrfs_delegate_from_env();
     match tokio::task::spawn_blocking(move || {
-        xai_fast_worktree::remove_worktree_with_delegate(&wt_path, delegate)
+        agent_tui_fast_worktree::remove_worktree_with_delegate(&wt_path, delegate)
     })
     .await
     {
@@ -1270,7 +1270,7 @@ pub async fn rehydrate_subagent_worktree(
     let snapshot_ref = snapshot_ref.to_string();
     let session_id = session_id.map(str::to_owned);
     let report = tokio::task::spawn_blocking(move || {
-        xai_fast_worktree::rehydrate_worktree_from_ref(
+        agent_tui_fast_worktree::rehydrate_worktree_from_ref(
             &dest,
             &source_repo,
             &snapshot_ref,
@@ -1306,8 +1306,8 @@ pub async fn snapshot_subagent_worktree(
         let message = format!("subagent worktree snapshot {ref_name}");
         // Capture into the worktree's git, then make it durable in the source
         // repo (and verify) so it survives the worktree's deletion.
-        xai_fast_worktree::snapshot_worktree_to_ref(&worktree_path, &ref_name, &message)?;
-        xai_fast_worktree::transfer_snapshot_to_repo(&worktree_path, &source_repo, &ref_name)?;
+        agent_tui_fast_worktree::snapshot_worktree_to_ref(&worktree_path, &ref_name, &message)?;
+        agent_tui_fast_worktree::transfer_snapshot_to_repo(&worktree_path, &source_repo, &ref_name)?;
         Ok(ref_name)
     })
     .await
@@ -1324,7 +1324,7 @@ pub async fn remove_subagent_worktree(worktree_path: &Path) -> Result<()> {
     // the delegate the btrfs delete hits EPERM and the snapshot leaks.
     let delegate = btrfs_delegate_from_env();
     tokio::task::spawn_blocking(move || {
-        xai_fast_worktree::remove_worktree_with_delegate(&worktree_path, delegate)
+        agent_tui_fast_worktree::remove_worktree_with_delegate(&worktree_path, delegate)
     })
     .await
     .map_err(|e| anyhow::anyhow!("remove_subagent_worktree task failed: {e}"))??;
@@ -1536,7 +1536,7 @@ async fn cleanup_cancelled_worktree(worktree_path: &str) {
     let path = std::path::PathBuf::from(worktree_path);
     let delegate = btrfs_delegate_from_env();
     match tokio::task::spawn_blocking(move || {
-        xai_fast_worktree::remove_worktree_with_delegate(&path, delegate)
+        agent_tui_fast_worktree::remove_worktree_with_delegate(&path, delegate)
     })
     .await
     {
@@ -1609,13 +1609,13 @@ pub async fn create_worktree_from_worktree_streaming<N: WorktreeNotificationSend
         })
         .await;
 
-    // Map WorktreeCopyMode to xai_fast_worktree::WorkingTreeMode
+    // Map WorktreeCopyMode to agent_tui_fast_worktree::WorkingTreeMode
     let working_tree_mode = match req.copy_mode {
         WorktreeCopyMode::Dirty => WorkingTreeMode::PreserveWorkingTree,
         WorktreeCopyMode::Clean => WorkingTreeMode::CleanAll,
     };
 
-    // Use xai-fast-worktree -- it handles copying from any worktree path
+    // Use agent-tui-fast-worktree -- it handles copying from any worktree path
     let source_worktree_path = req.source_worktree_path.clone();
     let dest_path = worktree_path_str.clone();
     let git_ref = req.git_ref.clone();
@@ -1673,7 +1673,7 @@ pub async fn create_worktree_from_worktree_streaming<N: WorktreeNotificationSend
                 .working_tree_mode(working_tree_mode)
                 .ignored_files_mode(IgnoredFilesMode::Skip)
                 .creation_mode(to_creation_mode(creation_mode))
-                .worktree_kind(xai_fast_worktree::WorktreeKind::Fork)
+                .worktree_kind(agent_tui_fast_worktree::WorktreeKind::Fork)
                 .session_id(session_id_for_builder)
                 .metadata(label_metadata);
 
@@ -1852,7 +1852,7 @@ pub async fn create_worktree_from_worktree_sync(
         });
     }
 
-    // Map WorktreeCopyMode to xai_fast_worktree::WorkingTreeMode
+    // Map WorktreeCopyMode to agent_tui_fast_worktree::WorkingTreeMode
     let working_tree_mode = match req.copy_mode {
         WorktreeCopyMode::Dirty => WorkingTreeMode::PreserveWorkingTree,
         WorktreeCopyMode::Clean => WorkingTreeMode::CleanAll,
@@ -1905,7 +1905,7 @@ pub async fn create_worktree_from_worktree_sync(
             .working_tree_mode(working_tree_mode)
             .ignored_files_mode(IgnoredFilesMode::Skip)
             .creation_mode(to_creation_mode(creation_mode))
-            .worktree_kind(xai_fast_worktree::WorktreeKind::Fork)
+            .worktree_kind(agent_tui_fast_worktree::WorktreeKind::Fork)
             .session_id(session_id_for_builder)
             .metadata(label_metadata);
 
@@ -2359,7 +2359,7 @@ pub struct RehydrateSessionResponse {
 // Worktree Management / DB
 // ============================================================================
 
-use xai_fast_worktree::{
+use agent_tui_fast_worktree::{
     DbStats, GcOptions, GcReport, ListFilter, WorktreeDb, WorktreeKind, WorktreeRecord,
     gc_worktrees as fw_gc_worktrees, rebuild_worktree_db, resolve_grok_home,
 };
@@ -2423,7 +2423,7 @@ pub fn worktree_db_stats() -> Result<DbStats> {
     db.stats()
 }
 
-pub fn worktree_db_rebuild() -> Result<xai_fast_worktree::RebuildReport> {
+pub fn worktree_db_rebuild() -> Result<agent_tui_fast_worktree::RebuildReport> {
     let home = resolve_grok_home()?;
     let db = WorktreeDb::open(&home)?;
     rebuild_worktree_db(&db, &home)
@@ -2458,7 +2458,7 @@ pub fn candidate_worktree_cwds_for_same_repo(current_cwd: &std::path::Path) -> R
     let main_root = find_main_repo_root_from_path(current_cwd)?;
     let db_records = match open_db() {
         Ok(db) => {
-            let filter = xai_fast_worktree::ListFilter {
+            let filter = agent_tui_fast_worktree::ListFilter {
                 source_repo: Some(main_root.clone()),
                 include_dead: true,
                 ..Default::default()
@@ -2508,7 +2508,7 @@ fn scan_worktree_dirs_on_disk(main_repo_root: &std::path::Path) -> Vec<String> {
 pub fn build_candidate_list(
     current_cwd: &str,
     main_repo_root: &str,
-    db_records: &[xai_fast_worktree::WorktreeRecord],
+    db_records: &[agent_tui_fast_worktree::WorktreeRecord],
     fs_paths: &[String],
 ) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
@@ -2573,7 +2573,7 @@ mod tests {
 
     /// Create a source repo (one committed file) plus a worktree of it.
     fn repo_with_worktree(temp: &tempfile::TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
-        use xai_test_utils::git::{git_commit_all, init_git_repo};
+        use agent_tui_test_utils::git::{git_commit_all, init_git_repo};
         let repo = temp.path().join("repo");
         std::fs::create_dir(&repo).unwrap();
         init_git_repo(&repo);
@@ -2588,7 +2588,7 @@ mod tests {
     /// Happy path: the snapshot ref resolves and the worktree dir is removed.
     #[tokio::test]
     async fn snapshot_and_remove_captures_then_deletes() {
-        xai_test_utils::require_git!();
+        agent_tui_test_utils::require_git!();
         let temp = tempfile::TempDir::new().unwrap();
         let (repo, wt) = repo_with_worktree(&temp);
 
@@ -2615,7 +2615,7 @@ mod tests {
     /// content byte-for-byte.
     #[tokio::test]
     async fn snapshot_and_remove_then_rehydrate_round_trips() {
-        xai_test_utils::require_git!();
+        agent_tui_test_utils::require_git!();
         let temp = tempfile::TempDir::new().unwrap();
         let (repo, wt) = repo_with_worktree(&temp);
 
@@ -2651,8 +2651,8 @@ mod tests {
     /// E2E caught; it FAILS without `transfer_snapshot_to_repo`.
     #[tokio::test]
     async fn snapshot_standalone_worktree_durable_after_removal_round_trips() {
-        xai_test_utils::require_git!();
-        use xai_test_utils::git::{git_commit_all, init_git_repo};
+        agent_tui_test_utils::require_git!();
+        use agent_tui_test_utils::git::{git_commit_all, init_git_repo};
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path().join("repo");
         std::fs::create_dir(&repo).unwrap();
@@ -2707,7 +2707,7 @@ mod tests {
     /// Invariant: a failed snapshot must NOT remove the worktree directory.
     #[tokio::test]
     async fn snapshot_failure_preserves_worktree() {
-        xai_test_utils::require_git!();
+        agent_tui_test_utils::require_git!();
         let temp = tempfile::TempDir::new().unwrap();
 
         // A plain directory (no git HEAD) makes `snapshot_worktree_to_ref` fail,
@@ -2771,7 +2771,7 @@ mod tests {
             creator_pid: None,
             created_at: 100,
             last_accessed_at: None,
-            status: xai_fast_worktree::WorktreeStatus::Alive,
+            status: agent_tui_fast_worktree::WorktreeStatus::Alive,
             metadata: Some(build_label_metadata("my-label", true)),
         };
         db.register(&record).unwrap();
@@ -2838,8 +2838,8 @@ mod tests {
     /// the directory. delegate is `None` here, exercising the direct removal path.
     #[tokio::test]
     async fn cleanup_cancelled_worktree_removes_dir_and_deregisters() {
-        xai_test_utils::require_git!();
-        use xai_test_utils::git::{git_commit_all, init_git_repo};
+        agent_tui_test_utils::require_git!();
+        use agent_tui_test_utils::git::{git_commit_all, init_git_repo};
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path().join("repo");
@@ -2883,8 +2883,8 @@ mod tests {
     /// a marker set in prepare would never clear and would wedge every retry in `Creating`.
     #[tokio::test]
     async fn prepare_does_not_strand_in_progress_marker() {
-        xai_test_utils::require_git!();
-        use xai_test_utils::git::{git_commit_all, init_git_repo};
+        agent_tui_test_utils::require_git!();
+        use agent_tui_test_utils::git::{git_commit_all, init_git_repo};
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path().join("repo");
@@ -2942,8 +2942,8 @@ mod tests {
     /// concurrent prepare dedups) and clear it after. The probe observes it mid-creation.
     #[tokio::test]
     async fn create_worktree_async_holds_marker_during_creation_and_clears_after() {
-        xai_test_utils::require_git!();
-        use xai_test_utils::git::{git_commit_all, init_git_repo};
+        agent_tui_test_utils::require_git!();
+        use agent_tui_test_utils::git::{git_commit_all, init_git_repo};
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path().join("repo");
@@ -2994,7 +2994,7 @@ mod tests {
     /// `prepare_worktree_from_worktree` must not strand the marker in the proxy case.
     #[tokio::test]
     async fn fork_prepare_does_not_strand_in_progress_marker() {
-        xai_test_utils::require_git!();
+        agent_tui_test_utils::require_git!();
         let temp = tempfile::TempDir::new().unwrap();
         let (_repo, wt) = repo_with_worktree(&temp);
 
@@ -3048,8 +3048,8 @@ mod tests {
     /// status) and the marker is cleared once the winner finishes.
     #[tokio::test]
     async fn concurrent_create_worktree_async_dedups_to_single_creator() {
-        xai_test_utils::require_git!();
-        use xai_test_utils::git::{git_commit_all, init_git_repo};
+        agent_tui_test_utils::require_git!();
+        use agent_tui_test_utils::git::{git_commit_all, init_git_repo};
 
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path().join("repo");

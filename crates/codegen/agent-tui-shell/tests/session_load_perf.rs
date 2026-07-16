@@ -511,7 +511,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use xai_acp_lib::{
+use agent_tui_acp_lib::{
     AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
     LineBufferedRead,
 };
@@ -678,7 +678,7 @@ async fn full_session_load_e2e() {
                 });
             tokio::task::spawn_local(
                 GatewayReceiver::new(gw_rx, agent_conn)
-                    .with_on_meta(xai_file_utils::trace_context::span_from_meta_traceparent)
+                    .with_on_meta(agent_tui_file_utils::trace_context::span_from_meta_traceparent)
                     .run(),
             );
             tokio::task::spawn_local(agent_io);

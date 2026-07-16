@@ -104,11 +104,11 @@ impl McpScopeState {
 /// request is rendered and interactive — subsequent requests wait in the queue.
 ///
 /// Not `Clone` because it owns the `response_tx` oneshot sender via
-/// `xai_acp_lib::AcpArgs`.
+/// `agent_tui_acp_lib::AcpArgs`.
 pub struct PermissionViewState {
     /// The ACP permission request args (holds `response_tx` for sending
     /// the response back to the shell).
-    pub request: xai_acp_lib::AcpArgs<acp::RequestPermissionRequest>,
+    pub request: agent_tui_acp_lib::AcpArgs<acp::RequestPermissionRequest>,
 
     /// Unique ID for this request (monotonic counter, same as TUI's
     /// `perm_req_id`). Used to guard against stale resolution attempts.
@@ -1874,7 +1874,7 @@ mod tests {
             })
             .collect();
         PermissionViewState {
-            request: xai_acp_lib::AcpArgs {
+            request: agent_tui_acp_lib::AcpArgs {
                 request,
                 response_tx,
             },
@@ -2025,7 +2025,7 @@ mod tests {
             ),
             vec![],
         );
-        let perm = xai_acp_lib::AcpArgs {
+        let perm = agent_tui_acp_lib::AcpArgs {
             request,
             response_tx,
         };

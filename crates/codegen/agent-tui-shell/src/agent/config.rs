@@ -668,8 +668,8 @@ fn resolve_compaction_mode_from(
     env: Option<&str>,
     config: Option<&str>,
     remote: Option<&str>,
-) -> xai_chat_state::CompactionMode {
-    use xai_chat_state::CompactionMode;
+) -> agent_tui_chat_state::CompactionMode {
+    use agent_tui_chat_state::CompactionMode;
     env.and_then(CompactionMode::parse)
         .or_else(|| config.and_then(CompactionMode::parse))
         .or_else(|| remote.and_then(CompactionMode::parse))
@@ -681,8 +681,8 @@ fn resolve_compaction_detail_from(
     env: Option<&str>,
     config: Option<&str>,
     remote: Option<&str>,
-) -> xai_chat_state::CompactionDetail {
-    use xai_chat_state::CompactionDetail;
+) -> agent_tui_chat_state::CompactionDetail {
+    use agent_tui_chat_state::CompactionDetail;
     env.and_then(CompactionDetail::parse)
         .or_else(|| config.and_then(CompactionDetail::parse))
         .or_else(|| remote.and_then(CompactionDetail::parse))
@@ -2553,7 +2553,7 @@ impl Config {
     /// Resolve the mode (env `GROK_COMPACTION_MODE` > config > remote settings >
     /// default, unrecognized falling through) and, for `Segments`, attach the
     /// separately-resolved detail level.
-    pub(crate) fn resolve_compaction_mode(&self) -> xai_chat_state::CompactionMode {
+    pub(crate) fn resolve_compaction_mode(&self) -> agent_tui_chat_state::CompactionMode {
         resolve_compaction_mode_from(
             env_string("GROK_COMPACTION_MODE").as_deref(),
             self.features.compaction_mode.as_deref(),
@@ -2580,7 +2580,7 @@ impl Config {
     /// `features.compaction_detail`, then remote settings
     /// `remote_settings.compaction_detail`, then default (`verbose`). Drives the
     /// `segments` verbatim detail level.
-    fn resolve_compaction_detail(&self) -> xai_chat_state::CompactionDetail {
+    fn resolve_compaction_detail(&self) -> agent_tui_chat_state::CompactionDetail {
         resolve_compaction_detail_from(
             env_string("GROK_COMPACTION_DETAIL").as_deref(),
             self.features.compaction_detail.as_deref(),
@@ -4257,7 +4257,7 @@ pub struct Features {
 pub struct ResolvedCredentials {
     pub api_key: Option<String>,
     pub base_url: String,
-    pub auth_type: xai_chat_state::AuthType,
+    pub auth_type: agent_tui_chat_state::AuthType,
     pub auth_scheme: AuthScheme,
 }
 /// First usable BYOK credential: a non-empty (trimmed) api_key, else the first
@@ -4282,20 +4282,20 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
         (
             Some(key),
             info.base_url.clone(),
-            xai_chat_state::AuthType::ApiKey,
+            agent_tui_chat_state::AuthType::ApiKey,
         )
     } else if let Some(key) = session_key {
         (
             Some(key.to_owned()),
             info.base_url.clone(),
-            xai_chat_state::AuthType::SessionToken,
+            agent_tui_chat_state::AuthType::SessionToken,
         )
     } else if let Ok(key) = crate::agent::auth_method::read_xai_api_key_env() {
         let url = model
             .api_base_url
             .clone()
             .unwrap_or_else(|| info.base_url.clone());
-        (Some(key), url, xai_chat_state::AuthType::ApiKey)
+        (Some(key), url, agent_tui_chat_state::AuthType::ApiKey)
     } else {
         if let Some(ref env_keys) = model.env_key
             && !env_keys.is_empty()
@@ -4309,7 +4309,7 @@ pub fn resolve_credentials(model: &ModelEntry, session_key: Option<&str>) -> Res
         (
             None,
             info.base_url.clone(),
-            xai_chat_state::AuthType::ApiKey,
+            agent_tui_chat_state::AuthType::ApiKey,
         )
     };
     let auth_scheme = info.auth_scheme;
@@ -4332,10 +4332,10 @@ pub fn enforce_disable_api_key_auth(
     session_key: Option<&str>,
 ) {
     if disable_api_key_auth
-        && creds.auth_type == xai_chat_state::AuthType::ApiKey
+        && creds.auth_type == agent_tui_chat_state::AuthType::ApiKey
         && crate::util::is_first_party_xai_url(&creds.base_url)
     {
-        creds.auth_type = xai_chat_state::AuthType::SessionToken;
+        creds.auth_type = agent_tui_chat_state::AuthType::SessionToken;
         creds.api_key = session_key.map(str::to_owned);
         agent_tui_telemetry::unified_log::debug(
             "auth: kill switch blocked a first-party API key at the credential seam",
@@ -4582,8 +4582,8 @@ pub fn finalize_image_describe_sampler_config(
 pub fn resolve_chat_state_auth_type(
     model_id: &str,
     session_key: Option<&str>,
-    fallback: xai_chat_state::AuthType,
-) -> xai_chat_state::AuthType {
+    fallback: agent_tui_chat_state::AuthType,
+) -> agent_tui_chat_state::AuthType {
     try_resolve_model_credentials(model_id, session_key)
         .map(|r| r.auth_type)
         .unwrap_or(fallback)

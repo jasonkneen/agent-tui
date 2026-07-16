@@ -132,28 +132,28 @@ Usage notes:
     }
 }
 
-impl xai_tool_runtime::Tool for WebFetchTool {
+impl agent_tui_tool_runtime::Tool for WebFetchTool {
     type Args = WebFetchInput;
     type Output = WebFetchOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("web_fetch").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("web_fetch").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "web_fetch",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: true,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Read),
             ..Default::default()
         }
     }
@@ -161,9 +161,9 @@ impl xai_tool_runtime::Tool for WebFetchTool {
     #[tracing::instrument(name = "tool.web_fetch", skip_all, fields(url = %input.url))]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: WebFetchInput,
-    ) -> Result<WebFetchOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<WebFetchOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn tool_name_and_description() {
         let tool = WebFetchTool;
-        assert_eq!(xai_tool_runtime::Tool::id(&tool).as_str(), "web_fetch");
+        assert_eq!(agent_tui_tool_runtime::Tool::id(&tool).as_str(), "web_fetch");
         assert_eq!(
             crate::types::tool_metadata::ToolMetadata::kind(&tool),
             ToolKind::WebFetch
@@ -216,7 +216,7 @@ mod tests {
     async fn errors_when_client_not_in_resources() {
         let resources = crate::types::resources::Resources::new();
         let tool = WebFetchTool;
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(resources.into_shared(), "test-call"),
             WebFetchInput {

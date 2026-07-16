@@ -8,15 +8,15 @@ fn plugin_cta_catalog_loaded_sanitizes_components_at_ingestion() {
     let id = AgentId(0);
 
     let mut entry = cta_entry("dirty", "not_installed");
-    entry.components = Some(xai_hooks_plugins_types::PluginComponents {
-        skills: vec![xai_hooks_plugins_types::ComponentItem {
+    entry.components = Some(agent_tui_hooks_plugins_types::PluginComponents {
+        skills: vec![agent_tui_hooks_plugins_types::ComponentItem {
             name: "evil\u{1b}[31mskill".into(),
             description: Some(format!("\u{7}{}", "d".repeat(300))),
         }],
         ..Default::default()
     });
-    let response = xai_hooks_plugins_types::MarketplaceListResponse {
-        sources: vec![xai_hooks_plugins_types::MarketplaceScanResult {
+    let response = agent_tui_hooks_plugins_types::MarketplaceListResponse {
+        sources: vec![agent_tui_hooks_plugins_types::MarketplaceScanResult {
             source_name: agent_tui_plugin_marketplace::OFFICIAL_SOURCE_NAME.into(),
             source_kind: "git".into(),
             source_url_or_path: agent_tui_plugin_marketplace::OFFICIAL_SOURCE_GIT_URL.into(),
@@ -42,10 +42,10 @@ fn plugin_cta_catalog_loaded_sanitizes_components_at_ingestion() {
 }
 
 fn cta_outcome_reload(
-    status: xai_hooks_plugins_types::OutcomeStatus,
+    status: agent_tui_hooks_plugins_types::OutcomeStatus,
     message: &str,
-) -> xai_hooks_plugins_types::ActionOutcome {
-    xai_hooks_plugins_types::ActionOutcome {
+) -> agent_tui_hooks_plugins_types::ActionOutcome {
+    agent_tui_hooks_plugins_types::ActionOutcome {
         status,
         message: message.into(),
         requires_reload: true,
@@ -58,9 +58,9 @@ fn plugin_cta_catalog_keeps_official_not_installed_only() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
 
-    let response = xai_hooks_plugins_types::MarketplaceListResponse {
+    let response = agent_tui_hooks_plugins_types::MarketplaceListResponse {
         sources: vec![
-            xai_hooks_plugins_types::MarketplaceScanResult {
+            agent_tui_hooks_plugins_types::MarketplaceScanResult {
                 source_name: agent_tui_plugin_marketplace::OFFICIAL_SOURCE_NAME.into(),
                 source_kind: "git".into(),
                 source_url_or_path: agent_tui_plugin_marketplace::OFFICIAL_SOURCE_GIT_URL.into(),
@@ -71,14 +71,14 @@ fn plugin_cta_catalog_keeps_official_not_installed_only() {
                 ],
                 error: None,
             },
-            xai_hooks_plugins_types::MarketplaceScanResult {
+            agent_tui_hooks_plugins_types::MarketplaceScanResult {
                 source_name: "Third Party".into(),
                 source_kind: "git".into(),
                 source_url_or_path: "https://github.com/other/repo.git".into(),
                 plugins: vec![cta_entry("third-party", "not_installed")],
                 error: None,
             },
-            xai_hooks_plugins_types::MarketplaceScanResult {
+            agent_tui_hooks_plugins_types::MarketplaceScanResult {
                 source_name: "Custom Mirror".into(),
                 source_kind: "git".into(),
                 source_url_or_path: "git@github.com:xai-org/plugin-marketplace.git".into(),
@@ -145,8 +145,8 @@ fn plugin_cta_catalog_reload_empty_candidates_preserves_installed_checkmark() {
             name: "figma".into(),
         };
     }
-    let response = xai_hooks_plugins_types::MarketplaceListResponse {
-        sources: vec![xai_hooks_plugins_types::MarketplaceScanResult {
+    let response = agent_tui_hooks_plugins_types::MarketplaceListResponse {
+        sources: vec![agent_tui_hooks_plugins_types::MarketplaceScanResult {
             source_name: agent_tui_plugin_marketplace::OFFICIAL_SOURCE_NAME.into(),
             source_kind: "git".into(),
             source_url_or_path: agent_tui_plugin_marketplace::OFFICIAL_SOURCE_GIT_URL.into(),
@@ -201,8 +201,8 @@ fn plugin_cta_catalog_load_recomputes_match_for_typed_draft() {
         .set_text("let's try zzctaplugin today");
     let mut entry = cta_entry("zzctaplugin", "not_installed");
     entry.keywords = vec!["zzctaplugin".into()];
-    let response = xai_hooks_plugins_types::MarketplaceListResponse {
-        sources: vec![xai_hooks_plugins_types::MarketplaceScanResult {
+    let response = agent_tui_hooks_plugins_types::MarketplaceListResponse {
+        sources: vec![agent_tui_hooks_plugins_types::MarketplaceScanResult {
             source_name: agent_tui_plugin_marketplace::OFFICIAL_SOURCE_NAME.into(),
             source_kind: "git".into(),
             source_url_or_path: agent_tui_plugin_marketplace::OFFICIAL_SOURCE_GIT_URL.into(),
@@ -334,7 +334,7 @@ fn cta_impression_edge_only_on_new_appearance() {
 
 #[test]
 fn cta_install_error_category_maps_outcome() {
-    use xai_hooks_plugins_types::OutcomeStatus;
+    use agent_tui_hooks_plugins_types::OutcomeStatus;
     assert_eq!(
         cta_install_error_category(&Ok(cta_outcome(OutcomeStatus::Success, "ok"))),
         None
@@ -465,7 +465,7 @@ fn plugin_cta_debounce_preserves_in_flight_states() {
 #[test]
 fn cta_install_done_ok_no_reload_enters_awaiting_mcps() {
     use crate::app::agent_view::CtaPhase;
-    use xai_hooks_plugins_types::OutcomeStatus;
+    use agent_tui_hooks_plugins_types::OutcomeStatus;
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     {
@@ -499,7 +499,7 @@ fn cta_install_done_ok_no_reload_enters_awaiting_mcps() {
 #[test]
 fn cta_install_done_ok_requires_reload_enters_awaiting_reload() {
     use crate::app::agent_view::CtaPhase;
-    use xai_hooks_plugins_types::OutcomeStatus;
+    use agent_tui_hooks_plugins_types::OutcomeStatus;
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     app.agents.get_mut(&id).unwrap().plugin_cta.phase = CtaPhase::Installing {
@@ -561,7 +561,7 @@ fn cta_install_done_err_sets_error() {
 #[test]
 fn cta_install_done_non_success_sets_error_with_sanitized_message() {
     use crate::app::agent_view::CtaPhase;
-    use xai_hooks_plugins_types::OutcomeStatus;
+    use agent_tui_hooks_plugins_types::OutcomeStatus;
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     app.agents.get_mut(&id).unwrap().plugin_cta.phase = CtaPhase::Installing {
@@ -592,7 +592,7 @@ fn cta_install_done_non_success_sets_error_with_sanitized_message() {
 #[test]
 fn cta_install_done_ignored_when_not_installing() {
     use crate::app::agent_view::CtaPhase;
-    use xai_hooks_plugins_types::OutcomeStatus;
+    use agent_tui_hooks_plugins_types::OutcomeStatus;
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     app.agents.get_mut(&id).unwrap().plugin_cta.phase = CtaPhase::Matched {
@@ -620,7 +620,7 @@ fn cta_install_done_ignored_when_not_installing() {
 #[test]
 fn cta_install_done_ignored_for_different_plugin() {
     use crate::app::agent_view::CtaPhase;
-    use xai_hooks_plugins_types::OutcomeStatus;
+    use agent_tui_hooks_plugins_types::OutcomeStatus;
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     app.agents.get_mut(&id).unwrap().plugin_cta.phase = CtaPhase::Installing {
@@ -662,7 +662,7 @@ fn cta_install_relative_path_prefers_candidate_then_falls_back() {
 #[test]
 fn cta_reload_done_ok_enters_awaiting_mcps() {
     use crate::app::agent_view::CtaPhase;
-    use xai_hooks_plugins_types::OutcomeStatus;
+    use agent_tui_hooks_plugins_types::OutcomeStatus;
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     {
@@ -695,7 +695,7 @@ fn cta_reload_done_ok_enters_awaiting_mcps() {
 #[test]
 fn cta_reload_done_non_success_sets_error() {
     use crate::app::agent_view::CtaPhase;
-    use xai_hooks_plugins_types::OutcomeStatus;
+    use agent_tui_hooks_plugins_types::OutcomeStatus;
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     {
@@ -756,7 +756,7 @@ fn cta_reload_done_err_sets_error() {
 #[test]
 fn cta_reload_done_ignored_for_stale_phase_or_plugin() {
     use crate::app::agent_view::CtaPhase;
-    use xai_hooks_plugins_types::OutcomeStatus;
+    use agent_tui_hooks_plugins_types::OutcomeStatus;
     // Wrong plugin name.
     let mut app = test_app_with_agent();
     let id = AgentId(0);
@@ -1306,11 +1306,11 @@ mod cta_e2e {
     use crate::app::dispatch::dispatch;
     use crate::views::extensions_modal::{ExtensionsTab, TabDataState};
     use crate::views::mcps_modal::{McpSectionId, McpServerDisplayStatus, section_key};
-    use xai_hooks_plugins_types::OutcomeStatus;
+    use agent_tui_hooks_plugins_types::OutcomeStatus;
 
     const PROMPT: &str = "please open figma now";
 
-    fn figma_candidate() -> xai_hooks_plugins_types::MarketplacePluginEntry {
+    fn figma_candidate() -> agent_tui_hooks_plugins_types::MarketplacePluginEntry {
         let mut entry = cta_entry("figma", "not_installed");
         entry.keywords = vec!["figma".into()];
         // MCP-bearing plugin: install enters AwaitingMcps and polls for auth.

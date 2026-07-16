@@ -17,9 +17,9 @@ pub use agent_tui_workspace_client::consume_stream_terminal;
 
 /// Extract a `WorkspaceEvent` from a custom `ToolNotificationFrame`.
 pub fn extract_workspace_event(
-    frame: &xai_tool_protocol::ToolNotificationFrame,
+    frame: &agent_tui_tool_protocol::ToolNotificationFrame,
 ) -> Option<WorkspaceEvent> {
-    use xai_tool_protocol::WireToolNotification;
+    use agent_tui_tool_protocol::WireToolNotification;
     match &frame.notification {
         WireToolNotification::Custom(c) => serde_json::from_value(c.payload.clone()).ok(),
         _ => None,
@@ -30,9 +30,9 @@ pub fn extract_workspace_event(
 ///
 /// Currently has no producer; kept for a future per-session `tool.notify` path.
 pub fn extract_tool_notification(
-    frame: &xai_tool_protocol::ToolNotificationFrame,
+    frame: &agent_tui_tool_protocol::ToolNotificationFrame,
 ) -> Option<ToolNotification> {
-    use xai_tool_protocol::WireToolNotification;
+    use agent_tui_tool_protocol::WireToolNotification;
     match &frame.notification {
         WireToolNotification::Custom(c) => {
             serde_json::from_value::<ToolNotification>(c.payload.clone()).ok()
@@ -48,7 +48,7 @@ pub fn extract_tool_notification(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xai_tool_protocol::{ToolId, ToolNotificationFrame, WireToolNotification};
+    use agent_tui_tool_protocol::{ToolId, ToolNotificationFrame, WireToolNotification};
 
     #[test]
     fn extract_workspace_event_custom_valid() {

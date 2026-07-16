@@ -12,7 +12,7 @@ use super::*;
 fn test_malformed_json_includes_original_args_and_position() {
     let bad_args = r#"{"file_path": "/testbed/cxx_polynomial/include/emsr/remez.h", "old_string": "", new_string": "content"}"#;
     // bad_args is ~100 chars, well under MAX_ARGS_IN_ERROR.
-    let err: xai_tool_runtime::ToolError = serde_json::from_str::<serde_json::Value>(bad_args)
+    let err: agent_tui_tool_runtime::ToolError = serde_json::from_str::<serde_json::Value>(bad_args)
         .unwrap_err()
         .into();
 
@@ -46,7 +46,7 @@ fn test_valid_json_no_invalid_json_note() {
     let good_args = r#"{"file_path": "/foo.rs", "old_string": "a", "new_string": "b"}"#;
     // A deserialization error (missing required field), not a parse error.
     let err =
-        xai_tool_runtime::ToolError::invalid_arguments("missing field `old_string`".to_string());
+        agent_tui_tool_runtime::ToolError::invalid_arguments("missing field `old_string`".to_string());
 
     let msg = build_tool_parse_error_message("search_replace", &err, good_args);
 
@@ -64,7 +64,7 @@ fn test_valid_json_no_invalid_json_note() {
 #[test]
 fn test_empty_arguments_no_extra_content() {
     let err =
-        xai_tool_runtime::ToolError::invalid_arguments("missing field `file_path`".to_string());
+        agent_tui_tool_runtime::ToolError::invalid_arguments("missing field `file_path`".to_string());
     let msg = build_tool_parse_error_message("search_replace", &err, "");
 
     assert!(msg.contains("Failed to parse arguments for tool `search_replace`"));
@@ -81,7 +81,7 @@ fn test_long_arguments_are_truncated() {
     assert!(long_args.len() > MAX_ARGS_IN_ERROR);
 
     let err =
-        xai_tool_runtime::ToolError::invalid_arguments("missing field `file_path`".to_string());
+        agent_tui_tool_runtime::ToolError::invalid_arguments("missing field `file_path`".to_string());
     let msg = build_tool_parse_error_message("search_replace", &err, &long_args);
 
     // The message must be capped — the full args must NOT appear verbatim.
@@ -136,7 +136,7 @@ fn test_non_ascii_arguments_truncated_safely() {
     let long_args = format!(r#"{{"old_string": "{filler}"}}"#);
     assert!(long_args.len() > MAX_ARGS_IN_ERROR);
 
-    let err = xai_tool_runtime::ToolError::invalid_arguments("missing field".to_string());
+    let err = agent_tui_tool_runtime::ToolError::invalid_arguments("missing field".to_string());
     // Must not panic.
     let msg = build_tool_parse_error_message("search_replace", &err, &long_args);
     assert!(msg.contains("(truncated)"));

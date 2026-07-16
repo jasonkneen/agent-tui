@@ -39,16 +39,16 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 use url::Url;
-use xai_computer_hub_sdk::{
+use agent_tui_computer_hub_sdk::{
     AuthProvider, ClientError, HubConnectionPool, ToolServer, ToolServerBuilder, ToolServerHandler,
 };
 use agent_tui_tools::registry::types::ToolConfig;
-use xai_tool_protocol::ToolId;
-use xai_tool_runtime::{
+use agent_tui_tool_protocol::ToolId;
+use agent_tui_tool_runtime::{
     ToolCallContext, ToolError, ToolErrorKind, ToolStream, ToolStreamItem, TypedToolOutput,
     terminal_only,
 };
-use xai_tool_types::ToolDescription;
+use agent_tui_tool_types::ToolDescription;
 /// Configuration for connecting to a server instance.
 ///
 /// Passed via [`WorkspaceConfig::hub_config`](crate::config::WorkspaceConfig::hub_config).
@@ -255,7 +255,7 @@ impl HubHandle {
         ws_reconnect_backoff: Option<Vec<std::time::Duration>>,
         tool_handlers: Vec<std::sync::Arc<dyn ToolServerHandler>>,
         server_metadata: Option<serde_json::Value>,
-        session_handler_resolver: Option<xai_computer_hub_sdk::SessionHandlerResolver>,
+        session_handler_resolver: Option<agent_tui_computer_hub_sdk::SessionHandlerResolver>,
     ) -> Result<Self, ClientError> {
         let pool = HubConnectionPool::new();
         let server_url = config.url.clone();
@@ -423,7 +423,7 @@ impl SessionRoutedToolHandler {
         desc: ToolDescription,
         schema: Option<Value>,
         workspace: WorkspaceHandle,
-    ) -> Result<Self, xai_tool_protocol::IdError> {
+    ) -> Result<Self, agent_tui_tool_protocol::IdError> {
         Ok(Self {
             tool_id: ToolId::new(name)?,
             desc,
@@ -448,7 +448,7 @@ struct CallCompletedGuard {
     tracker: Arc<crate::activity::ActivityTracker>,
     call_id: String,
     session_id: Option<String>,
-    outcome: xai_file_utils::events::ToolOutcome,
+    outcome: agent_tui_file_utils::events::ToolOutcome,
 }
 impl CallCompletedGuard {
     fn new(
@@ -460,10 +460,10 @@ impl CallCompletedGuard {
             tracker,
             call_id,
             session_id,
-            outcome: xai_file_utils::events::ToolOutcome::Cancelled,
+            outcome: agent_tui_file_utils::events::ToolOutcome::Cancelled,
         }
     }
-    fn set_outcome(&mut self, outcome: xai_file_utils::events::ToolOutcome) {
+    fn set_outcome(&mut self, outcome: agent_tui_file_utils::events::ToolOutcome) {
         self.outcome = outcome;
     }
 }
@@ -488,7 +488,7 @@ impl ToolServerHandler for SessionRoutedToolHandler {
         let tool_id = self.tool_id();
         let hub_session = ctx
             .extensions
-            .get::<xai_tool_runtime::SessionContext>()
+            .get::<agent_tui_tool_runtime::SessionContext>()
             .map(|s| s.0.clone());
         let tracker = &self.workspace.shared.activity_tracker;
         if tracker.is_draining() {
@@ -582,13 +582,13 @@ impl ToolServerHandler for SessionRoutedToolHandler {
             while let Some(item) = inner.next(). await { match item {
             ToolStreamItem::Progress(p) => { yield ToolStreamItem::Progress(p); }
             ToolStreamItem::Terminal(Ok(run_result)) => { _guard
-            .set_outcome(xai_file_utils::events::ToolOutcome::Success); yield
+            .set_outcome(agent_tui_file_utils::events::ToolOutcome::Success); yield
             ToolStreamItem::Terminal(Ok(run_result
             .into_typed_tool_output(tool_id),)); return; }
             ToolStreamItem::Terminal(Err(e)) => { tracing::error!(tool = % name,
             session = % session_label, error = % e, kind = % e.variant_name(),
             "tool call failed"); _guard
-            .set_outcome(xai_file_utils::events::ToolOutcome::Error); yield
+            .set_outcome(agent_tui_file_utils::events::ToolOutcome::Error); yield
             ToolStreamItem::Terminal(Err(e)); return; } } } yield
             ToolStreamItem::Terminal(Err(ToolError::new(ToolErrorKind::TerminalError,
             "tool stream ended without a terminal",)));
@@ -658,8 +658,8 @@ pub(crate) fn apply_tools_changed(
     }
     new_tools
 }
-fn parse_server_id(id: &str) -> Result<xai_tool_protocol::ServerId, ClientError> {
-    xai_tool_protocol::ServerId::new(id)
+fn parse_server_id(id: &str) -> Result<agent_tui_tool_protocol::ServerId, ClientError> {
+    agent_tui_tool_protocol::ServerId::new(id)
         .map_err(|e| ClientError::InvalidConfig(format!("invalid server_id {id:?}: {e}")))
 }
 /// Map a [`ClientError`] into a [`WorkspaceError::HubError`].
@@ -718,7 +718,7 @@ mod tests {
         assert_eq!(result[0].id, "hub:tool_a");
     }
     use futures::StreamExt;
-    use xai_tool_runtime::{SessionContext, ToolCallId};
+    use agent_tui_tool_runtime::{SessionContext, ToolCallId};
     fn make_handler(workspace: &WorkspaceHandle, tool_name: &str) -> SessionRoutedToolHandler {
         SessionRoutedToolHandler::new(
             tool_name.to_owned(),
@@ -818,7 +818,7 @@ mod tests {
                 );
                 assert_eq!(
                     typed.model_output,
-                    vec![xai_tool_runtime::ContentBlock::Text {
+                    vec![agent_tui_tool_runtime::ContentBlock::Text {
                         text: run_result.prompt_text.clone(),
                     }],
                     "model_output must be the prompt_text, not a JSON dump"
@@ -894,31 +894,31 @@ mod tests {
             "gate streaming stub"
         }
     }
-    impl xai_tool_runtime::Tool for GateStreamingStub {
+    impl agent_tui_tool_runtime::Tool for GateStreamingStub {
         type Args = serde_json::Value;
         type Output = String;
-        fn id(&self) -> xai_tool_protocol::ToolId {
-            xai_tool_protocol::ToolId::new("gate_streaming_stub").expect("valid tool id")
+        fn id(&self) -> agent_tui_tool_protocol::ToolId {
+            agent_tui_tool_protocol::ToolId::new("gate_streaming_stub").expect("valid tool id")
         }
         fn description(
             &self,
-            _ctx: &::xai_tool_runtime::ListToolsContext,
-        ) -> xai_tool_types::ToolDescription {
-            xai_tool_types::ToolDescription::new("gate_streaming_stub", "gate streaming stub")
+            _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+        ) -> agent_tui_tool_types::ToolDescription {
+            agent_tui_tool_types::ToolDescription::new("gate_streaming_stub", "gate streaming stub")
         }
         async fn run(
             &self,
-            _ctx: xai_tool_runtime::ToolCallContext,
+            _ctx: agent_tui_tool_runtime::ToolCallContext,
             _input: serde_json::Value,
-        ) -> Result<String, xai_tool_runtime::ToolError> {
+        ) -> Result<String, agent_tui_tool_runtime::ToolError> {
             Ok("terminal-value".into())
         }
         async fn execute(
             &self,
-            _ctx: xai_tool_runtime::ToolCallContext,
+            _ctx: agent_tui_tool_runtime::ToolCallContext,
             _input: serde_json::Value,
-        ) -> xai_tool_runtime::ToolStream<String> {
-            use xai_tool_runtime::{ToolProgress, ToolStreamItem};
+        ) -> agent_tui_tool_runtime::ToolStream<String> {
+            use agent_tui_tool_runtime::{ToolProgress, ToolStreamItem};
             Box::pin(futures::stream::iter(vec![
                 ToolStreamItem::Progress(ToolProgress::Text {
                     text: "stub-progress-1".into(),
@@ -941,7 +941,7 @@ mod tests {
             )
             .expect("register_tool must succeed");
     }
-    async fn drain_counts<T>(mut stream: xai_tool_runtime::ToolStream<T>) -> (usize, usize, bool) {
+    async fn drain_counts<T>(mut stream: agent_tui_tool_runtime::ToolStream<T>) -> (usize, usize, bool) {
         let mut progress = 0;
         let mut terminal = 0;
         let mut last_is_terminal = false;
@@ -1027,9 +1027,9 @@ mod tests {
     }
     async fn wait_until(
         tracker: &crate::activity::ActivityTracker,
-        pred: impl Fn(&xai_tool_protocol::ToolServerStatusPayload) -> bool,
+        pred: impl Fn(&agent_tui_tool_protocol::ToolServerStatusPayload) -> bool,
         timeout: Duration,
-    ) -> xai_tool_protocol::ToolServerStatusPayload {
+    ) -> agent_tui_tool_protocol::ToolServerStatusPayload {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let snap = tracker.snapshot();

@@ -248,7 +248,7 @@ impl SessionActor {
         let _turn_active_guard =
             TurnActiveGuard::activate(self.tool_context.is_turn_active.as_ref());
         let _session_turn_active_guard = TurnActiveGuard::activate(Some(&self.session_turn_active));
-        let turn_start_input = xai_agent_lifecycle::TurnStartInput::new(
+        let turn_start_input = agent_tui_agent_lifecycle::TurnStartInput::new(
             super::super::PromptOrigin::from_prompt_id(prompt_id).is_synthetic(),
         );
         for contributor in self.extension_registry.turn_lifecycle_contributors() {
@@ -428,19 +428,19 @@ impl SessionActor {
         });
         self.observability_bridge
             .emit(
-                xai_tool_protocol::session_event::SessionEvent::TurnStarted {
+                agent_tui_tool_protocol::session_event::SessionEvent::TurnStarted {
                     turn_number,
                     model_id: model_id.clone(),
                     yolo_mode,
                 },
             )
             .await;
-        self.send_before_turn_event(xai_tool_protocol::turn_hook::BeforeTurnPayload {
+        self.send_before_turn_event(agent_tui_tool_protocol::turn_hook::BeforeTurnPayload {
             turn_number: self.chat_state_handle.get_prompt_index().await as u64,
             model_id: model_id.clone(),
             yolo_mode: self.permissions.is_yolo_mode(),
             conversation_message_count: msg_count,
-            session_relationship: xai_tool_protocol::turn_hook::DEFAULT_SESSION_RELATIONSHIP
+            session_relationship: agent_tui_tool_protocol::turn_hook::DEFAULT_SESSION_RELATIONSHIP
                 .to_string(),
             schema_version: crate::session::events::EVENT_SCHEMA_VERSION.to_string(),
         })
@@ -806,7 +806,7 @@ impl SessionActor {
         let turn_tool_count = self.events.tool_count_this_turn();
         let bridge_outcome = turn_result_to_hook_outcome(&result);
         self.observability_bridge
-            .emit(xai_tool_protocol::session_event::SessionEvent::TurnEnded {
+            .emit(agent_tui_tool_protocol::session_event::SessionEvent::TurnEnded {
                 turn_number: current_prompt_index as u64,
                 outcome: bridge_outcome,
                 duration_ms: turn_duration_ms,
@@ -821,9 +821,9 @@ impl SessionActor {
                     None,
                     None,
                 );
-                self.send_after_turn_event(xai_tool_protocol::turn_hook::AfterTurnPayload {
+                self.send_after_turn_event(agent_tui_tool_protocol::turn_hook::AfterTurnPayload {
                     turn_number: current_prompt_index as u64,
-                    outcome: xai_tool_protocol::turn_hook::TurnHookOutcome::Completed,
+                    outcome: agent_tui_tool_protocol::turn_hook::TurnHookOutcome::Completed,
                     duration_ms: turn_duration_ms,
                     tool_call_count: turn_tool_count,
                     model_id: turn_model_id.clone(),
@@ -852,9 +852,9 @@ impl SessionActor {
                 if let Some(cause) = category {
                     self.events.set_prior_interrupt_category(*cause);
                 }
-                self.send_after_turn_event(xai_tool_protocol::turn_hook::AfterTurnPayload {
+                self.send_after_turn_event(agent_tui_tool_protocol::turn_hook::AfterTurnPayload {
                     turn_number: current_prompt_index as u64,
-                    outcome: xai_tool_protocol::turn_hook::TurnHookOutcome::Cancelled,
+                    outcome: agent_tui_tool_protocol::turn_hook::TurnHookOutcome::Cancelled,
                     duration_ms: turn_duration_ms,
                     tool_call_count: turn_tool_count,
                     model_id: turn_model_id.clone(),
@@ -883,9 +883,9 @@ impl SessionActor {
                         { "reason" : "max_turns_reached", "limit" : limit, }
                     )),
                 );
-                self.send_after_turn_event(xai_tool_protocol::turn_hook::AfterTurnPayload {
+                self.send_after_turn_event(agent_tui_tool_protocol::turn_hook::AfterTurnPayload {
                     turn_number: current_prompt_index as u64,
-                    outcome: xai_tool_protocol::turn_hook::TurnHookOutcome::Cancelled,
+                    outcome: agent_tui_tool_protocol::turn_hook::TurnHookOutcome::Cancelled,
                     duration_ms: turn_duration_ms,
                     tool_call_count: turn_tool_count,
                     model_id: turn_model_id.clone(),
@@ -909,9 +909,9 @@ impl SessionActor {
             }
             Err(err) => {
                 self.emit_turn_ended(crate::session::events::TurnOutcomeLabel::Error, None, None);
-                self.send_after_turn_event(xai_tool_protocol::turn_hook::AfterTurnPayload {
+                self.send_after_turn_event(agent_tui_tool_protocol::turn_hook::AfterTurnPayload {
                     turn_number: current_prompt_index as u64,
-                    outcome: xai_tool_protocol::turn_hook::TurnHookOutcome::Error,
+                    outcome: agent_tui_tool_protocol::turn_hook::TurnHookOutcome::Error,
                     duration_ms: turn_duration_ms,
                     tool_call_count: turn_tool_count,
                     model_id: turn_model_id.clone(),
@@ -989,13 +989,13 @@ impl SessionActor {
             Ok(TurnOutcome::Completed { .. }) => {
                 for contributor in self.extension_registry.turn_lifecycle_contributors() {
                     contributor
-                        .on_turn_done(&xai_agent_lifecycle::TurnDoneInput)
+                        .on_turn_done(&agent_tui_agent_lifecycle::TurnDoneInput)
                         .await;
                 }
             }
             Ok(TurnOutcome::Cancelled { .. }) | Ok(TurnOutcome::MaxTurnsReached { .. }) => {
-                let input = xai_agent_lifecycle::TurnAbortInput::new(
-                    xai_agent_lifecycle::TurnAbortReason::Interrupted,
+                let input = agent_tui_agent_lifecycle::TurnAbortInput::new(
+                    agent_tui_agent_lifecycle::TurnAbortReason::Interrupted,
                 );
                 for contributor in self.extension_registry.turn_lifecycle_contributors() {
                     contributor.on_turn_abort(&input).await;
@@ -1003,7 +1003,7 @@ impl SessionActor {
             }
             Err(err) => {
                 let message = err.to_string();
-                let input = xai_agent_lifecycle::TurnErrorInput { message: &message };
+                let input = agent_tui_agent_lifecycle::TurnErrorInput { message: &message };
                 for contributor in self.extension_registry.turn_lifecycle_contributors() {
                     contributor.on_turn_error(&input).await;
                 }
@@ -1898,8 +1898,8 @@ impl SessionActor {
             });
             self.observability_bridge
                 .emit(
-                    xai_tool_protocol::session_event::SessionEvent::PhaseChanged {
-                        phase: xai_tool_protocol::session_event::SessionPhase::Sampling,
+                    agent_tui_tool_protocol::session_event::SessionEvent::PhaseChanged {
+                        phase: agent_tui_tool_protocol::session_event::SessionPhase::Sampling,
                     },
                 )
                 .await;
@@ -2252,8 +2252,8 @@ impl SessionActor {
             });
             self.observability_bridge
                 .emit(
-                    xai_tool_protocol::session_event::SessionEvent::PhaseChanged {
-                        phase: xai_tool_protocol::session_event::SessionPhase::ToolExecution,
+                    agent_tui_tool_protocol::session_event::SessionEvent::PhaseChanged {
+                        phase: agent_tui_tool_protocol::session_event::SessionPhase::ToolExecution,
                     },
                 )
                 .await;

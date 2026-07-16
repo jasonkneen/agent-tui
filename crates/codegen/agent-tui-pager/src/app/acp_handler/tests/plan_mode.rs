@@ -212,7 +212,7 @@
             plan_content: Some("# Plan\nDo stuff".into()),
         };
         let raw = serde_json::value::to_raw_value(&ext_req).unwrap();
-        let msg = AcpClientMessage::ExtMethod(xai_acp_lib::AcpArgs {
+        let msg = AcpClientMessage::ExtMethod(agent_tui_acp_lib::AcpArgs {
             request: acp::ExtRequest::new("x.ai/exit_plan_mode", raw.into()),
             response_tx: tx,
         });
@@ -243,7 +243,7 @@
             plan_content: Some("# Plan\nDo stuff".into()),
         };
         let raw = serde_json::value::to_raw_value(&ext_req).unwrap();
-        let msg = AcpClientMessage::ExtMethod(xai_acp_lib::AcpArgs {
+        let msg = AcpClientMessage::ExtMethod(agent_tui_acp_lib::AcpArgs {
             request: acp::ExtRequest::new("x.ai/exit_plan_mode", raw.into()),
             response_tx: tx,
         });
@@ -274,7 +274,7 @@
             plan_content: Some("# Plan".into()),
         };
         let raw = serde_json::value::to_raw_value(&ext_req).unwrap();
-        let msg = AcpClientMessage::ExtMethod(xai_acp_lib::AcpArgs {
+        let msg = AcpClientMessage::ExtMethod(agent_tui_acp_lib::AcpArgs {
             request: acp::ExtRequest::new("x.ai/exit_plan_mode", raw.into()),
             response_tx: tx,
         });

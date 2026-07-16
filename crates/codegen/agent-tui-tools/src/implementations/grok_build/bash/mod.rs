@@ -69,11 +69,11 @@ const MAX_PROGRESS_DELTA_BYTES: usize = 16 * 1024;
 /// Bash's capabilities incl. its streaming spec (single source of truth):
 /// raw stdout is the terminal projection, so `RawTerminal` / `Append`,
 /// capped per frame at [`MAX_PROGRESS_DELTA_BYTES`].
-static BASH_CAPABILITIES: LazyLock<xai_tool_protocol::ToolCapabilities> =
-    LazyLock::new(|| xai_tool_protocol::ToolCapabilities {
+static BASH_CAPABILITIES: LazyLock<agent_tui_tool_protocol::ToolCapabilities> =
+    LazyLock::new(|| agent_tui_tool_protocol::ToolCapabilities {
         is_read_only: false,
-        tool_scope: Some(xai_tool_protocol::ToolScope::Write),
-        streaming: Some(xai_tool_protocol::StreamingSpec {
+        tool_scope: Some(agent_tui_tool_protocol::ToolScope::Write),
+        streaming: Some(agent_tui_tool_protocol::StreamingSpec {
             subkind: "bash_output_chunk".to_owned(),
             max_delta_bytes: Some(MAX_PROGRESS_DELTA_BYTES as u32),
         }),
@@ -82,13 +82,13 @@ static BASH_CAPABILITIES: LazyLock<xai_tool_protocol::ToolCapabilities> =
 
 /// One `ToolProgress` delta from a `BashOutputChunk`; `None` when no new bytes.
 fn bash_output_chunk_progress(
-    spec: &xai_tool_protocol::StreamingSpec,
+    spec: &agent_tui_tool_protocol::StreamingSpec,
     chunk: &BashOutputChunk,
     last_total: &mut usize,
-) -> Option<xai_tool_runtime::ToolProgress> {
+) -> Option<agent_tui_tool_runtime::ToolProgress> {
     // `stream_chunk` counts in `u64`; convert at the boundary.
     let mut cursor = *last_total as u64;
-    let progress = xai_tool_runtime::stream_chunk(
+    let progress = agent_tui_tool_runtime::stream_chunk(
         spec,
         &chunk.base.output,
         chunk.base.total_bytes as u64,
@@ -300,10 +300,10 @@ pub enum BashToolOutput {
     Background(BackgroundTaskStarted),
 }
 
-impl xai_tool_runtime::ToolOutput for BashToolOutput {
-    fn chat_completion_output(&self) -> Option<xai_tool_runtime::ToolChatCompletionResponse> {
+impl agent_tui_tool_runtime::ToolOutput for BashToolOutput {
+    fn chat_completion_output(&self) -> Option<agent_tui_tool_runtime::ToolChatCompletionResponse> {
         match self {
-            Self::Foreground(bash) => xai_tool_runtime::ToolOutput::chat_completion_output(bash),
+            Self::Foreground(bash) => agent_tui_tool_runtime::ToolOutput::chat_completion_output(bash),
             Self::Background(_) => None,
         }
     }
@@ -1573,25 +1573,25 @@ impl crate::types::tool_metadata::ToolMetadata for BashTool {
     }
 }
 
-impl xai_tool_runtime::Tool for BashTool {
+impl agent_tui_tool_runtime::Tool for BashTool {
     type Args = BashToolInput;
     type Output = BashToolOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("run_terminal_cmd").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("run_terminal_cmd").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "run_terminal_cmd",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
         // Clone of `BASH_CAPABILITIES`; read at registration time only.
         BASH_CAPABILITIES.clone()
     }
@@ -1621,16 +1621,16 @@ impl xai_tool_runtime::Tool for BashTool {
     /// Absent extension = no emission (pre-streaming behavior).
     async fn execute(
         &self,
-        mut ctx: xai_tool_runtime::ToolCallContext,
+        mut ctx: agent_tui_tool_runtime::ToolCallContext,
         input: BashToolInput,
-    ) -> xai_tool_runtime::ToolStream<BashToolOutput> {
+    ) -> agent_tui_tool_runtime::ToolStream<BashToolOutput> {
         // Background / monitor calls reach their single `Terminal` immediately
         // (the task continues asynchronously on the side-channel). Owned ZST,
         // no `&self` capture.
         if input.is_background {
             let this = BashTool;
             return Box::pin(async_stream::stream! {
-                yield xai_tool_runtime::ToolStreamItem::Terminal(this.run(ctx, input).await);
+                yield agent_tui_tool_runtime::ToolStreamItem::Terminal(this.run(ctx, input).await);
             });
         }
 
@@ -1639,7 +1639,7 @@ impl xai_tool_runtime::Tool for BashTool {
         // non-streaming fast path below without paying for a sink, channel,
         // or `select!` loop it would only drain-and-discard from.
         let stream_progress = ctx
-            .get::<xai_tool_runtime::WorkspaceViewerContext>()
+            .get::<agent_tui_tool_runtime::WorkspaceViewerContext>()
             .map(|c| c.stream_tool_progress)
             .unwrap_or(false);
 
@@ -1655,15 +1655,15 @@ impl xai_tool_runtime::Tool for BashTool {
         if !stream_progress {
             let this = BashTool;
             return Box::pin(async_stream::stream! {
-                yield xai_tool_runtime::ToolStreamItem::Terminal(this.run(ctx, input).await);
+                yield agent_tui_tool_runtime::ToolStreamItem::Terminal(this.run(ctx, input).await);
             });
         }
 
         // Absent spec is a can't-happen bug → terminal error, not a panic.
         let Some(spec) = BASH_CAPABILITIES.streaming.as_ref() else {
             return Box::pin(async_stream::stream! {
-                yield xai_tool_runtime::ToolStreamItem::Terminal(Err(
-                    xai_tool_runtime::ToolError::custom(
+                yield agent_tui_tool_runtime::ToolStreamItem::Terminal(Err(
+                    agent_tui_tool_runtime::ToolError::custom(
                         "internal_error",
                         "BASH_CAPABILITIES has no StreamingSpec",
                     ),
@@ -1699,7 +1699,7 @@ impl xai_tool_runtime::Tool for BashTool {
                                     && let Some(p) =
                                         bash_output_chunk_progress(spec, &latest, &mut last_total)
                                 {
-                                    yield xai_tool_runtime::ToolStreamItem::Progress(p);
+                                    yield agent_tui_tool_runtime::ToolStreamItem::Progress(p);
                                 }
                             }
                             Some(notif) => {
@@ -1718,7 +1718,7 @@ impl xai_tool_runtime::Tool for BashTool {
                                     if let Some(p) =
                                         bash_output_chunk_progress(spec, &synthetic, &mut last_total)
                                     {
-                                        yield xai_tool_runtime::ToolStreamItem::Progress(p);
+                                        yield agent_tui_tool_runtime::ToolStreamItem::Progress(p);
                                     }
                                 }
                             }
@@ -1743,7 +1743,7 @@ impl xai_tool_runtime::Tool for BashTool {
                                         if let Some(p) =
                                             bash_output_chunk_progress(spec, &chunk, &mut last_total)
                                         {
-                                            yield xai_tool_runtime::ToolStreamItem::Progress(p);
+                                            yield agent_tui_tool_runtime::ToolStreamItem::Progress(p);
                                         }
                                     }
                                     other => {
@@ -1755,14 +1755,14 @@ impl xai_tool_runtime::Tool for BashTool {
                                                 &synthetic,
                                                 &mut last_total,
                                             ) {
-                                                yield xai_tool_runtime::ToolStreamItem::Progress(p);
+                                                yield agent_tui_tool_runtime::ToolStreamItem::Progress(p);
                                             }
                                         }
                                     }
                                 }
                             }
                         }
-                        yield xai_tool_runtime::ToolStreamItem::Terminal(result);
+                        yield agent_tui_tool_runtime::ToolStreamItem::Terminal(result);
                         break;
                     }
                 }
@@ -1779,9 +1779,9 @@ impl xai_tool_runtime::Tool for BashTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: BashToolInput,
-    ) -> Result<BashToolOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<BashToolOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -1875,7 +1875,7 @@ impl xai_tool_runtime::Tool for BashTool {
                     trailing_is_syntax_error,
                 ),
             };
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(message));
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(message));
         }
 
         // --- Validate: reject self-matching pkill/pgrep -f <pat> ---
@@ -1895,11 +1895,11 @@ impl xai_tool_runtime::Tool for BashTool {
                  -r kill` invoked from a separate command, a fully-qualified path that \
                  does not appear later in the script, or kill by PID file."
             );
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(message));
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(message));
         }
 
         if input.is_background && !background_enabled {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(
                 "Background execution is disabled.".to_string(),
             ));
         }
@@ -2564,9 +2564,9 @@ mod tests {
 
     /// Destructure a `bash_output_chunk` payload, asserting the canonical
     /// `raw_terminal` / `append` envelope.
-    fn read_chunk_progress(p: &xai_tool_runtime::ToolProgress) -> (String, usize, bool, bool) {
+    fn read_chunk_progress(p: &agent_tui_tool_runtime::ToolProgress) -> (String, usize, bool, bool) {
         match p {
-            xai_tool_runtime::ToolProgress::Custom { subkind, payload } => {
+            agent_tui_tool_runtime::ToolProgress::Custom { subkind, payload } => {
                 assert_eq!(subkind, "bash_output_chunk", "unexpected subkind");
                 (
                     payload["delta"].as_str().unwrap().to_owned(),
@@ -2654,7 +2654,7 @@ mod tests {
         let mut last = 0usize;
         let p = bash_output_chunk_progress(spec, &chunk, &mut last).unwrap();
         match p {
-            xai_tool_runtime::ToolProgress::Custom { subkind, payload } => {
+            agent_tui_tool_runtime::ToolProgress::Custom { subkind, payload } => {
                 assert_eq!(subkind, "bash_output_chunk");
                 let delta = payload["delta"].as_str().unwrap();
                 // Capped: never larger than the per-frame limit.
@@ -2686,7 +2686,7 @@ mod tests {
         reassembled.push_str(&payload_str[..last]);
         while last < total {
             let p = bash_output_chunk_progress(spec, &chunk, &mut last).unwrap();
-            let xai_tool_runtime::ToolProgress::Custom { payload, .. } = p else {
+            let agent_tui_tool_runtime::ToolProgress::Custom { payload, .. } = p else {
                 panic!("expected Custom progress");
             };
             let delta = payload["delta"].as_str().unwrap().to_owned();
@@ -2705,10 +2705,10 @@ mod tests {
 
         let (resources, _tmp) = make_real_resources(None);
         // No streaming gate stamped — exercises the default path.
-        let mut ctx = xai_tool_runtime::ToolCallContext::default();
+        let mut ctx = agent_tui_tool_runtime::ToolCallContext::default();
         ctx.extensions.insert(resources.into_shared());
         let tool = BashTool;
-        let mut stream = xai_tool_runtime::Tool::execute(
+        let mut stream = agent_tui_tool_runtime::Tool::execute(
             &tool,
             ctx,
             make_input("for i in 1 2 3; do echo $i; sleep 0.1; done"),
@@ -2716,13 +2716,13 @@ mod tests {
         .await;
 
         let mut progress = 0usize;
-        let mut terminal: Option<Result<BashToolOutput, xai_tool_runtime::ToolError>> = None;
+        let mut terminal: Option<Result<BashToolOutput, agent_tui_tool_runtime::ToolError>> = None;
         while let Some(item) = stream.next().await {
             match item {
-                xai_tool_runtime::ToolStreamItem::Progress(_) => {
+                agent_tui_tool_runtime::ToolStreamItem::Progress(_) => {
                     progress += 1;
                 }
-                xai_tool_runtime::ToolStreamItem::Terminal(r) => {
+                agent_tui_tool_runtime::ToolStreamItem::Terminal(r) => {
                     assert!(terminal.is_none(), "more than one Terminal yielded");
                     terminal = Some(r);
                 }
@@ -2753,7 +2753,7 @@ mod tests {
 
         let (resources, _tmp) = make_real_resources(None);
         let tool = BashTool;
-        let mut stream = xai_tool_runtime::Tool::execute(
+        let mut stream = agent_tui_tool_runtime::Tool::execute(
             &tool,
             test_ctx(resources.into_shared()),
             make_input("for i in 1 2 3; do echo $i; sleep 0.1; done"),
@@ -2761,16 +2761,16 @@ mod tests {
         .await;
 
         let mut progress = 0usize;
-        let mut terminal: Option<Result<BashToolOutput, xai_tool_runtime::ToolError>> = None;
+        let mut terminal: Option<Result<BashToolOutput, agent_tui_tool_runtime::ToolError>> = None;
         while let Some(item) = stream.next().await {
             match item {
-                xai_tool_runtime::ToolStreamItem::Progress(p) => {
+                agent_tui_tool_runtime::ToolStreamItem::Progress(p) => {
                     assert!(terminal.is_none(), "Progress arrived after Terminal");
                     // Asserts subkind == "bash_output_chunk".
                     let _ = read_chunk_progress(&p);
                     progress += 1;
                 }
-                xai_tool_runtime::ToolStreamItem::Terminal(r) => {
+                agent_tui_tool_runtime::ToolStreamItem::Terminal(r) => {
                     assert!(terminal.is_none(), "more than one Terminal yielded");
                     terminal = Some(r);
                 }
@@ -2803,7 +2803,7 @@ mod tests {
         // ~1.8s easily exceeds it and keeps emitting across the shrinking tail.
         let (resources, _tmp) = make_real_resources(Some(200));
         let tool = BashTool;
-        let mut stream = xai_tool_runtime::Tool::execute(
+        let mut stream = agent_tui_tool_runtime::Tool::execute(
             &tool,
             test_ctx(resources.into_shared()),
             make_input(
@@ -2814,15 +2814,15 @@ mod tests {
 
         // (total_bytes, truncated, gap, delta_len)
         let mut deltas: Vec<(usize, bool, bool, usize)> = Vec::new();
-        let mut terminal: Option<Result<BashToolOutput, xai_tool_runtime::ToolError>> = None;
+        let mut terminal: Option<Result<BashToolOutput, agent_tui_tool_runtime::ToolError>> = None;
         while let Some(item) = stream.next().await {
             match item {
-                xai_tool_runtime::ToolStreamItem::Progress(p) => {
+                agent_tui_tool_runtime::ToolStreamItem::Progress(p) => {
                     assert!(terminal.is_none(), "Progress arrived after Terminal");
                     let (delta, total, truncated, gap) = read_chunk_progress(&p);
                     deltas.push((total, truncated, gap, delta.len()));
                 }
-                xai_tool_runtime::ToolStreamItem::Terminal(r) => {
+                agent_tui_tool_runtime::ToolStreamItem::Terminal(r) => {
                     assert!(terminal.is_none(), "more than one Terminal yielded");
                     terminal = Some(r);
                 }
@@ -2914,7 +2914,7 @@ mod tests {
         // exercises the "drained after the last periodic chunk" path that the
         // bug missed. ASCII so lossy UTF-8 conversion is exact.
         let cmd = "printf 'tail-bytes-after-final-tick\\n'";
-        let mut stream = xai_tool_runtime::Tool::execute(
+        let mut stream = agent_tui_tool_runtime::Tool::execute(
             &tool,
             test_ctx(resources.into_shared()),
             make_input(cmd),
@@ -2923,10 +2923,10 @@ mod tests {
 
         let mut concatenated = String::new();
         let mut last_delta_total: Option<usize> = None;
-        let mut terminal: Option<Result<BashToolOutput, xai_tool_runtime::ToolError>> = None;
+        let mut terminal: Option<Result<BashToolOutput, agent_tui_tool_runtime::ToolError>> = None;
         while let Some(item) = stream.next().await {
             match item {
-                xai_tool_runtime::ToolStreamItem::Progress(p) => {
+                agent_tui_tool_runtime::ToolStreamItem::Progress(p) => {
                     assert!(terminal.is_none(), "Progress arrived after Terminal");
                     let (delta, total, _truncated, gap) = read_chunk_progress(&p);
                     assert!(
@@ -2936,7 +2936,7 @@ mod tests {
                     concatenated.push_str(&delta);
                     last_delta_total = Some(total);
                 }
-                xai_tool_runtime::ToolStreamItem::Terminal(r) => {
+                agent_tui_tool_runtime::ToolStreamItem::Terminal(r) => {
                     assert!(terminal.is_none(), "more than one Terminal yielded");
                     terminal = Some(r);
                 }
@@ -2973,7 +2973,7 @@ mod tests {
         let resources = make_resources(MockTerminal::success("hello world\n", 0));
         let tool = BashTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_input("echo hello"),
@@ -2999,7 +2999,7 @@ mod tests {
         let resources = make_resources(MockTerminal::timed_out("partial output"));
         let tool = BashTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_input("sleep 999"),
@@ -3021,7 +3021,7 @@ mod tests {
         let resources = make_resources(MockTerminal::failing());
         let tool = BashTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_input("bad_cmd"),
@@ -3036,7 +3036,7 @@ mod tests {
         let resources = make_resources(MockTerminal::background_ok("bg-task-42"));
         let tool = BashTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_bg_input("sleep 3600"),
@@ -3064,7 +3064,7 @@ mod tests {
         let resources = make_resources(mock);
         let tool = BashTool;
 
-        let _ = xai_tool_runtime::Tool::run(
+        let _ = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_bg_input("python3 script.py"),
@@ -3088,7 +3088,7 @@ mod tests {
         let resources = make_resources_reject_bg_op(MockTerminal::success("", 0));
         let tool = BashTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_input("sleep 10 &"),
@@ -3112,7 +3112,7 @@ mod tests {
 
         // Previously this would pass because the old check only looked at
         // trailing `&`. Now the parser detects mid-command `&` too.
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_input("sleep 600 &; echo done"),
@@ -3136,7 +3136,7 @@ mod tests {
         let resources = make_resources(MockTerminal::success("hi\n", 0));
         let tool = BashTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_input("make & echo hi"),
@@ -3160,7 +3160,7 @@ mod tests {
         );
         let tool = BashTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_bg_input("sleep 3600"),
@@ -3183,7 +3183,7 @@ mod tests {
         );
         let tool = BashTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_input("sleep 10 &"),
@@ -3210,7 +3210,7 @@ mod tests {
     async fn background_operator_rejection_names_is_background_param() {
         let resources = make_resources_reject_bg_op(MockTerminal::success("", 0));
         let tool = BashTool;
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_input("sleep 10 &"),
@@ -3246,7 +3246,7 @@ mod tests {
         let tool = BashTool;
 
         let result =
-            xai_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), make_input("ls"))
+            agent_tui_tool_runtime::Tool::run(&tool, test_ctx(resources.into_shared()), make_input("ls"))
                 .await;
         assert!(result.is_err());
         assert!(
@@ -3269,7 +3269,7 @@ mod tests {
         ));
 
         let tool = BashTool;
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             make_bg_input("sleep 60"),
@@ -3320,7 +3320,7 @@ mod tests {
 
     #[test]
     fn foreground_chat_completion_emits_code_execution_result() {
-        let resp = xai_tool_runtime::ToolOutput::chat_completion_output(
+        let resp = agent_tui_tool_runtime::ToolOutput::chat_completion_output(
             &BashToolOutput::Foreground(make_bash_output(0, "hi\n")),
         )
         .unwrap();
@@ -3347,7 +3347,7 @@ mod tests {
             pre_formatted: None,
             pid: None,
         });
-        assert!(xai_tool_runtime::ToolOutput::chat_completion_output(&out).is_none());
+        assert!(agent_tui_tool_runtime::ToolOutput::chat_completion_output(&out).is_none());
     }
 
     #[test]
@@ -4530,11 +4530,11 @@ mod tests {
 
         fn legacy_rt_ctx(
             resources: crate::types::resources::SharedResources,
-        ) -> xai_tool_runtime::ToolCallContext {
+        ) -> agent_tui_tool_runtime::ToolCallContext {
             let mut ctx =
-                xai_tool_runtime::ToolCallContext::new(xai_tool_protocol::ToolCallId::new_v7());
+                agent_tui_tool_runtime::ToolCallContext::new(agent_tui_tool_protocol::ToolCallId::new_v7());
             ctx.extensions.insert(resources);
-            ctx.extensions.insert(xai_tool_runtime::BehaviorVersion(
+            ctx.extensions.insert(agent_tui_tool_runtime::BehaviorVersion(
                 "legacy-0.4.10".to_string(),
             ));
             ctx
@@ -4547,7 +4547,7 @@ mod tests {
         async fn current_rejects_mid_command_ampersand() {
             let resources = make_resources_reject_bg_op(MockTerminal::success("", 0));
             let tool = BashTool;
-            let result = xai_tool_runtime::Tool::run(
+            let result = agent_tui_tool_runtime::Tool::run(
                 &tool,
                 test_ctx(resources.into_shared()),
                 make_input("echo a & echo b"),
@@ -4566,7 +4566,7 @@ mod tests {
         async fn legacy_allows_mid_command_ampersand() {
             let resources = make_resources_reject_bg_op(MockTerminal::success("output", 0));
             let tool = BashTool;
-            let result = xai_tool_runtime::Tool::run(
+            let result = agent_tui_tool_runtime::Tool::run(
                 &tool,
                 legacy_rt_ctx(resources.into_shared()),
                 make_input("echo a & echo b"),
@@ -4585,7 +4585,7 @@ mod tests {
         async fn legacy_rejects_trailing_ampersand() {
             let resources = make_resources_reject_bg_op(MockTerminal::success("", 0));
             let tool = BashTool;
-            let result = xai_tool_runtime::Tool::run(
+            let result = agent_tui_tool_runtime::Tool::run(
                 &tool,
                 legacy_rt_ctx(resources.into_shared()),
                 make_input("sleep 600 &"),
@@ -4604,7 +4604,7 @@ mod tests {
         async fn legacy_allows_logical_and() {
             let resources = make_resources_reject_bg_op(MockTerminal::success("output", 0));
             let tool = BashTool;
-            let result = xai_tool_runtime::Tool::run(
+            let result = agent_tui_tool_runtime::Tool::run(
                 &tool,
                 legacy_rt_ctx(resources.into_shared()),
                 make_input("ls && echo done"),

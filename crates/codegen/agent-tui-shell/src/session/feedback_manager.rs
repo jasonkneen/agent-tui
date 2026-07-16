@@ -237,7 +237,7 @@ pub struct FeedbackManager {
     /// GCS upload queue stats for periodic snapshots into signals.
     /// Set once after the first upload queue is created via `set_upload_queue_stats()`.
     /// `OnceLock` because `FeedbackManager` is behind `Arc` and this is set after construction.
-    upload_queue_stats: std::sync::OnceLock<Arc<xai_file_utils::queue::UploadQueueStats>>,
+    upload_queue_stats: std::sync::OnceLock<Arc<agent_tui_file_utils::queue::UploadQueueStats>>,
 }
 
 impl FeedbackManager {
@@ -286,7 +286,7 @@ impl FeedbackManager {
     /// Called once after the first upload queue is created. The Arc is stored
     /// and read (via atomic loads) before each signal sync to populate GCS
     /// queue metrics. Safe to call from `&self` (behind Arc) via OnceLock.
-    pub fn set_upload_queue_stats(&self, stats: Arc<xai_file_utils::queue::UploadQueueStats>) {
+    pub fn set_upload_queue_stats(&self, stats: Arc<agent_tui_file_utils::queue::UploadQueueStats>) {
         let _ = self.upload_queue_stats.set(stats);
     }
 
@@ -870,7 +870,7 @@ impl FeedbackManager {
     ///
     /// The caller passes the upload queue from `SessionHandle` — the
     /// `FeedbackManager` no longer owns the queue.
-    pub async fn shutdown(&self, queue: Option<&xai_file_utils::queue::UploadQueue>) {
+    pub async fn shutdown(&self, queue: Option<&agent_tui_file_utils::queue::UploadQueue>) {
         // Final sync — force-bypass cooldown
         let _ = self.force_sync_signals().await;
 
@@ -1224,7 +1224,7 @@ mod tests {
     async fn test_shutdown_with_upload_queue_drains() {
         use crate::session::repo_changes::{TraceExportConfig, UploadMethod};
         use std::sync::Arc;
-        use xai_file_utils::queue::{TraceExportSource, UploadQueue, UploadRetryPolicy};
+        use agent_tui_file_utils::queue::{TraceExportSource, UploadQueue, UploadRetryPolicy};
 
         // Create a mock resolver for the queue
         struct MockResolver;

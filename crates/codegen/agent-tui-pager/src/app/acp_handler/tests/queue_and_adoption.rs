@@ -322,7 +322,7 @@
     /// `runningPromptId` only when it was `None`, never overriding an already-set one.
     #[test]
     fn queue_changed_adopts_running_prompt_id_only_when_unset() {
-        // Shell and pager share the xai-prompt-queue type, so serializing the payload as the
+        // Shell and pager share the agent-tui-prompt-queue type, so serializing the payload as the
         // shell emits it pins the wire shape the handler consumes, not cross-crate compat.
         let shell_payload = agent_tui_shell::session::prompt_queue::QueueChanged {
             session_id: "sess-1".to_string(),
@@ -689,7 +689,7 @@
                     .cloned(),
             );
             handle(
-                AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+                AcpClientMessage::SessionNotification(agent_tui_acp_lib::AcpArgs {
                     request,
                     response_tx: tx,
                 }),
@@ -786,7 +786,7 @@
                     .cloned(),
             );
             handle(
-                AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+                AcpClientMessage::SessionNotification(agent_tui_acp_lib::AcpArgs {
                     request,
                     response_tx: tx,
                 }),
@@ -870,7 +870,7 @@
                     .cloned(),
             );
             handle(
-                AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+                AcpClientMessage::SessionNotification(agent_tui_acp_lib::AcpArgs {
                     request,
                     response_tx: tx,
                 }),
@@ -945,7 +945,7 @@
             ))),
         )
         .meta(serde_json::json!({ "promptId": "p2" }).as_object().cloned());
-        let msg = AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+        let msg = AcpClientMessage::SessionNotification(agent_tui_acp_lib::AcpArgs {
             request,
             response_tx: tx,
         });
@@ -1033,7 +1033,7 @@
                 .cloned(),
         );
         handle(
-            AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+            AcpClientMessage::SessionNotification(agent_tui_acp_lib::AcpArgs {
                 request,
                 response_tx: tx,
             }),
@@ -1281,7 +1281,7 @@
                 .cloned(),
         );
         let affected = handle(
-            AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+            AcpClientMessage::SessionNotification(agent_tui_acp_lib::AcpArgs {
                 request,
                 response_tx: tx,
             }),
@@ -1347,7 +1347,7 @@
                 .cloned(),
         );
         handle(
-            AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+            AcpClientMessage::SessionNotification(agent_tui_acp_lib::AcpArgs {
                 request,
                 response_tx: tx,
             }),
@@ -1419,7 +1419,7 @@
     /// turn-start shim (`bash_turn = true`, no user block).
     #[test]
     fn bash_kind_round_trips_and_adoption_sets_bash_turn() {
-        // Shell and pager share the xai-prompt-queue type; pin kind through a serde cycle.
+        // Shell and pager share the agent-tui-prompt-queue type; pin kind through a serde cycle.
         let shell = agent_tui_shell::session::prompt_queue::QueueChanged {
             session_id: "sess-1".to_string(),
             entries: vec![agent_tui_shell::session::prompt_queue::QueueEntryWire {
@@ -1851,7 +1851,7 @@
                 .cloned(),
         );
         let _ = handle(
-            AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+            AcpClientMessage::SessionNotification(agent_tui_acp_lib::AcpArgs {
                 request,
                 response_tx: tx,
             }),
@@ -1905,7 +1905,7 @@
                 .cloned(),
         );
         let _ = handle(
-            AcpClientMessage::SessionNotification(xai_acp_lib::AcpArgs {
+            AcpClientMessage::SessionNotification(agent_tui_acp_lib::AcpArgs {
                 request,
                 response_tx: tx,
             }),

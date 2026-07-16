@@ -72,8 +72,8 @@ impl S3AccessCredentials {
         !self.access_key_id.trim().is_empty() && !self.secret_access_key.trim().is_empty()
     }
 
-    fn to_static(&self) -> xai_file_utils::s3::S3StaticCredentials {
-        xai_file_utils::s3::S3StaticCredentials {
+    fn to_static(&self) -> agent_tui_file_utils::s3::S3StaticCredentials {
+        agent_tui_file_utils::s3::S3StaticCredentials {
             access_key_id: self.access_key_id.clone(),
             secret_access_key: self.secret_access_key.clone(),
         }
@@ -158,7 +158,7 @@ impl VideoGenClient {
     pub fn new(
         config: &VideoGenConfig,
         api_key_provider: Option<SharedApiKeyProvider>,
-    ) -> Result<Self, xai_tool_runtime::ToolError> {
+    ) -> Result<Self, agent_tui_tool_runtime::ToolError> {
         let VideoGenConfig::Enabled {
             api_key,
             base_url,
@@ -167,7 +167,7 @@ impl VideoGenClient {
             tier_restricted,
         } = config
         else {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(
                 "Cannot create VideoGenClient from disabled config",
             ));
         };
@@ -179,7 +179,7 @@ impl VideoGenClient {
         headers.insert(
             AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|e| {
-                xai_tool_runtime::ToolError::invalid_arguments(format!(
+                agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                     "Invalid API key for header: {e}"
                 ))
             })?,
@@ -188,24 +188,24 @@ impl VideoGenClient {
         extra_headers.into_iter().try_for_each(|(key, value)| {
             let header_name =
                 reqwest::header::HeaderName::from_bytes(key.as_bytes()).map_err(|e| {
-                    xai_tool_runtime::ToolError::invalid_arguments(format!(
+                    agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                         "Invalid header name '{key}': {e}"
                     ))
                 })?;
             let header_value = HeaderValue::from_str(value).map_err(|e| {
-                xai_tool_runtime::ToolError::invalid_arguments(format!(
+                agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                     "Invalid header value for '{key}': {e}"
                 ))
             })?;
             headers.insert(header_name, header_value);
-            Ok::<(), xai_tool_runtime::ToolError>(())
+            Ok::<(), agent_tui_tool_runtime::ToolError>(())
         })?;
 
         let http = reqwest::Client::builder()
             .default_headers(headers)
             .build()
             .map_err(|e| {
-                xai_tool_runtime::ToolError::invalid_arguments(format!(
+                agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                     "Failed to build HTTP client: {e}"
                 ))
             })?;
@@ -214,7 +214,7 @@ impl VideoGenClient {
             .timeout(std::time::Duration::from_secs(VIDEO_DOWNLOAD_TIMEOUT_SECS))
             .build()
             .map_err(|e| {
-                xai_tool_runtime::ToolError::invalid_arguments(format!(
+                agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                     "Failed to build download client: {e}"
                 ))
             })?;
@@ -268,7 +268,7 @@ impl VideoGenClient {
         resolution: &str,
         image: Option<String>,
         reference_images: Vec<String>,
-    ) -> Result<VideoOutcome, xai_tool_runtime::ToolError> {
+    ) -> Result<VideoOutcome, agent_tui_tool_runtime::ToolError> {
         let start_url = format!("{}/videos/generations", self.base_url.trim_end_matches('/'));
 
         let presigned = match &self.zdr_video_output_s3 {
@@ -303,7 +303,7 @@ impl VideoGenClient {
         }
 
         let response = req.send().await.map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
+            agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "Video generation API request failed: {e}"
             ))
         })?;
@@ -316,15 +316,15 @@ impl VideoGenClient {
             let body = response.text().await.unwrap_or_default();
             let truncated: String = body.chars().take(200).collect();
             tracing::warn!(http_status = %status, "Video generation API error: {truncated}");
-            return Err(xai_tool_runtime::ToolError::new(
-                xai_tool_runtime::ToolErrorKind::Custom,
+            return Err(agent_tui_tool_runtime::ToolError::new(
+                agent_tui_tool_runtime::ToolErrorKind::Custom,
                 format!("Video generation failed with HTTP {status}: {truncated}"),
             )
             .with_details(serde_json::json!({"code": "http_failure", "status": status.as_u16()})));
         }
 
         let body = response.text().await.map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
+            agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "Failed to read video generation start response body: {e}"
             ))
         })?;
@@ -332,14 +332,14 @@ impl VideoGenClient {
         let start_resp: VideoGenStartResponse = serde_json::from_str(&body).map_err(|e| {
             let preview: String = body.chars().take(500).collect();
             tracing::warn!("Video generation API returned unparseable body: {preview}");
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
+            agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "Failed to parse video generation start response: {e} — body preview: {preview}"
             ))
         })?;
 
         let request_id = start_resp.request_id;
         if request_id.is_empty() {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(
                 "No request_id received from the video generation API.",
             ));
         }
@@ -360,7 +360,7 @@ impl VideoGenClient {
             tokio::time::sleep(poll_interval).await;
 
             if started.elapsed() >= deadline {
-                return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+                return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                     "Video generation did not complete within {}s (request_id={request_id})",
                     VIDEO_GEN_TIMEOUT_SECS
                 )));
@@ -373,7 +373,7 @@ impl VideoGenClient {
             }
 
             let poll_response = poll_req.send().await.map_err(|e| {
-                xai_tool_runtime::ToolError::invalid_arguments(format!(
+                agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                     "Video poll request failed: {e}"
                 ))
             })?;
@@ -388,8 +388,8 @@ impl VideoGenClient {
             if !poll_status.is_success() && poll_status.as_u16() != 202 {
                 let body = poll_response.text().await.unwrap_or_default();
                 let truncated: String = body.chars().take(200).collect();
-                return Err(xai_tool_runtime::ToolError::new(
-                    xai_tool_runtime::ToolErrorKind::Custom,
+                return Err(agent_tui_tool_runtime::ToolError::new(
+                    agent_tui_tool_runtime::ToolErrorKind::Custom,
                     format!("Video poll failed with HTTP {poll_status}: {truncated}"),
                 )
                 .with_details(
@@ -398,7 +398,7 @@ impl VideoGenClient {
             }
 
             let poll_body = poll_response.text().await.map_err(|e| {
-                xai_tool_runtime::ToolError::invalid_arguments(format!(
+                agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                     "Failed to read video poll response body: {e}"
                 ))
             })?;
@@ -407,7 +407,7 @@ impl VideoGenClient {
                 serde_json::from_str(&poll_body).map_err(|e| {
                     let preview: String = poll_body.chars().take(500).collect();
                     tracing::warn!("Video poll API returned unparseable body: {preview}");
-                    xai_tool_runtime::ToolError::invalid_arguments(format!(
+                    agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                         "Failed to parse video poll response: {e} — body preview: {preview}"
                     ))
                 })?;
@@ -423,7 +423,7 @@ impl VideoGenClient {
                     return match presigned {
                         Some(urls) => self.finish_zdr_video(&request_id, urls).await,
                         None if video_url.is_empty() => {
-                            Err(xai_tool_runtime::ToolError::invalid_arguments(
+                            Err(agent_tui_tool_runtime::ToolError::invalid_arguments(
                                 "Video generation completed but no download URL was returned.",
                             ))
                         }
@@ -435,12 +435,12 @@ impl VideoGenClient {
                 }
                 "failed" => {
                     let preview: String = poll_body.chars().take(300).collect();
-                    return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+                    return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                         "Video generation failed on the server (request_id={request_id}): {preview}"
                     )));
                 }
                 "expired" => {
-                    return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+                    return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                         "Video generation request expired (request_id={request_id})."
                     )));
                 }
@@ -456,22 +456,22 @@ impl VideoGenClient {
     }
 
     /// Download video bytes from a pre-signed temporary URL (no auth headers).
-    async fn download_video(&self, url: &str) -> Result<Vec<u8>, xai_tool_runtime::ToolError> {
+    async fn download_video(&self, url: &str) -> Result<Vec<u8>, agent_tui_tool_runtime::ToolError> {
         let response = self.download_http.get(url).send().await.map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!("Failed to download video: {e}"))
+            agent_tui_tool_runtime::ToolError::invalid_arguments(format!("Failed to download video: {e}"))
         })?;
 
         if !response.status().is_success() {
             let status = response.status();
-            return Err(xai_tool_runtime::ToolError::new(
-                xai_tool_runtime::ToolErrorKind::Custom,
+            return Err(agent_tui_tool_runtime::ToolError::new(
+                agent_tui_tool_runtime::ToolErrorKind::Custom,
                 format!("Video download failed (HTTP {status})"),
             )
             .with_details(serde_json::json!({"code": "http_failure", "status": status.as_u16()})));
         }
 
         response.bytes().await.map(|b| b.to_vec()).map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
+            agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "Failed to read video bytes: {e}"
             ))
         })
@@ -481,9 +481,9 @@ impl VideoGenClient {
         &self,
         request_id: &str,
         urls: ZdrPresignedUrls,
-    ) -> Result<VideoOutcome, xai_tool_runtime::ToolError> {
+    ) -> Result<VideoOutcome, agent_tui_tool_runtime::ToolError> {
         let config = self.zdr_video_output_s3.as_ref().ok_or_else(|| {
-            xai_tool_runtime::ToolError::invalid_arguments(
+            agent_tui_tool_runtime::ToolError::invalid_arguments(
                 "Presigned video output config missing after presign",
             )
         })?;
@@ -520,13 +520,13 @@ impl VideoGenClient {
     async fn presign_zdr_output_urls(
         &self,
         config: &ZdrVideoOutputS3Config,
-    ) -> Result<ZdrPresignedUrls, xai_tool_runtime::ToolError> {
+    ) -> Result<ZdrPresignedUrls, agent_tui_tool_runtime::ToolError> {
         let object_key = zdr_video_object_key(&config.key_prefix);
         let expires_in =
             std::time::Duration::from_secs(zdr_presign_expires_secs(config.expires_secs));
         let endpoint = Some(config.endpoint.as_str());
 
-        let upload_url = xai_file_utils::s3::presign_put_url(
+        let upload_url = agent_tui_file_utils::s3::presign_put_url(
             &config.region,
             endpoint,
             &config.read_write.to_static(),
@@ -537,13 +537,13 @@ impl VideoGenClient {
         )
         .await
         .map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
+            agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "Failed to presign video upload URL: {e}"
             ))
         })?;
 
         if !is_http_url(&upload_url) {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "Presigned upload URL is not http(s): {upload_url}"
             )));
         }
@@ -575,7 +575,7 @@ impl VideoGenClient {
         config: &ZdrVideoOutputS3Config,
         urls: &ZdrPresignedUrls,
         request_id: &str,
-    ) -> Result<Vec<u8>, xai_tool_runtime::ToolError> {
+    ) -> Result<Vec<u8>, agent_tui_tool_runtime::ToolError> {
         let get_url = self
             .presign_zdr_get_url(config, &urls.object_key, urls.expires_in)
             .await?;
@@ -590,7 +590,7 @@ impl VideoGenClient {
         &self,
         config: &ZdrVideoOutputS3Config,
         urls: &ZdrPresignedUrls,
-    ) -> Result<String, xai_tool_runtime::ToolError> {
+    ) -> Result<String, agent_tui_tool_runtime::ToolError> {
         if let Some(get_url) = urls.get_url.as_deref().filter(|u| is_http_url(u)) {
             return Ok(get_url.to_owned());
         }
@@ -603,10 +603,10 @@ impl VideoGenClient {
         config: &ZdrVideoOutputS3Config,
         object_key: &str,
         expires_in: std::time::Duration,
-    ) -> Result<String, xai_tool_runtime::ToolError> {
+    ) -> Result<String, agent_tui_tool_runtime::ToolError> {
         let endpoint = Some(config.endpoint.as_str());
         let (creds, creds_source) = zdr_get_credentials(config);
-        let url = xai_file_utils::s3::presign_get_url(
+        let url = agent_tui_file_utils::s3::presign_get_url(
             &config.region,
             endpoint,
             &creds.to_static(),
@@ -616,13 +616,13 @@ impl VideoGenClient {
         )
         .await
         .map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
+            agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "Failed to presign video GET URL ({creds_source}): {e}"
             ))
         })?;
 
         if !is_http_url(&url) {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "Presigned GET URL is not http(s): {url}"
             )));
         }
@@ -761,20 +761,20 @@ struct VideoGenVideoInfo {
     url: Option<String>,
 }
 
-async fn resolve_image_reference(value: &str) -> Result<String, xai_tool_runtime::ToolError> {
+async fn resolve_image_reference(value: &str) -> Result<String, agent_tui_tool_runtime::ToolError> {
     let value = value.trim();
     if value.is_empty() {
-        return Err(xai_tool_runtime::ToolError::invalid_arguments(
+        return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(
             "image reference must not be empty",
         ));
     }
 
     if value.starts_with("data:image/") {
         let comma = value.find(',').ok_or_else(|| {
-            xai_tool_runtime::ToolError::invalid_arguments("malformed data URL in image reference")
+            agent_tui_tool_runtime::ToolError::invalid_arguments("malformed data URL in image reference")
         })?;
         if !value[..comma].contains(";base64") {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(
                 "image references only support base64 data URLs",
             ));
         }
@@ -786,19 +786,19 @@ async fn resolve_image_reference(value: &str) -> Result<String, xai_tool_runtime
     }
 
     let raw_bytes = tokio::fs::read(value).await.map_err(|e| {
-        xai_tool_runtime::ToolError::invalid_arguments(format!(
+        agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
             "image reference not readable: {value} ({e})"
         ))
     })?;
     if raw_bytes.is_empty() {
-        return Err(xai_tool_runtime::ToolError::invalid_arguments(
+        return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(
             "image reference contained no data",
         ));
     }
 
     let (_w, _h, mime) =
         crate::util::image_validate::validate_image_bytes(&raw_bytes).map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!("invalid image reference: {e}"))
+            agent_tui_tool_runtime::ToolError::invalid_arguments(format!("invalid image reference: {e}"))
         })?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&raw_bytes);
     Ok(format!("data:{mime};base64,{b64}"))
@@ -808,21 +808,21 @@ fn validate_one_of(
     field: &str,
     value: &str,
     allowed: &[&str],
-) -> Result<(), xai_tool_runtime::ToolError> {
+) -> Result<(), agent_tui_tool_runtime::ToolError> {
     if allowed.contains(&value) {
         return Ok(());
     }
-    Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+    Err(agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
         "`{field}` must be one of: {}. Got {value}.",
         allowed.join(", ")
     )))
 }
 
-fn validate_imagine_duration(duration: Option<u32>) -> Result<(), xai_tool_runtime::ToolError> {
+fn validate_imagine_duration(duration: Option<u32>) -> Result<(), agent_tui_tool_runtime::ToolError> {
     if let Some(secs) = duration
         && !IMAGINE_VIDEO_DURATIONS_SECS.contains(&secs)
     {
-        return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+        return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
             "`duration` must be either 6 or 10 seconds. Got {secs}."
         )));
     }
@@ -919,8 +919,8 @@ pub struct ReferenceToVideoInput {
 /// resources. Shared by all video-generation tools so the acquisition logic
 /// lives in one place.
 async fn acquire_video_client(
-    ctx: &xai_tool_runtime::ToolCallContext,
-) -> Result<(VideoGenClient, std::path::PathBuf), xai_tool_runtime::ToolError> {
+    ctx: &agent_tui_tool_runtime::ToolCallContext,
+) -> Result<(VideoGenClient, std::path::PathBuf), agent_tui_tool_runtime::ToolError> {
     use crate::types::tool_metadata::shared_resources;
     let resources = shared_resources(ctx)?;
     let res = resources.lock().await;
@@ -936,12 +936,12 @@ async fn save_video_bytes(
     client: &VideoGenClient,
     session_folder: &std::path::Path,
     video_bytes: &[u8],
-) -> Result<std::path::PathBuf, xai_tool_runtime::ToolError> {
+) -> Result<std::path::PathBuf, agent_tui_tool_runtime::ToolError> {
     let absolute_path = client
         .writer
         .save(session_folder, video_bytes, None)
         .await
-        .map_err(|e| xai_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
+        .map_err(|e| agent_tui_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
 
     tracing::info!(
         path = %absolute_path.display(),
@@ -956,7 +956,7 @@ async fn media_output_from_outcome(
     client: &VideoGenClient,
     session_folder: &std::path::Path,
     outcome: VideoOutcome,
-) -> Result<MediaGenOutput, xai_tool_runtime::ToolError> {
+) -> Result<MediaGenOutput, agent_tui_tool_runtime::ToolError> {
     match outcome {
         VideoOutcome::Bytes(bytes) => {
             let path = save_video_bytes(client, session_folder, &bytes).await?;
@@ -987,28 +987,28 @@ impl crate::types::tool_metadata::ToolMetadata for ImageToVideoTool {
     }
 }
 
-impl xai_tool_runtime::Tool for ImageToVideoTool {
+impl agent_tui_tool_runtime::Tool for ImageToVideoTool {
     type Args = ImageToVideoInput;
     type Output = ToolOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new(IMAGE_TO_VIDEO_TOOL_NAME).expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new(IMAGE_TO_VIDEO_TOOL_NAME).expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             IMAGE_TO_VIDEO_TOOL_NAME,
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: false,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Write),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Write),
             ..Default::default()
         }
     }
@@ -1020,9 +1020,9 @@ impl xai_tool_runtime::Tool for ImageToVideoTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: ImageToVideoInput,
-    ) -> Result<ToolOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<ToolOutput, agent_tui_tool_runtime::ToolError> {
         validate_imagine_duration(input.duration)?;
         validate_one_of(
             "resolution_name",
@@ -1083,28 +1083,28 @@ impl crate::types::tool_metadata::ToolMetadata for ReferenceToVideoTool {
     }
 }
 
-impl xai_tool_runtime::Tool for ReferenceToVideoTool {
+impl agent_tui_tool_runtime::Tool for ReferenceToVideoTool {
     type Args = ReferenceToVideoInput;
     type Output = ToolOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new(REFERENCE_TO_VIDEO_TOOL_NAME).expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new(REFERENCE_TO_VIDEO_TOOL_NAME).expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             REFERENCE_TO_VIDEO_TOOL_NAME,
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: false,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Write),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Write),
             ..Default::default()
         }
     }
@@ -1116,21 +1116,21 @@ impl xai_tool_runtime::Tool for ReferenceToVideoTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: ReferenceToVideoInput,
-    ) -> Result<ToolOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<ToolOutput, agent_tui_tool_runtime::ToolError> {
         if input.prompt.trim().is_empty() {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(
                 "`prompt` must not be empty.",
             ));
         }
         if input.images.len() < 2 {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(
                 "`images` must contain at least two image references.",
             ));
         }
         if input.images.len() > MAX_R2V_REFERENCE_IMAGES {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "`images` must contain at most {MAX_R2V_REFERENCE_IMAGES} image references."
             )));
         }
@@ -1190,7 +1190,7 @@ mod tests {
     fn image_to_video_name_and_description() {
         let tool = ImageToVideoTool;
         assert_eq!(
-            xai_tool_runtime::Tool::id(&tool).as_str(),
+            agent_tui_tool_runtime::Tool::id(&tool).as_str(),
             IMAGE_TO_VIDEO_TOOL_NAME
         );
         let desc = crate::types::tool_metadata::ToolMetadata::description_template(&tool);
@@ -1202,7 +1202,7 @@ mod tests {
     fn reference_to_video_name_and_description() {
         let tool = ReferenceToVideoTool;
         assert_eq!(
-            xai_tool_runtime::Tool::id(&tool).as_str(),
+            agent_tui_tool_runtime::Tool::id(&tool).as_str(),
             REFERENCE_TO_VIDEO_TOOL_NAME
         );
         let desc = crate::types::tool_metadata::ToolMetadata::description_template(&tool);
@@ -1421,7 +1421,7 @@ mod tests {
     async fn image_to_video_rejects_bad_duration() {
         let tool = ImageToVideoTool;
         let resources = crate::types::resources::Resources::new();
-        let err = xai_tool_runtime::Tool::run(
+        let err = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(resources.into_shared(), "test-call"),
             ImageToVideoInput {
@@ -1440,7 +1440,7 @@ mod tests {
     async fn reference_to_video_rejects_bad_aspect_ratio() {
         let tool = ReferenceToVideoTool;
         let resources = crate::types::resources::Resources::new();
-        let err = xai_tool_runtime::Tool::run(
+        let err = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(resources.into_shared(), "test-call"),
             ReferenceToVideoInput {
@@ -1460,7 +1460,7 @@ mod tests {
     async fn image_to_video_rejects_bad_resolution() {
         let tool = ImageToVideoTool;
         let resources = crate::types::resources::Resources::new();
-        let err = xai_tool_runtime::Tool::run(
+        let err = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(resources.into_shared(), "test-call"),
             ImageToVideoInput {
@@ -1479,7 +1479,7 @@ mod tests {
     async fn reference_to_video_rejects_too_few_images() {
         let tool = ReferenceToVideoTool;
         let resources = crate::types::resources::Resources::new();
-        let err = xai_tool_runtime::Tool::run(
+        let err = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(resources.into_shared(), "test-call"),
             ReferenceToVideoInput {

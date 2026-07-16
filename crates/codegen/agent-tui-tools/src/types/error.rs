@@ -19,15 +19,15 @@ pub enum SearchReplaceError {
 // These impls let tool code use `?` directly on domain errors without going
 // through any intermediary enum.
 
-/// Generate `impl From<$err> for xai_tool_runtime::ToolError` that wraps the
+/// Generate `impl From<$err> for agent_tui_tool_runtime::ToolError` that wraps the
 /// error as an execution failure tagged with the given tool ID.
 macro_rules! impl_runtime_error_from {
     ($($err:ty => $tool_id:literal),+ $(,)?) => {
         $(
-            impl From<$err> for xai_tool_runtime::ToolError {
+            impl From<$err> for agent_tui_tool_runtime::ToolError {
                 fn from(err: $err) -> Self {
-                    xai_tool_runtime::ToolError::execution(
-                        xai_tool_protocol::ToolId::new($tool_id).expect("valid static tool id"),
+                    agent_tui_tool_runtime::ToolError::execution(
+                        agent_tui_tool_protocol::ToolId::new($tool_id).expect("valid static tool id"),
                         err.to_string(),
                     )
                 }

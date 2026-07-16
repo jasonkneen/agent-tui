@@ -469,14 +469,14 @@ pub fn build_payload(
 /// - emit one ACP `x.ai/mcp/server_status` push per surviving
 ///   buffer entry, via the provided gateway.
 ///
-/// `gateway` is a [`xai_acp_lib::AcpAgentGatewaySender`] (forwarded
+/// `gateway` is a [`agent_tui_acp_lib::AcpAgentGatewaySender`] (forwarded
 /// fire-and-forget). Failures are logged and dropped — the
 /// dispatcher must not block the session actor.
 pub fn flush_window(
     session_id: &str,
     buf: HashMap<(McpServerName, McpClientEventKind), McpClientEvent>,
     shutdown: &SharedShutdownState,
-    gateway: &xai_acp_lib::AcpAgentGatewaySender,
+    gateway: &agent_tui_acp_lib::AcpAgentGatewaySender,
 ) {
     // Recover from poisoning rather than cascade-panicking: `flush_window`
     // now does non-trivial work under this lock, and a single panic while
@@ -676,7 +676,7 @@ pub async fn drop_dead_clients(
 pub async fn run_dispatcher(
     session_id: String,
     mut rx: UnboundedReceiver<McpClientEvent>,
-    gateway: xai_acp_lib::AcpAgentGatewaySender,
+    gateway: agent_tui_acp_lib::AcpAgentGatewaySender,
     mcp_state: Arc<TokioMutex<McpState>>,
     shutdown: SharedShutdownState,
     restart_actions: Option<Rc<dyn crate::session::mcp_restart::RestartActions>>,
@@ -1464,9 +1464,9 @@ mod tests {
     /// silently no-op. Suitable only for tests that don't assert on
     /// wire payloads (renamed from `dummy_gateway`
     /// to make the discard semantics explicit at the call site).
-    fn discard_gateway() -> xai_acp_lib::AcpAgentGatewaySender {
+    fn discard_gateway() -> agent_tui_acp_lib::AcpAgentGatewaySender {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        xai_acp_lib::AcpAgentGatewaySender::new(tx)
+        agent_tui_acp_lib::AcpAgentGatewaySender::new(tx)
     }
 
     /// `RestartActions` test double for the integration test.
@@ -1632,7 +1632,7 @@ mod tests {
         // Capturing gateway: keep the receiver so the test can assert
         // that NOTHING was pushed for the stale event.
         let (gw_tx, mut gw_rx) = tokio::sync::mpsc::unbounded_channel();
-        let gateway = xai_acp_lib::AcpAgentGatewaySender::new(gw_tx);
+        let gateway = agent_tui_acp_lib::AcpAgentGatewaySender::new(gw_tx);
 
         let actions = Rc::new(CountingActions::new(Arc::clone(&shutdown)));
         // Configured-as-stdio on purpose: proves the no-restart

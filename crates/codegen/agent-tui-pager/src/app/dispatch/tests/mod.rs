@@ -373,8 +373,8 @@ fn make_test_subagent(child_sid: &str, sa_id: &str) -> crate::app::subagent::Sub
         child_updates_replayed: false,
     }
 }
-fn cta_entry(name: &str, status: &str) -> xai_hooks_plugins_types::MarketplacePluginEntry {
-    xai_hooks_plugins_types::MarketplacePluginEntry {
+fn cta_entry(name: &str, status: &str) -> agent_tui_hooks_plugins_types::MarketplacePluginEntry {
+    agent_tui_hooks_plugins_types::MarketplacePluginEntry {
         name: name.into(),
         version: None,
         description: None,
@@ -399,10 +399,10 @@ fn cta_entry(name: &str, status: &str) -> xai_hooks_plugins_types::MarketplacePl
     }
 }
 fn cta_outcome(
-    status: xai_hooks_plugins_types::OutcomeStatus,
+    status: agent_tui_hooks_plugins_types::OutcomeStatus,
     message: &str,
-) -> xai_hooks_plugins_types::ActionOutcome {
-    xai_hooks_plugins_types::ActionOutcome {
+) -> agent_tui_hooks_plugins_types::ActionOutcome {
+    agent_tui_hooks_plugins_types::ActionOutcome {
         status,
         message: message.into(),
         requires_reload: false,
@@ -578,8 +578,8 @@ fn fork_test_app() -> AppView {
 fn make_ask_user_question_args(
     tool_call_id: &str,
 ) -> (
-    xai_acp_lib::AcpArgs<acp::ExtRequest>,
-    tokio::sync::oneshot::Receiver<xai_acp_lib::AcpResult<acp::ExtResponse>>,
+    agent_tui_acp_lib::AcpArgs<acp::ExtRequest>,
+    tokio::sync::oneshot::Receiver<agent_tui_acp_lib::AcpResult<acp::ExtResponse>>,
 ) {
     use agent_tui_tools::implementations::grok_build::ask_user_question::{
         AskUserQuestionExtRequest, Question, QuestionOption,
@@ -602,7 +602,7 @@ fn make_ask_user_question_args(
             .into(),
     );
     (
-        xai_acp_lib::AcpArgs {
+        agent_tui_acp_lib::AcpArgs {
             request: ext,
             response_tx: tx,
         },
@@ -809,7 +809,7 @@ fn enqueue_permission_with_enable_always_approve(
     );
     let options = request.options.clone();
     agent.permission_queue.push_back(PermissionViewState {
-        request: xai_acp_lib::AcpArgs {
+        request: agent_tui_acp_lib::AcpArgs {
             request,
             response_tx,
         },
@@ -916,7 +916,7 @@ fn push_synthetic_permission(
     use crate::views::permission_view::{PermissionFocus, PermissionViewState};
     let (tx, rx) =
         tokio::sync::oneshot::channel::<Result<acp::RequestPermissionResponse, acp::Error>>();
-    let request = xai_acp_lib::AcpArgs {
+    let request = agent_tui_acp_lib::AcpArgs {
         request: acp::RequestPermissionRequest::new(
             acp::SessionId::new(std::sync::Arc::from("sess-1")),
             acp::ToolCallUpdate::new(

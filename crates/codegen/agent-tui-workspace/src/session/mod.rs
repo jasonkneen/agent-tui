@@ -14,13 +14,13 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use xai_computer_hub_mcp_adapter::McpBridgeHandle;
+use agent_tui_computer_hub_mcp_adapter::McpBridgeHandle;
 use agent_tui_mcp::servers::McpState;
 use agent_tui_tools::notification::types::{ToolNotification, ToolNotificationHandle};
 use agent_tui_tools::registry::types::{FinalizedToolset, ToolConfig, ToolServerConfig};
-use xai_hunk_tracker::HunkTrackerHandle;
-use xai_tool_protocol::ToolId;
-use xai_tool_runtime::WorkspaceViewerContext;
+use agent_tui_hunk_tracker::HunkTrackerHandle;
+use agent_tui_tool_protocol::ToolId;
+use agent_tui_tool_runtime::WorkspaceViewerContext;
 /// Minimal result types for git error reporting (duplicated from shell session/result).
 pub mod result {
     use serde::Serialize;
@@ -64,7 +64,7 @@ pub struct WorkspaceSession {
     ///
     /// [`checkpoint_store`]: WorkspaceSession::checkpoint_store
     pub(crate) hunk_checkpoints:
-        Arc<tokio::sync::Mutex<HashMap<usize, xai_hunk_tracker::HunkTurnDelta>>>,
+        Arc<tokio::sync::Mutex<HashMap<usize, agent_tui_hunk_tracker::HunkTurnDelta>>>,
     /// Git domain of the per-prompt rewind checkpoints (HEAD + staged set).
     pub(crate) git_checkpoints: crate::session::git::GitCheckpointStore,
     /// Disk-backed durability mirror for finalized checkpoints, fronted by an
@@ -477,7 +477,7 @@ pub struct WorkspaceShared {
     /// Server config stashed at construction time for deferred connect.
     pub(crate) hub_config: Option<HubConfig>,
     /// Auth provider for xAI service calls.
-    pub(crate) auth_provider: Option<xai_computer_hub_sdk::SharedAuthProvider>,
+    pub(crate) auth_provider: Option<agent_tui_computer_hub_sdk::SharedAuthProvider>,
     /// Connection-level sink feeding the `ActivityTracker` (drained by
     /// `run_activity_feed`); not a network egress. `None` until `connect_hub()` sets it.
     pub(crate) activity_notify_handle:
@@ -487,7 +487,7 @@ pub struct WorkspaceShared {
     /// agent gateway in local mode, and to the server in proxy mode. `None` until
     /// set via [`WorkspaceHandle::set_client_ext_sink`](crate::handle::WorkspaceHandle::set_client_ext_sink).
     pub(crate) client_ext_sink: arc_swap::ArcSwap<Option<ClientExtSink>>,
-    pub(crate) local_registry: xai_computer_hub_sdk::LocalRegistry,
+    pub(crate) local_registry: agent_tui_computer_hub_sdk::LocalRegistry,
     pub(crate) activity_tracker: std::sync::Arc<crate::activity::ActivityTracker>,
     /// Runtime-tunable timing/threshold config for the tool server.
     /// Read by the status publisher task and at shutdown.
@@ -514,13 +514,13 @@ pub struct WorkspaceShared {
     /// Resolved `$GROK_WORKSPACE_HOME` — the workspace-owned on-disk state root
     /// (`<grok_home>/workspace` by default). The upload queue spills here.
     pub(crate) workspace_home: std::path::PathBuf,
-    pub(crate) upload_queue: Option<std::sync::Arc<xai_file_utils::queue::UploadQueue>>,
+    pub(crate) upload_queue: Option<std::sync::Arc<agent_tui_file_utils::queue::UploadQueue>>,
     /// Whether collection is disabled (opt-out, or the fail-closed default).
     pub(crate) data_collection_disabled: bool,
     /// Whether per-session `events.jsonl` recording is enabled
     /// (`GROK_WORKSPACE_EVENTS_ENABLED=true`). When `false`, every
     /// [`session_event_writer`](Self::session_event_writer) hands back an
-    /// [`EventWriter::noop()`](xai_file_utils::events::EventWriter::noop) and
+    /// [`EventWriter::noop()`](agent_tui_file_utils::events::EventWriter::noop) and
     /// no session directory or `events.jsonl` is ever created — the legacy
     /// behaviour, preserved bit-for-bit.
     pub(crate) events_enabled: bool,
@@ -536,14 +536,14 @@ pub struct WorkspaceShared {
     /// `Tool*` events resolve the right writer without a back-reference to
     /// `WorkspaceShared`. Stays empty whenever `events_enabled` is `false`.
     pub(crate) session_event_writers:
-        Arc<dashmap::DashMap<String, xai_file_utils::events::EventWriter>>,
+        Arc<dashmap::DashMap<String, agent_tui_file_utils::events::EventWriter>>,
     /// In-flight before-turn enqueue tasks, keyed by `(session_id, turn)`.
     /// Stored by `on_before_turn`; evicted on every turn-end path. The `After`
     /// turn-hook handler awaits the handle for its ack's `artifact_count`; the
     /// fire-and-forget path just drops it (detach, not abort).
     pub(crate) inflight_enqueues: dashmap::DashMap<
         (String, u64),
-        tokio::task::JoinHandle<xai_file_utils::queue::EnqueueOutcome>,
+        tokio::task::JoinHandle<agent_tui_file_utils::queue::EnqueueOutcome>,
     >,
     /// Artifact-producer tasks, awaited by the drain and counted by the
     /// status publisher — see
@@ -572,7 +572,7 @@ impl WorkspaceShared {
     /// The durable upload queue used for archives. `None` in tests and
     /// local mode — see
     /// [`WorkspaceShared::upload_queue`].
-    pub fn upload_queue(&self) -> Option<&std::sync::Arc<xai_file_utils::queue::UploadQueue>> {
+    pub fn upload_queue(&self) -> Option<&std::sync::Arc<agent_tui_file_utils::queue::UploadQueue>> {
         self.upload_queue.as_ref()
     }
     /// Return the per-session `events.jsonl` writer for `session_id`, opening
@@ -580,14 +580,14 @@ impl WorkspaceShared {
     /// `workspace_home/sessions/{session_id}/`.
     ///
     /// When `events_enabled` is `false` this returns
-    /// [`EventWriter::noop()`](xai_file_utils::events::EventWriter::noop)
+    /// [`EventWriter::noop()`](agent_tui_file_utils::events::EventWriter::noop)
     /// WITHOUT touching the cache or the filesystem, so the flag-off path stays
     /// byte-for-byte identical to the legacy behaviour. The returned handle is
     /// `Clone + Send + Sync`; callers emit through it directly.
     pub(crate) fn session_event_writer(
         &self,
         session_id: &str,
-    ) -> xai_file_utils::events::EventWriter {
+    ) -> agent_tui_file_utils::events::EventWriter {
         get_or_open_session_writer(
             self.events_enabled,
             &self.session_event_writers,
@@ -601,7 +601,7 @@ impl WorkspaceShared {
     pub(crate) fn session_event_writer_cached(
         &self,
         session_id: &str,
-    ) -> Option<xai_file_utils::events::EventWriter> {
+    ) -> Option<agent_tui_file_utils::events::EventWriter> {
         if !self.events_enabled {
             return None;
         }
@@ -618,7 +618,7 @@ impl WorkspaceShared {
         self.hub_config.as_ref().and_then(|c| c.server_id.clone())
     }
     /// Auth provider used for xAI service calls.
-    pub fn auth_provider(&self) -> Option<&xai_computer_hub_sdk::SharedAuthProvider> {
+    pub fn auth_provider(&self) -> Option<&agent_tui_computer_hub_sdk::SharedAuthProvider> {
         self.auth_provider.as_ref()
     }
     /// Parse the opaque [`server_metadata`](Self::server_metadata) blob into
@@ -661,11 +661,11 @@ impl WorkspaceShared {
     }
     /// The tool server, if a server connection is active.
     ///
-    /// Returns a clone of the [`ToolServer`](xai_computer_hub_sdk::ToolServer)
+    /// Returns a clone of the [`ToolServer`](agent_tui_computer_hub_sdk::ToolServer)
     /// which is cheap (`Arc` bump). Uses `try_lock` to avoid blocking
     /// on the async mutex from synchronous contexts. Returns `None` if
     /// the lock is held (i.e. a `connect_hub` call is in progress).
-    pub fn hub_server(&self) -> Option<xai_computer_hub_sdk::ToolServer> {
+    pub fn hub_server(&self) -> Option<agent_tui_computer_hub_sdk::ToolServer> {
         self.hub_handle
             .try_lock()
             .ok()
@@ -675,7 +675,7 @@ impl WorkspaceShared {
     /// returning `None` on contention. Use from async contexts that must not
     /// confuse a transient `connect_hub` lock-hold with "no hub connected";
     /// `None` means no hub is connected.
-    pub async fn hub_server_blocking(&self) -> Option<xai_computer_hub_sdk::ToolServer> {
+    pub async fn hub_server_blocking(&self) -> Option<agent_tui_computer_hub_sdk::ToolServer> {
         self.hub_handle
             .lock()
             .await
@@ -875,11 +875,11 @@ impl WorkspaceShared {
 ///   existing `events.jsonl` rather than truncating it.
 pub(crate) fn get_or_open_session_writer(
     enabled: bool,
-    writers: &dashmap::DashMap<String, xai_file_utils::events::EventWriter>,
+    writers: &dashmap::DashMap<String, agent_tui_file_utils::events::EventWriter>,
     workspace_home: &Path,
     session_id: &str,
-) -> xai_file_utils::events::EventWriter {
-    use xai_file_utils::events::EventWriter;
+) -> agent_tui_file_utils::events::EventWriter {
+    use agent_tui_file_utils::events::EventWriter;
     if !enabled {
         return EventWriter::noop();
     }
@@ -904,7 +904,7 @@ pub(crate) fn get_or_open_session_writer(
 mod tests {
     use super::get_or_open_session_writer;
     use dashmap::DashMap;
-    use xai_file_utils::events::{Event, EventWriter};
+    use agent_tui_file_utils::events::{Event, EventWriter};
     fn count_lines(path: &std::path::Path) -> usize {
         std::fs::read_to_string(path)
             .unwrap()

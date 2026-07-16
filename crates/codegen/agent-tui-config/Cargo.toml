@@ -21,7 +21,7 @@ toml = { workspace = true }
 tracing = { workspace = true }
 urlencoding = { workspace = true }
 which = { workspace = true }
-xai-tty-utils = { workspace = true }
+agent-tui-tty-utils = { workspace = true }
 agent-tui-version = { workspace = true }
 
 # core-foundation: read macOS MDM managed preferences (`ai.x.grok`) for the

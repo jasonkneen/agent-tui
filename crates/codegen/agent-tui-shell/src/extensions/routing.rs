@@ -1,6 +1,6 @@
 use agent_client_protocol as acp;
 use serde::{Deserialize, Serialize};
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 // Re-export from workspace crate (canonical home for fuzzy search).
 pub use agent_tui_workspace::file_system::{ClientId, TargetClientId};

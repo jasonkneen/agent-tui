@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use url::Url;
-use xai_file_utils::queue::{EnqueueOutcome, TraceExportSource, UploadQueue, UploadRetryPolicy};
+use agent_tui_file_utils::queue::{EnqueueOutcome, TraceExportSource, UploadQueue, UploadRetryPolicy};
 use agent_tui_workspace::permission::PermissionEvent;
 /// Upload request payload to cloud storage in the background (best-effort, non-blocking).
 ///
@@ -44,7 +44,7 @@ pub(crate) fn spawn_trace_upload<T: Serialize + Send + 'static>(
         } else {
             format!("{prefix}/{filename}")
         };
-        let ok = xai_file_utils::gcs::upload_bytes(
+        let ok = agent_tui_file_utils::gcs::upload_bytes(
             &gcs_config,
             &object_path,
             &bytes,
@@ -104,7 +104,7 @@ pub(crate) async fn upload_tool_definitions(
         format!("{prefix}/tool_definitions.json")
     };
     use crate::upload::gcs::WithAuth as _;
-    let ok = xai_file_utils::gcs::upload_bytes(
+    let ok = agent_tui_file_utils::gcs::upload_bytes(
         &gcs_config.with_auth(auth_manager),
         &object_path,
         &bytes,
@@ -304,7 +304,7 @@ fn classify_workspace(cwd: &str) -> String {
     let path = std::path::Path::new(cwd);
     if path.ancestors().any(|p| p.join(".git").exists()) {
         "git".to_owned()
-    } else if xai_file_utils::workspace_classifier::is_project_dir(path) {
+    } else if agent_tui_file_utils::workspace_classifier::is_project_dir(path) {
         "project".to_owned()
     } else {
         "non_project".to_owned()
@@ -416,7 +416,7 @@ pub(crate) async fn upload_subagent_metadata(
     use crate::upload::gcs::WithAuth as _;
     let config = base_config.with_auth(Some(auth_manager));
     if let Err(e) =
-        xai_file_utils::gcs::upload_bytes(&config, &gcs_path, &json, "application/json").await
+        agent_tui_file_utils::gcs::upload_bytes(&config, &gcs_path, &json, "application/json").await
     {
         tracing::warn!(
             session_id = % metadata.child_session_id, gcs_path = % gcs_path, error = % e,
@@ -580,7 +580,7 @@ pub(crate) async fn upload_plugin_state(
     .await;
 }
 use super::gcs::WithAuth as _;
-use xai_file_utils::gcs::upload_bytes;
+use agent_tui_file_utils::gcs::upload_bytes;
 /// Uploads bytes to cloud storage, logging start/finish and tracing success or failure.
 pub(crate) async fn upload_artifact_to_gcs(
     ctx: &PromptTraceContext,
@@ -603,7 +603,7 @@ pub(crate) async fn upload_artifact_to_gcs(
         }
         Err(e) => {
             let status_code = e
-                .downcast_ref::<xai_file_utils::storage_client::HttpUploadError>()
+                .downcast_ref::<agent_tui_file_utils::storage_client::HttpUploadError>()
                 .map(|e| e.status_code);
             record_upload_failure(
                 ctx,
@@ -980,7 +980,7 @@ pub(crate) async fn upload_permission_events(
 /// Path format: {session_id}/turn_{N}/turn_messages.json
 pub(crate) async fn upload_turn_messages(
     ctx: &PromptTraceContext,
-    _capture: xai_chat_state::TurnCapture,
+    _capture: agent_tui_chat_state::TurnCapture,
     _wait: UploadWait,
 ) -> bool {
     super::manifest::skip_artifact(
@@ -1095,14 +1095,14 @@ impl TraceExportSource for DynamicResolver {
     }
     fn proxy_attribution(
         &self,
-    ) -> Option<Arc<dyn xai_file_utils::storage_client::Auth401AttributionCallback>> {
-        xai_file_utils::gcs::StorageConfig::proxy_attribution(&self.with_auth())
+    ) -> Option<Arc<dyn agent_tui_file_utils::storage_client::Auth401AttributionCallback>> {
+        agent_tui_file_utils::gcs::StorageConfig::proxy_attribution(&self.with_auth())
     }
     fn proxy_credentials(&self) -> Option<Arc<dyn agent_tui_auth::AuthCredentialProvider>> {
-        xai_file_utils::gcs::StorageConfig::proxy_credentials(&self.with_auth())
+        agent_tui_file_utils::gcs::StorageConfig::proxy_credentials(&self.with_auth())
     }
     fn proxy_http_client(&self) -> Option<reqwest::Client> {
-        xai_file_utils::gcs::StorageConfig::proxy_http_client(&self.with_auth())
+        agent_tui_file_utils::gcs::StorageConfig::proxy_http_client(&self.with_auth())
     }
     fn has_usable_credential(&self) -> bool {
         if let crate::session::repo_changes::UploadMethod::Proxy {
@@ -1209,7 +1209,7 @@ pub(crate) fn spawn_startup_spill_reconcile(
                 let report =
                     agent_tui_workspace::recovery::run_startup_recovery(&grok_home, &queue).await;
                 tracing::info!(?report, "startup spill recovery complete");
-                queue.cleanup_orphans(xai_file_utils::queue::DEFAULT_MAX_AGE);
+                queue.cleanup_orphans(agent_tui_file_utils::queue::DEFAULT_MAX_AGE);
             }
             None => {
                 let purged = tokio::task::spawn_blocking(move || {
@@ -1388,7 +1388,7 @@ pub(crate) async fn upload_trace_artifact_blocking(
                 Some(Ok(()))
             }
             Err(e)
-                if e.downcast_ref::<xai_file_utils::queue::QueueClosed>()
+                if e.downcast_ref::<agent_tui_file_utils::queue::QueueClosed>()
                     .is_some() =>
             {
                 tracing::debug!(
@@ -2199,7 +2199,7 @@ mod tests {
     #[test]
     fn dynamic_resolver_supplies_proxy_credentials_and_attribution() {
         use crate::session::repo_changes::UploadMethod;
-        use xai_file_utils::queue::TraceExportSource;
+        use agent_tui_file_utils::queue::TraceExportSource;
         let dir = tempfile::tempdir().unwrap();
         let auth_manager = Arc::new(crate::auth::AuthManager::new(
             dir.path(),
@@ -2241,7 +2241,7 @@ mod tests {
     #[tokio::test]
     async fn dynamic_resolver_auth_recovery_wakes_on_already_rotated_token() {
         use crate::session::repo_changes::UploadMethod;
-        use xai_file_utils::queue::TraceExportSource;
+        use agent_tui_file_utils::queue::TraceExportSource;
         let dir = tempfile::tempdir().unwrap();
         let auth_manager = Arc::new(crate::auth::AuthManager::new(
             dir.path(),
@@ -2284,7 +2284,7 @@ mod tests {
     #[tokio::test]
     async fn dynamic_resolver_auth_recovery_ignores_session_token_for_deployment_key() {
         use crate::session::repo_changes::UploadMethod;
-        use xai_file_utils::queue::TraceExportSource;
+        use agent_tui_file_utils::queue::TraceExportSource;
         let dir = tempfile::tempdir().unwrap();
         let auth_manager = Arc::new(crate::auth::AuthManager::new(
             dir.path(),
@@ -2531,7 +2531,7 @@ mod tests {
         if home.ancestors().any(|p| p.join(".git").exists()) {
             return None;
         }
-        if !xai_file_utils::workspace_classifier::is_project_dir(&home.join("probe")) {
+        if !agent_tui_file_utils::workspace_classifier::is_project_dir(&home.join("probe")) {
             return None;
         }
         tempfile::tempdir_in(home).ok()

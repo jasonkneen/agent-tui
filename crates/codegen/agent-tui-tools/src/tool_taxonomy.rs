@@ -2,7 +2,7 @@
 //! `_meta` envelope.
 //!
 //! Depends only on `ToolKind`/`ToolNamespace` + `serde`/`serde_json` (no
-//! `ToolInput`, proto, or runtime). A future `xai-tool-taxonomy` leaf crate
+//! `ToolInput`, proto, or runtime). A future `agent-tui-tool-taxonomy` leaf crate
 //! would need those two (dependency-free) enums moved here too — coherence ties
 //! the inherent impls to the enum definitions. The `ToolInput`-coupled
 //! projection lives in [`crate::normalization`].

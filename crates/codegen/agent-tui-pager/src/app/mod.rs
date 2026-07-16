@@ -20,7 +20,7 @@ pub use crate::link_opener;
 pub mod edit_highlight_worker;
 /// Off-thread Mermaid diagram render worker (out of process) + per-session cache.
 pub mod mermaid_worker;
-pub use xai_prompt_queue as prompt_queue;
+pub use agent_tui_prompt_queue as prompt_queue;
 mod acp_handler;
 mod csi_filter;
 mod dispatch;
@@ -209,7 +209,7 @@ pub(crate) const MOUSE_OFF_HINT_PROMPT: &str =
     "/toggle-mouse-reporting to enable mouse reporting and restore TUI features";
 /// Terminal type for the pager.
 ///
-/// Uses [`xai_ratatui_inline::Terminal`] instead of stock `ratatui::Terminal`
+/// Uses [`agent_tui_ratatui_inline::Terminal`] instead of stock `ratatui::Terminal`
 /// because our `flush()` returns `bool` indicating whether any cells actually
 /// changed. This lets [`crate::render::draw::draw_frame`] skip cursor escape
 /// sequences on frames with empty diffs (e.g., off-screen animation ticks),
@@ -387,7 +387,7 @@ pub async fn run(
         tokio::sync::oneshot::Receiver<Option<agent_tui_update::auto_update::UpdateAvailable>>,
     >,
 ) -> anyhow::Result<bool> {
-    xai_tty_utils::redirect_native_stderr();
+    agent_tui_tty_utils::redirect_native_stderr();
     let screen_mode_override = screen_mode_relaunch::take_screen_mode_env_override();
     let cancel = CancellationToken::new();
     let startup_start = std::time::Instant::now();
@@ -677,7 +677,7 @@ pub async fn run(
     crate::unified_log::flush_blocking().await;
     let _ = restore_terminal(terminal, writer_thread, screen_mode);
     cancel.cancel();
-    xai_tty_utils::global_process_scope().kill_all();
+    agent_tui_tty_utils::global_process_scope().kill_all();
     match result {
         Ok(run_result) => {
             if run_result.quit_for_update {
@@ -738,7 +738,7 @@ fn print_relaunch_failure_hint(
 /// and panic paths where stderr may already be broken.
 fn disable_mouse_paste_raw() {
     agent_tui_shell::util::with_locked_stderr(|stderr| {
-        let _ = stderr.write_all(xai_crash_handler::terminal::MOUSE_PASTE_RESET);
+        let _ = stderr.write_all(agent_tui_crash_handler::terminal::MOUSE_PASTE_RESET);
         let _ = stderr.flush();
     });
 }
@@ -986,7 +986,7 @@ fn init_terminal(
     writer_sync: crate::render::draw::WriterSync,
     cursor_blink: Option<bool>,
 ) -> io::Result<(PagerTerminal, ScreenMode)> {
-    xai_crash_handler::enable_terminal_escape_restore();
+    agent_tui_crash_handler::enable_terminal_escape_restore();
     terminal::enable_raw_mode()?;
     #[cfg(windows)]
     configure_windows_console();
@@ -1017,7 +1017,7 @@ fn init_terminal(
             if !want_minimal {
                 execute!(stderr, event::EnableMouseCapture)?;
             } else if crate::terminal::terminal_context().mouse_reporting_leaks_as_raw_text() {
-                let _ = stderr.write_all(xai_crash_handler::terminal::MOUSE_TRACKING_RESET);
+                let _ = stderr.write_all(agent_tui_crash_handler::terminal::MOUSE_TRACKING_RESET);
             }
             execute!(
                 stderr,
@@ -1083,7 +1083,7 @@ fn init_terminal(
             let backend =
                 CrosstermBackend::new(crate::render::draw::TermWriter::new(frame_tx, writer_sync));
             Ok((
-                xai_ratatui_inline::Terminal::new(backend)?,
+                agent_tui_ratatui_inline::Terminal::new(backend)?,
                 ScreenMode::Fullscreen,
             ))
         } else {
@@ -1097,7 +1097,7 @@ fn init_terminal(
                 frame_tx.clone(),
                 writer_sync.clone(),
             ));
-            if let Ok(term) = xai_ratatui_inline::Terminal::with_options(
+            if let Ok(term) = agent_tui_ratatui_inline::Terminal::with_options(
                 probe_backend,
                 ratatui::TerminalOptions {
                     viewport: ratatui::Viewport::Inline(viewport_rows),
@@ -1124,7 +1124,7 @@ fn init_terminal(
                     frame_tx.clone(),
                     writer_sync.clone(),
                 ));
-                if let Ok(term) = xai_ratatui_inline::Terminal::with_options(
+                if let Ok(term) = agent_tui_ratatui_inline::Terminal::with_options(
                     retry_backend,
                     ratatui::TerminalOptions {
                         viewport: ratatui::Viewport::Inline(rows),
@@ -1144,7 +1144,7 @@ fn init_terminal(
             })?;
             let backend =
                 CrosstermBackend::new(crate::render::draw::TermWriter::new(frame_tx, writer_sync));
-            let term = xai_ratatui_inline::Terminal::with_options(
+            let term = agent_tui_ratatui_inline::Terminal::with_options(
                 backend,
                 ratatui::TerminalOptions {
                     viewport: ratatui::Viewport::Fixed(ratatui::layout::Rect::new(
@@ -1159,7 +1159,7 @@ fn init_terminal(
         emit_terminal_teardown_sequences(mode, None);
         let _ = terminal::disable_raw_mode();
         signal_handler::mark_restored();
-        xai_crash_handler::disable_terminal_escape_restore();
+        agent_tui_crash_handler::disable_terminal_escape_restore();
     })
 }
 /// Drop the terminal (closing the writer mpsc channel) and join the
@@ -1253,8 +1253,8 @@ fn restore_terminal(
     drain_pending_events_with_timeout(std::time::Duration::from_millis(10));
     let _ = terminal::disable_raw_mode();
     signal_handler::mark_restored();
-    xai_crash_handler::disable_terminal_escape_restore();
-    xai_tty_utils::restore_native_stderr();
+    agent_tui_crash_handler::disable_terminal_escape_restore();
+    agent_tui_tty_utils::restore_native_stderr();
     Ok(())
 }
 pub(crate) fn set_terminal_title(title: &str) {
@@ -1283,9 +1283,9 @@ fn set_panic_hook(mode: ScreenMode) {
         emit_terminal_teardown_sequences(mode, None);
         let _ = terminal::disable_raw_mode();
         signal_handler::mark_restored();
-        xai_crash_handler::disable_terminal_escape_restore();
-        xai_tty_utils::restore_native_stderr();
-        xai_tty_utils::global_process_scope().kill_all();
+        agent_tui_crash_handler::disable_terminal_escape_restore();
+        agent_tui_tty_utils::restore_native_stderr();
+        agent_tui_tty_utils::global_process_scope().kill_all();
         hook(info);
     }));
 }

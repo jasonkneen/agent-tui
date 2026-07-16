@@ -12,10 +12,10 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 agent-tui-sampling-types = { path = "../agent-tui-sampling-types" }
 agent-tui-tools = { path = "../agent-tui-tools" }
-xai-tool-types.workspace = true
+agent-tui-tool-types.workspace = true
 # TODO(phase2): add these when resolve_subagent_spec() composition is implemented:
 # agent-tui-agent = { path = "../agent-tui-agent" }  # AgentDefinition lookup
-# xai-fast-worktree = { path = "../xai-fast-worktree" }  # worktree creation
+# agent-tui-fast-worktree = { path = "../agent-tui-fast-worktree" }  # worktree creation
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -41,13 +41,13 @@ fn resolve_overrides(
 pub fn build_config_resolved_event(
     configs: &[acp::McpServer],
     cwd: &Path,
-) -> xai_file_utils::events::Event {
+) -> agent_tui_file_utils::events::Event {
     let disabled: Vec<String> = crate::util::config::disabled_mcp_server_names(cwd)
         .into_iter()
         .collect();
     let servers = configs
         .iter()
-        .map(|c| xai_file_utils::events::McpConfigServer {
+        .map(|c| agent_tui_file_utils::events::McpConfigServer {
             name: inner::mcp_server_name(c).to_string(),
             transport: inner::mcp_transport_str(c).to_string(),
             source: if inner::mcp_server_name(c)
@@ -60,7 +60,7 @@ pub fn build_config_resolved_event(
             .to_string(),
         })
         .collect();
-    xai_file_utils::events::Event::McpConfigResolved { servers, disabled }
+    agent_tui_file_utils::events::Event::McpConfigResolved { servers, disabled }
 }
 
 pub async fn start_mcp_server(
@@ -69,7 +69,7 @@ pub async fn start_mcp_server(
     cwd: Option<&Path>,
     meta_config: Option<&inner::McpServerMetaConfig>,
     byo_config: Option<&McpOAuthConfig>,
-    event_writer: &xai_file_utils::events::EventWriter,
+    event_writer: &agent_tui_file_utils::events::EventWriter,
     mode: OauthInteractivity,
 ) -> Result<inner::McpClient, inner::McpError> {
     let overrides = resolve_overrides(inner::mcp_server_name(&mcp_server), cwd);
@@ -97,7 +97,7 @@ pub async fn build_pending_clients(
     cwd: Option<&Path>,
     meta_config_map: &inner::McpMetaConfigMap,
     oauth_config_map: &McpOAuthConfigMap,
-    event_writer: &xai_file_utils::events::EventWriter,
+    event_writer: &agent_tui_file_utils::events::EventWriter,
     mode: OauthInteractivity,
 ) -> Vec<Result<inner::McpClient, inner::McpError>> {
     let mut results = start_mcp_servers(
@@ -135,7 +135,7 @@ pub async fn start_mcp_servers(
     cwd: Option<&Path>,
     meta_config_map: &inner::McpMetaConfigMap,
     oauth_config_map: &McpOAuthConfigMap,
-    event_writer: &xai_file_utils::events::EventWriter,
+    event_writer: &agent_tui_file_utils::events::EventWriter,
     mode: OauthInteractivity,
 ) -> Vec<Result<inner::McpClient, inner::McpError>> {
     let overrides_map: HashMap<String, inner::McpClientTimeoutOverrides> = mcp_servers

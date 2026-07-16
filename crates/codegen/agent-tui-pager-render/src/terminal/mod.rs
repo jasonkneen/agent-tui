@@ -72,7 +72,7 @@ pub fn tmux_show_option(option: &str) -> Option<String> {
     cmd.args(["show-option", "-gqv", option])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    xai_tty_utils::detach_std_command(&mut cmd);
+    agent_tui_tty_utils::detach_std_command(&mut cmd);
     let output = cmd.output().ok()?;
     parse_tmux_show_option_output(output.status.success(), &output.stdout)
 }
@@ -1025,7 +1025,7 @@ fn detect_tmux_control_mode_subprocess() -> bool {
     cmd.args(["display-message", "-p", "#{client_flags}"])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    xai_tty_utils::detach_std_command(&mut cmd);
+    agent_tui_tty_utils::detach_std_command(&mut cmd);
     cmd.output()
         .ok()
         .and_then(|out| {
@@ -1049,7 +1049,7 @@ pub fn detect_tmux_version() -> Option<String> {
     cmd.arg("-V")
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    xai_tty_utils::detach_std_command(&mut cmd);
+    agent_tui_tty_utils::detach_std_command(&mut cmd);
     cmd.output().ok().and_then(|out| {
         if out.status.success() {
             let version = String::from_utf8_lossy(&out.stdout).trim().to_owned();

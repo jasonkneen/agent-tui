@@ -329,7 +329,7 @@ impl SessionActor {
                 };
 
                 let ctx = &info.context;
-                let context_pct = xai_token_estimation::usage_percentage(ctx.used, ctx.total);
+                let context_pct = agent_tui_token_estimation::usage_percentage(ctx.used, ctx.total);
 
                 let summary_path = crate::session::persistence::session_dir(&self.session_info)
                     .join("summary.json");

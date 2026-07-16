@@ -1275,9 +1275,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
 pub(super) fn dispatch_action_result(
     app: &mut AppView,
     agent_id: crate::app::agent::AgentId,
-    result: Result<xai_hooks_plugins_types::ActionOutcome, String>,
+    result: Result<agent_tui_hooks_plugins_types::ActionOutcome, String>,
 ) -> Vec<Effect> {
-    use xai_hooks_plugins_types::OutcomeStatus;
+    use agent_tui_hooks_plugins_types::OutcomeStatus;
     let Some(agent) = app.agents.get_mut(&agent_id) else {
         return vec![];
     };
@@ -1297,7 +1297,7 @@ pub(super) fn dispatch_action_result(
                     && modal.result_notice.is_none()
                 {
                     let entry_index = match modal.last_plugins_action {
-                        Some(xai_hooks_plugins_types::PluginsAction::Uninstall { .. }) => None,
+                        Some(agent_tui_hooks_plugins_types::PluginsAction::Uninstall { .. }) => None,
                         _ => modal.pending_entry_index,
                     };
                     modal.result_notice =
@@ -1313,7 +1313,7 @@ pub(super) fn dispatch_action_result(
                         effects.push(Effect::PluginsAction {
                             agent_id,
                             session_id,
-                            action: xai_hooks_plugins_types::PluginsAction::Reload,
+                            action: agent_tui_hooks_plugins_types::PluginsAction::Reload,
                         });
                     } else if agent.extensions_modal.is_some() {
                         effects.push(Effect::FetchHooksList {
@@ -1341,7 +1341,7 @@ pub(super) fn dispatch_action_result(
                 if let Some(ref mut modal) = agent.extensions_modal {
                     let confirmed_action = modal.last_plugins_action.as_ref().map(|a| {
                         let mut action = a.clone();
-                        if let xai_hooks_plugins_types::PluginsAction::Uninstall {
+                        if let agent_tui_hooks_plugins_types::PluginsAction::Uninstall {
                             ref mut confirmed,
                             ..
                         } = action

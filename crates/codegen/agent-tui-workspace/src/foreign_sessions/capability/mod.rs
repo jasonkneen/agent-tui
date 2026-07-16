@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use rusqlite::{Connection, OpenFlags};
-use xai_sqlite_journal::JournalMode;
+use agent_tui_sqlite_journal::JournalMode;
 
 #[cfg(unix)]
 mod unix;

@@ -41,7 +41,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::task::JoinSet;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tokio_util::sync::CancellationToken;
-use xai_acp_lib::{
+use agent_tui_acp_lib::{
     AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
     AcpClientRx, LineBufferedRead, acp_send,
 };
@@ -422,7 +422,7 @@ impl PagerLeaderCluster {
             );
             tokio::task::spawn_local(
                 GatewayReceiver::new(gw_rx, conn)
-                    .with_on_meta(xai_file_utils::trace_context::span_from_meta_traceparent)
+                    .with_on_meta(agent_tui_file_utils::trace_context::span_from_meta_traceparent)
                     .run(),
             );
             let _ = handle_io.await;

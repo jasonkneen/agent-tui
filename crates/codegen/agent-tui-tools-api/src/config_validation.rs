@@ -4,7 +4,7 @@
 //! so callers can render gRPC violations without re-parsing.
 
 use serde_json::{Map, Value};
-use xai_tool_protocol::ToolId;
+use agent_tui_tool_protocol::ToolId;
 
 /// Why a [`ToolConfigEntry`](crate::ToolConfigEntry) is invalid.
 #[derive(Debug, Clone, PartialEq, Eq)]

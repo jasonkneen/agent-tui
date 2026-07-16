@@ -43,28 +43,28 @@ Set `persistent: true` for session-length watches (PR monitoring, log tails) -- 
     }
 }
 
-impl xai_tool_runtime::Tool for MonitorTool {
+impl agent_tui_tool_runtime::Tool for MonitorTool {
     type Args = MonitorInput;
     type Output = MonitorOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("monitor").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("monitor").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "monitor",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: false,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Write),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Write),
             ..Default::default()
         }
     }
@@ -72,15 +72,15 @@ impl xai_tool_runtime::Tool for MonitorTool {
     #[tracing::instrument(name = "tool.monitor", skip_all)]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: MonitorInput,
-    ) -> Result<MonitorOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<MonitorOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
         input
             .validate()
-            .map_err(|e| xai_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
+            .map_err(|e| agent_tui_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
 
         let resolved_timeout = input.resolved_timeout_ms();
         let description = input.description.clone();
@@ -134,7 +134,7 @@ impl xai_tool_runtime::Tool for MonitorTool {
                 owner_session_id,
             })
             .await
-            .map_err(|e| xai_tool_runtime::ToolError::custom("process_manager", e.to_string()))?;
+            .map_err(|e| agent_tui_tool_runtime::ToolError::custom("process_manager", e.to_string()))?;
 
         let task_id = bg_handle.task_id.clone();
 

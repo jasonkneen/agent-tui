@@ -358,7 +358,7 @@ async fn make_actor_with_cap(
 ) -> (StdArc<SessionActor>, tempfile::TempDir) {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let (gateway_tx, _gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
     let (persistence_tx, _persistence_rx) =
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -2594,7 +2594,7 @@ fn render_ack_cap_reached_is_tool_error_with_cap_code() {
 /// `ToolError::custom(code, ...)`. The code lives in
 /// `details["code"]`; `kind` is always `ToolErrorKind::Custom`
 /// for custom-built errors.
-fn tool_error_code(err: &xai_tool_runtime::ToolError) -> &str {
+fn tool_error_code(err: &agent_tui_tool_runtime::ToolError) -> &str {
     err.details
         .as_ref()
         .and_then(|v| v.get("code"))
@@ -2741,7 +2741,7 @@ async fn make_role_model_actor(
 ) -> (StdArc<SessionActor>, tempfile::TempDir) {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let (gateway_tx, _gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
     let (persistence_tx, _persistence_rx) =
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
     let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;

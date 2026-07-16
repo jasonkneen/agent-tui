@@ -250,8 +250,8 @@ impl LspClient {
         for (k, v) in &config.env {
             cmd.env(k, v);
         }
-        xai_tty_utils::detach_std_command(&mut cmd);
-        cmd.envs(xai_tty_utils::pager_env());
+        agent_tui_tty_utils::detach_std_command(&mut cmd);
+        cmd.envs(agent_tui_tty_utils::pager_env());
         let mut child = cmd
             .spawn()
             .map_err(|e| LspError::SpawnFailed(format!("'{}': {e}", config.command)))?;

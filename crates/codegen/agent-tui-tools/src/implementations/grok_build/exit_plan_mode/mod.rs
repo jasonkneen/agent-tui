@@ -77,34 +77,34 @@ Use this after you have finished writing your plan to the plan file in plan mode
                 &EnterPlanModeTool,
             )
             .to_string(),
-            id: xai_tool_runtime::Tool::id(&EnterPlanModeTool).to_string(),
+            id: agent_tui_tool_runtime::Tool::id(&EnterPlanModeTool).to_string(),
             if_params: None,
         })
     }
 }
 
-impl xai_tool_runtime::Tool for ExitPlanModeTool {
+impl agent_tui_tool_runtime::Tool for ExitPlanModeTool {
     type Args = ExitPlanModeInput;
     type Output = ExitPlanModeOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("exit_plan_mode").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("exit_plan_mode").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "exit_plan_mode",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: true,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Read),
             ..Default::default()
         }
     }
@@ -112,9 +112,9 @@ impl xai_tool_runtime::Tool for ExitPlanModeTool {
     #[tracing::instrument(name = "tool.exit_plan_mode", skip_all)]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         _input: ExitPlanModeInput,
-    ) -> Result<ExitPlanModeOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<ExitPlanModeOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn tool_name_and_description() {
         let tool = ExitPlanModeTool;
-        assert_eq!(xai_tool_runtime::Tool::id(&tool).as_str(), "exit_plan_mode");
+        assert_eq!(agent_tui_tool_runtime::Tool::id(&tool).as_str(), "exit_plan_mode");
         let desc = crate::types::tool_metadata::ToolMetadata::description_template(&tool);
         assert!(desc.contains("Exit plan mode"));
         assert!(desc.contains("plan file"));
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn tool_is_read_only() {
-        assert!(xai_tool_runtime::Tool::capabilities(&ExitPlanModeTool).is_read_only);
+        assert!(agent_tui_tool_runtime::Tool::capabilities(&ExitPlanModeTool).is_read_only);
     }
 
     #[test]
@@ -242,7 +242,7 @@ mod tests {
         let shared = resources.into_shared();
         let tool = ExitPlanModeTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(shared, "test-call"),
             ExitPlanModeInput {},
@@ -278,7 +278,7 @@ mod tests {
         let shared = resources.into_shared();
         let tool = ExitPlanModeTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(shared, "test-call"),
             ExitPlanModeInput {},
@@ -304,7 +304,7 @@ mod tests {
         let shared = resources.into_shared();
         let tool = ExitPlanModeTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(shared, "test-call"),
             ExitPlanModeInput {},
@@ -337,7 +337,7 @@ mod tests {
         let shared = resources.into_shared();
         let tool = ExitPlanModeTool;
 
-        xai_tool_runtime::Tool::run(
+        agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(shared, "call-99"),
             ExitPlanModeInput {},
@@ -363,7 +363,7 @@ mod tests {
         let shared = resources.into_shared();
         let tool = ExitPlanModeTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(shared, "test-call"),
             ExitPlanModeInput {},
@@ -384,7 +384,7 @@ mod tests {
         let shared = resources.into_shared();
         let tool = ExitPlanModeTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(shared, "test-call"),
             ExitPlanModeInput {},
@@ -416,7 +416,7 @@ mod tests {
         resources.insert(PlanFilePath(plan_file.clone()));
         let shared = resources.into_shared();
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &ExitPlanModeTool,
             test_ctx_with_call_id(shared, "t1"),
             ExitPlanModeInput {},

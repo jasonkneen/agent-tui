@@ -1048,7 +1048,7 @@ mod tests {
     #[test]
     fn basename_contains_ignores_directory_components() {
         assert!(basename_contains(
-            "/usr/local/bin/xai-workspace-server",
+            "/usr/local/bin/agent-tui-workspace-server",
             "workspace-server"
         ));
         assert!(basename_contains(

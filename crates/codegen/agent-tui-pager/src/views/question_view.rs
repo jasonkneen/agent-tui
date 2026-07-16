@@ -16,7 +16,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use xai_acp_lib::AcpResult;
+use agent_tui_acp_lib::AcpResult;
 use agent_tui_markdown::StreamingMarkdownRenderer;
 pub use agent_tui_tools::implementations::grok_build::ask_user_question::{
     AskUserQuestionMode, Question, QuestionOption,

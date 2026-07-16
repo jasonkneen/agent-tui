@@ -30,7 +30,7 @@ use criterion::{
 };
 use filetime::{FileTime, set_file_mtime};
 use tempfile::TempDir;
-use xai_fast_worktree::{ListFilter, WorktreeDb, WorktreeKind, WorktreeRecord, WorktreeStatus};
+use agent_tui_fast_worktree::{ListFilter, WorktreeDb, WorktreeKind, WorktreeRecord, WorktreeStatus};
 use agent_tui_shell::session::info::Info;
 use agent_tui_shell::session::persistence::Summary;
 use agent_tui_shell::session::storage::{JsonlStorageAdapter, StorageAdapter};

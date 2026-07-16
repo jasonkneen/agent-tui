@@ -4486,7 +4486,7 @@
 ## Bug Fixes
 
 - **Structured error variants** for read_file, list_dir, search_replace, and todo_write so callers can distinguish file-not-found, permission-denied, and duplicate-id failures.
-- **Replay notifications now guaranteed before session/load response** via `forward_with_completion()` drain; removes public `acp_send_fire_and_forget` from xai-acp-lib.
+- **Replay notifications now guaranteed before session/load response** via `forward_with_completion()` drain; removes public `acp_send_fire_and_forget` from agent-tui-acp-lib.
 - **Writeback sync now includes cwd and title** in backend metadata on every flush and rename, fixing null values in remote session listings.
 - **Typed TaskNotFound errors** for kill_task and get_task_output with known-task-ID hints, enabling Python-side structured error classification.
 - **Terminal commands detached from controlling TTY** via `setsid()` so subprocesses like ssh cannot steal input from the TUI.

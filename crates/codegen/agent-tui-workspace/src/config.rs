@@ -112,7 +112,7 @@ pub struct WorkspaceBindConfig {
     pub tool_config: Option<ToolServerConfig>,
     /// Per-user feature-flag bag. `None` on legacy payloads → tools
     /// fall back to their safe defaults.
-    pub viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
+    pub viewer_ctx: Option<agent_tui_tool_runtime::WorkspaceViewerContext>,
     /// Initial auto-approve (YOLO) state. `None` on legacy payloads →
     /// fail-closed (false).
     pub yolo_mode: Option<bool>,
@@ -160,11 +160,11 @@ impl ResolvedTools {
 }
 impl WorkspaceBindConfig {
     /// Parse hub `session.bind` metadata. The envelope is the shared
-    /// [`xai_tool_runtime::WorkspaceBindMetadata`] (same type the emitter
+    /// [`agent_tui_tool_runtime::WorkspaceBindMetadata`] (same type the emitter
     /// serializes); `tool_config` is a consumer-only raw escape hatch read
     /// separately.
     pub fn from_metadata(metadata: &serde_json::Value) -> Self {
-        let wire: xai_tool_runtime::WorkspaceBindMetadata =
+        let wire: agent_tui_tool_runtime::WorkspaceBindMetadata =
             serde_json::from_value(metadata.clone()).unwrap_or_default();
         Self {
             preset: wire.preset,
@@ -732,7 +732,7 @@ pub struct WorkspaceConfig {
     pub hub_config: Option<HubConfig>,
     /// Auth provider for xAI service calls made from workspace-scoped code.
     /// `None` for workspaces that do not configure service auth.
-    pub auth_provider: Option<xai_computer_hub_sdk::SharedAuthProvider>,
+    pub auth_provider: Option<agent_tui_computer_hub_sdk::SharedAuthProvider>,
     /// Metadata attached to the tool server registration.
     /// Propagated through the server to `ServerInfo.metadata` in
     /// `servers.list` responses so harness clients can identify the
@@ -821,7 +821,7 @@ impl WorkspaceConfig {
         root_cwd: PathBuf,
         session_factory: Arc<dyn SessionContextFactory>,
         hub_config: HubConfig,
-        auth_provider: xai_computer_hub_sdk::SharedAuthProvider,
+        auth_provider: agent_tui_computer_hub_sdk::SharedAuthProvider,
         server_metadata: Option<serde_json::Value>,
         status_config: crate::status_config::StatusConfig,
         tool_config: ToolServerConfig,

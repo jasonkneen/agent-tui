@@ -1,7 +1,7 @@
 //! Handler for x.ai/git/worktree/* extension methods.
 
 use agent_client_protocol as acp;
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 use crate::agent::mvp_agent::MvpAgent;
 use crate::session::ExtMethodResult;

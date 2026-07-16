@@ -71,7 +71,7 @@ async fn make_actor_with_auth_manager(
 ) -> (Arc<SessionActor>, mpsc::UnboundedReceiver<PersistenceMsg>) {
     make_actor_with_auth_and_credentials(
         auth_manager,
-        xai_chat_state::AuthType::SessionToken,
+        agent_tui_chat_state::AuthType::SessionToken,
         "initial-test-key".to_string(),
     )
     .await
@@ -82,12 +82,12 @@ async fn make_actor_with_auth_manager(
 /// two independently.
 async fn make_actor_with_auth_and_credentials(
     auth_manager: Option<Arc<AuthManager>>,
-    auth_type: xai_chat_state::AuthType,
+    auth_type: agent_tui_chat_state::AuthType,
     api_key: String,
 ) -> (Arc<SessionActor>, mpsc::UnboundedReceiver<PersistenceMsg>) {
     let method_id = match auth_type {
-        xai_chat_state::AuthType::SessionToken => "cached_token",
-        xai_chat_state::AuthType::ApiKey => "xai.api_key",
+        agent_tui_chat_state::AuthType::SessionToken => "cached_token",
+        agent_tui_chat_state::AuthType::ApiKey => "xai.api_key",
     };
     make_actor_with_method_and_credentials(auth_manager, method_id, auth_type, api_key).await
 }
@@ -99,7 +99,7 @@ async fn make_actor_with_auth_and_credentials(
 async fn make_actor_with_method_and_credentials(
     auth_manager: Option<Arc<AuthManager>>,
     auth_method_id: &str,
-    auth_type: xai_chat_state::AuthType,
+    auth_type: agent_tui_chat_state::AuthType,
     api_key: String,
 ) -> (Arc<SessionActor>, mpsc::UnboundedReceiver<PersistenceMsg>) {
     let (gateway_tx, _) = mpsc::unbounded_channel();
@@ -109,7 +109,7 @@ async fn make_actor_with_method_and_credentials(
     actor.auth_method_id = test_auth_method_id(auth_method_id);
     actor
         .chat_state_handle
-        .update_credentials(xai_chat_state::Credentials {
+        .update_credentials(agent_tui_chat_state::Credentials {
             api_key: Some(api_key),
             auth_type,
             ..Default::default()
@@ -162,7 +162,7 @@ async fn no_recovery_without_auth_manager() {
         .run_until(async {
             let (actor, _rx) = make_actor_with_auth_and_credentials(
                 None,
-                xai_chat_state::AuthType::ApiKey,
+                agent_tui_chat_state::AuthType::ApiKey,
                 "xai-byok-key".to_string(),
             )
             .await;
@@ -224,7 +224,7 @@ async fn sampler_401_with_api_key_auth_skips_refresh_and_surfaces_error() {
             let (_dir, am) = auth_manager_with_refresher(refresher);
             let (actor, _rx) = make_actor_with_auth_and_credentials(
                 Some(am),
-                xai_chat_state::AuthType::ApiKey,
+                agent_tui_chat_state::AuthType::ApiKey,
                 "xai-byok-key".to_string(),
             )
             .await;
@@ -262,7 +262,7 @@ async fn pre_flight_refresh_skips_api_key_auth_type() {
             let (_dir, am) = auth_manager_with_refresher(refresher);
             let (actor, _rx) = make_actor_with_auth_and_credentials(
                 Some(am),
-                xai_chat_state::AuthType::ApiKey,
+                agent_tui_chat_state::AuthType::ApiKey,
                 "byok-api-key".to_string(),
             )
             .await;
@@ -608,7 +608,7 @@ async fn sampler_401_session_method_with_stale_api_key_auth_type_still_recovers(
             let (actor, _rx) = make_actor_with_method_and_credentials(
                 Some(am),
                 "cached_token",
-                xai_chat_state::AuthType::ApiKey,
+                agent_tui_chat_state::AuthType::ApiKey,
                 "stale-session-jwt".to_string(),
             )
             .await;
@@ -642,7 +642,7 @@ async fn sampler_401_oidc_method_with_stale_api_key_auth_type_still_recovers() {
             let (actor, _rx) = make_actor_with_method_and_credentials(
                 Some(am),
                 "oidc",
-                xai_chat_state::AuthType::ApiKey,
+                agent_tui_chat_state::AuthType::ApiKey,
                 "stale-session-jwt".to_string(),
             )
             .await;
@@ -673,7 +673,7 @@ async fn reconstruct_full_config_wires_bearer_resolver_for_session_method_despit
             let (actor, _rx) = make_actor_with_method_and_credentials(
                 Some(am),
                 "cached_token",
-                xai_chat_state::AuthType::ApiKey,
+                agent_tui_chat_state::AuthType::ApiKey,
                 "stale-session-jwt".to_string(),
             )
             .await;
@@ -699,7 +699,7 @@ async fn reconstruct_full_config_no_bearer_resolver_for_api_key_method() {
             let (actor, _rx) = make_actor_with_method_and_credentials(
                 Some(am),
                 "xai.api_key",
-                xai_chat_state::AuthType::ApiKey,
+                agent_tui_chat_state::AuthType::ApiKey,
                 "xai-static-key".to_string(),
             )
             .await;
@@ -726,7 +726,7 @@ async fn pre_flight_refresh_heals_session_method_with_stale_api_key_auth_type() 
             let (actor, _rx) = make_actor_with_method_and_credentials(
                 Some(am),
                 "cached_token",
-                xai_chat_state::AuthType::ApiKey,
+                agent_tui_chat_state::AuthType::ApiKey,
                 "stale-session-jwt".to_string(),
             )
             .await;
@@ -760,7 +760,7 @@ async fn session_born_on_api_key_recovers_after_oidc_login_without_restart() {
             let (actor, _rx) = make_actor_with_method_and_credentials(
                 Some(am),
                 "xai.api_key",
-                xai_chat_state::AuthType::ApiKey,
+                agent_tui_chat_state::AuthType::ApiKey,
                 "stale-session-jwt".to_string(),
             )
             .await;
@@ -824,7 +824,7 @@ async fn model_auth_facts_memo_serves_cached_status_and_keys_on_model() {
             let (actor, _rx) = make_actor_with_method_and_credentials(
                 None,
                 "cached_token",
-                xai_chat_state::AuthType::SessionToken,
+                agent_tui_chat_state::AuthType::SessionToken,
                 "k".to_string(),
             )
             .await;
@@ -859,7 +859,7 @@ async fn reconstruct_full_config_no_bearer_resolver_for_byok_model_on_session_me
             let (actor, _rx) = make_actor_with_method_and_credentials(
                 Some(am),
                 "cached_token",
-                xai_chat_state::AuthType::SessionToken,
+                agent_tui_chat_state::AuthType::SessionToken,
                 "byok-key".to_string(),
             )
             .await;
@@ -903,7 +903,7 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
             let (actor, _rx) = make_actor_with_method_and_credentials(
                 None,
                 "cached_token",
-                xai_chat_state::AuthType::SessionToken,
+                agent_tui_chat_state::AuthType::SessionToken,
                 "k".to_string(),
             )
             .await;

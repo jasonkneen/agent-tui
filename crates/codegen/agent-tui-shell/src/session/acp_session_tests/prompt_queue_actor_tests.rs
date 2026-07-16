@@ -122,7 +122,7 @@ async fn two_enqueues_drain_fifo_and_stale_edit_is_noop() {
             // The final broadcast must reflect the empty queue.
             let mut last: Option<crate::session::prompt_queue::QueueChanged> = None;
             while let Ok(msg) = gateway_rx.try_recv() {
-                if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg
+                if let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg
                     && args.request.method.as_ref()
                         == crate::session::prompt_queue::QUEUE_CHANGED_METHOD
                 {
@@ -539,7 +539,7 @@ async fn interject_after_cancel_does_nothing_and_keeps_prompt_queued() {
             // The interject no-op still rebroadcasts so clients reconcile.
             let mut saw_broadcast = false;
             while let Ok(msg) = gateway_rx.try_recv() {
-                if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg
+                if let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg
                     && args.request.method.as_ref()
                         == crate::session::prompt_queue::QUEUE_CHANGED_METHOD
                 {
@@ -733,7 +733,7 @@ async fn interject_queued_bash_row_noop_keeps_row_queued() {
 
             let mut saw_broadcast = false;
             while let Ok(msg) = gateway_rx.try_recv() {
-                if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg
+                if let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg
                     && args.request.method.as_ref()
                         == crate::session::prompt_queue::QUEUE_CHANGED_METHOD
                 {

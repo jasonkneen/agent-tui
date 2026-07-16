@@ -4,7 +4,7 @@
 //! `ChatPersistence` trait calls into the appropriate `PersistenceMsg` variants.
 
 use tokio::sync::mpsc;
-use xai_chat_state::ChatPersistence;
+use agent_tui_chat_state::ChatPersistence;
 use agent_tui_sampling_types::ConversationItem;
 
 use super::persistence::PersistenceMsg;

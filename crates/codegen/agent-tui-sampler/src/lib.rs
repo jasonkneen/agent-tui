@@ -2,7 +2,7 @@
 //!
 //! This crate extracts the HTTP streaming + retry logic out of
 //! `agent-tui-shell`'s session actor into a standalone, reusable
-//! component built on the same actor pattern as `xai-hunk-tracker`.
+//! component built on the same actor pattern as `agent-tui-hunk-tracker`.
 //!
 //! ## Layered API
 //!

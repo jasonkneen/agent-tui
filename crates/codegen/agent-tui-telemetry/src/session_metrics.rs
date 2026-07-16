@@ -105,11 +105,11 @@ impl TraceUploadReason {
         }
     }
 
-    pub fn from_upload_method(method: &Option<xai_file_utils::UploadMethod>) -> Self {
+    pub fn from_upload_method(method: &Option<agent_tui_file_utils::UploadMethod>) -> Self {
         match method {
-            Some(xai_file_utils::UploadMethod::Proxy { .. }) => Self::Proxy,
-            Some(xai_file_utils::UploadMethod::S3 { .. }) => Self::DirectS3,
-            Some(xai_file_utils::UploadMethod::Direct { .. }) => Self::DirectGcs,
+            Some(agent_tui_file_utils::UploadMethod::Proxy { .. }) => Self::Proxy,
+            Some(agent_tui_file_utils::UploadMethod::S3 { .. }) => Self::DirectS3,
+            Some(agent_tui_file_utils::UploadMethod::Direct { .. }) => Self::DirectGcs,
             None => Self::NoCredentials,
         }
     }
@@ -117,7 +117,7 @@ impl TraceUploadReason {
 
 #[cfg(test)]
 mod tests {
-    use xai_file_utils::UploadMethod;
+    use agent_tui_file_utils::UploadMethod;
 
     use super::TraceUploadReason;
 

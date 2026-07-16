@@ -6,7 +6,7 @@ use crate::types::process_manager::format_system_time_rfc3339;
 use crate::util::truncate::{
     DEFAULT_SOFT_WRAP_WIDTH, PREVIEW_SIZE, soft_wrap_lines, truncate_with_preview,
 };
-use xai_tool_types::TaskOutputResult;
+use agent_tui_tool_types::TaskOutputResult;
 
 /// Convert a TaskSnapshot to a TaskOutputResult, with output truncation.
 pub(crate) fn snapshot_to_result(
@@ -188,7 +188,7 @@ mod tests {
         assert_eq!(q_count, 5_000);
 
         // Prompt rendering also preserves content
-        let output = ToolOutput::TaskOutput(xai_tool_types::TaskOutputOutput::Result(result));
+        let output = ToolOutput::TaskOutput(agent_tui_tool_types::TaskOutputOutput::Result(result));
         let prompt = output.to_prompt_format();
         let q_count = prompt.chars().filter(|c| *c == 'Q').count();
         assert_eq!(q_count, 5_000);

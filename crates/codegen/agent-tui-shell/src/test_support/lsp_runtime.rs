@@ -5,9 +5,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use agent_tui_tools::implementations::grok_build::task::types::{SubagentRequest, SubagentResult};
-pub(crate) type GatewayOut = <acp::AgentSide as xai_acp_lib::AcpSide>::OutMessage;
+pub(crate) type GatewayOut = <acp::AgentSide as agent_tui_acp_lib::AcpSide>::OutMessage;
 pub(crate) fn test_gateway() -> GatewaySender {
     let (tx, _rx) = mpsc::unbounded_channel();
     GatewaySender::new(tx)
@@ -74,7 +74,7 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         parent_session_id: "test-parent".into(),
         yolo_mode: false,
         subagent_event_tx: tx,
-        hunk_tracker_handle: xai_hunk_tracker::HunkTrackerHandle::noop(),
+        hunk_tracker_handle: agent_tui_hunk_tracker::HunkTrackerHandle::noop(),
         hunk_tracking_enabled: false,
         fs: Arc::new(agent_tui_workspace::file_system::LocalFs::new(
             PathBuf::from("/tmp"),

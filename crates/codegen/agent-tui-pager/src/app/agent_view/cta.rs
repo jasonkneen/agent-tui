@@ -617,8 +617,8 @@ impl AgentView {
 mod plugin_cta_notify_tests {
     use super::test_fixtures::make_agent;
 
-    fn cta_entry(name: &str) -> xai_hooks_plugins_types::MarketplacePluginEntry {
-        xai_hooks_plugins_types::MarketplacePluginEntry {
+    fn cta_entry(name: &str) -> agent_tui_hooks_plugins_types::MarketplacePluginEntry {
+        agent_tui_hooks_plugins_types::MarketplacePluginEntry {
             name: name.into(),
             version: None,
             description: None,

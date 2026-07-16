@@ -13,10 +13,10 @@ tonic = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
-xai-tool-protocol = { workspace = true }
+agent-tui-tool-protocol = { workspace = true }
 
 [build-dependencies]
-xai-proto-build = { workspace = true }
+agent-tui-proto-build = { workspace = true }
 
 [package.metadata.cargo-shear]
 ignored = ["serde", "tonic"]

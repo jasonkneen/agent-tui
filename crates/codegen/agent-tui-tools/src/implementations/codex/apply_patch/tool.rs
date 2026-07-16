@@ -135,13 +135,13 @@ enum FileChange {
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 /// Create parent directories for a file path if they don't exist.
-async fn ensure_parent_dirs(path: &std::path::Path) -> Result<(), xai_tool_runtime::ToolError> {
+async fn ensure_parent_dirs(path: &std::path::Path) -> Result<(), agent_tui_tool_runtime::ToolError> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
         tokio::fs::create_dir_all(parent).await.map_err(|e| {
-            xai_tool_runtime::ToolError::execution(
-                xai_tool_protocol::ToolId::new("apply_patch").expect("valid"),
+            agent_tui_tool_runtime::ToolError::execution(
+                agent_tui_tool_protocol::ToolId::new("apply_patch").expect("valid"),
                 e.to_string(),
             )
         })?;
@@ -263,28 +263,28 @@ impl crate::types::tool_metadata::ToolMetadata for ApplyPatchTool {
     }
 }
 
-impl xai_tool_runtime::Tool for ApplyPatchTool {
+impl agent_tui_tool_runtime::Tool for ApplyPatchTool {
     type Args = ApplyPatchInput;
     type Output = ApplyPatchOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("apply_patch").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("apply_patch").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "apply_patch",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: false,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Write),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Write),
             ..Default::default()
         }
     }
@@ -292,9 +292,9 @@ impl xai_tool_runtime::Tool for ApplyPatchTool {
     #[tracing::instrument(name = "tool.apply_patch", skip_all)]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: ApplyPatchInput,
-    ) -> Result<ApplyPatchOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<ApplyPatchOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -343,8 +343,8 @@ impl xai_tool_runtime::Tool for ApplyPatchTool {
                     // Create parent directories if needed.
                     ensure_parent_dirs(path).await?;
                     fs.write_file(path, content.as_bytes()).await.map_err(|e| {
-                        xai_tool_runtime::ToolError::execution(
-                            xai_tool_protocol::ToolId::new("apply_patch").expect("valid"),
+                        agent_tui_tool_runtime::ToolError::execution(
+                            agent_tui_tool_protocol::ToolId::new("apply_patch").expect("valid"),
                             e.to_string(),
                         )
                     })?;
@@ -370,8 +370,8 @@ impl xai_tool_runtime::Tool for ApplyPatchTool {
                     original_content,
                 } => {
                     fs.delete_file(path).await.map_err(|e| {
-                        xai_tool_runtime::ToolError::execution(
-                            xai_tool_protocol::ToolId::new("apply_patch").expect("valid"),
+                        agent_tui_tool_runtime::ToolError::execution(
+                            agent_tui_tool_protocol::ToolId::new("apply_patch").expect("valid"),
                             e.to_string(),
                         )
                     })?;
@@ -400,8 +400,8 @@ impl xai_tool_runtime::Tool for ApplyPatchTool {
                     fs.write_file(path, new_content.as_bytes())
                         .await
                         .map_err(|e| {
-                            xai_tool_runtime::ToolError::execution(
-                                xai_tool_protocol::ToolId::new("apply_patch").expect("valid"),
+                            agent_tui_tool_runtime::ToolError::execution(
+                                agent_tui_tool_protocol::ToolId::new("apply_patch").expect("valid"),
                                 e.to_string(),
                             )
                         })?;
@@ -433,14 +433,14 @@ impl xai_tool_runtime::Tool for ApplyPatchTool {
                     fs.write_file(dest_path, new_content.as_bytes())
                         .await
                         .map_err(|e| {
-                            xai_tool_runtime::ToolError::execution(
-                                xai_tool_protocol::ToolId::new("apply_patch").expect("valid"),
+                            agent_tui_tool_runtime::ToolError::execution(
+                                agent_tui_tool_protocol::ToolId::new("apply_patch").expect("valid"),
                                 e.to_string(),
                             )
                         })?;
                     fs.delete_file(source_path).await.map_err(|e| {
-                        xai_tool_runtime::ToolError::execution(
-                            xai_tool_protocol::ToolId::new("apply_patch").expect("valid"),
+                        agent_tui_tool_runtime::ToolError::execution(
+                            agent_tui_tool_protocol::ToolId::new("apply_patch").expect("valid"),
                             e.to_string(),
                         )
                     })?;
@@ -523,7 +523,7 @@ mod tests {
 
         let patch = wrap_patch("*** Add File: new.txt\n+hello\n+world");
         let result =
-            xai_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), make_input(&patch))
+            agent_tui_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), make_input(&patch))
                 .await
                 .unwrap();
 
@@ -555,7 +555,7 @@ mod tests {
 
         let patch = wrap_patch("*** Delete File: del.txt");
         let result =
-            xai_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), make_input(&patch))
+            agent_tui_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), make_input(&patch))
                 .await
                 .unwrap();
 
@@ -586,7 +586,7 @@ mod tests {
 
         let patch = wrap_patch("*** Update File: update.txt\n@@\n foo\n-bar\n+baz");
         let result =
-            xai_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), make_input(&patch))
+            agent_tui_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), make_input(&patch))
                 .await
                 .unwrap();
 
@@ -618,7 +618,7 @@ mod tests {
 
         let patch = wrap_patch("*** Update File: src.txt\n*** Move to: dst.txt\n@@\n-line\n+line2");
         let result =
-            xai_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), make_input(&patch))
+            agent_tui_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), make_input(&patch))
                 .await
                 .unwrap();
 
@@ -651,7 +651,7 @@ mod tests {
              *** Add File: b.txt\n+bbb",
         );
         let result =
-            xai_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), make_input(&patch))
+            agent_tui_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), make_input(&patch))
                 .await
                 .unwrap();
 
@@ -684,7 +684,7 @@ mod tests {
         let resources = test_resources(tmp.path());
         let shared = resources.into_shared();
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(shared.clone()),
             make_input("not a valid patch"),
@@ -713,7 +713,7 @@ mod tests {
 
         let patch = wrap_patch("*** Update File: file.txt\n@@\n-nonexistent\n+replacement");
         let result =
-            xai_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), make_input(&patch))
+            agent_tui_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), make_input(&patch))
                 .await
                 .unwrap();
 
@@ -736,7 +736,7 @@ mod tests {
 
         let patch = "*** Begin Patch\n*** End Patch";
         let result =
-            xai_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), make_input(patch))
+            agent_tui_tool_runtime::Tool::run(&tool, test_ctx(shared.clone()), make_input(patch))
                 .await
                 .unwrap();
 

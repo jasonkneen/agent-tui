@@ -110,7 +110,7 @@ impl SleepInhibitor {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-        xai_tty_utils::detach_std_command(&mut cmd);
+        agent_tui_tty_utils::detach_std_command(&mut cmd);
         let result = cmd.spawn();
 
         match result {

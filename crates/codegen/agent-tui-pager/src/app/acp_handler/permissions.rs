@@ -18,7 +18,7 @@ use super::*;
 /// currently active, so background turns aren't blocked waiting for an
 /// always-yes answer the user has already given.
 pub(super) fn handle_permission_request(
-    perm: xai_acp_lib::AcpArgs<acp::RequestPermissionRequest>,
+    perm: agent_tui_acp_lib::AcpArgs<acp::RequestPermissionRequest>,
     app: &mut AppView,
 ) -> bool {
     // 1. Look up the owning agent by session_id (root or subagent view).
@@ -93,7 +93,7 @@ pub(super) fn handle_permission_request(
 /// Parses bash highlights, builds display content, stashes the prompt on
 /// queue transition, and pushes the request onto the FIFO queue.
 fn enqueue_permission(
-    perm: xai_acp_lib::AcpArgs<acp::RequestPermissionRequest>,
+    perm: agent_tui_acp_lib::AcpArgs<acp::RequestPermissionRequest>,
     agent: &mut AgentView,
 ) -> bool {
     // 1. Parse bash highlights from request meta (imported from agent-tui-shell).
@@ -365,7 +365,7 @@ fn is_edit_permission(req: &acp::RequestPermissionRequest) -> bool {
 }
 
 /// Cancel a permission request by sending `Cancelled` on the response channel.
-fn cancel_permission(perm: xai_acp_lib::AcpArgs<acp::RequestPermissionRequest>) {
+fn cancel_permission(perm: agent_tui_acp_lib::AcpArgs<acp::RequestPermissionRequest>) {
     perm.response_tx
         .send(Ok(acp::RequestPermissionResponse::new(
             acp::RequestPermissionOutcome::Cancelled,

@@ -20,14 +20,14 @@ use crate::session::persistence::PersistenceMsg;
 /// `update_goal` tool reports progress.
 pub(crate) struct GoalNotifySender {
     session_id: agent_client_protocol::SessionId,
-    gateway: xai_acp_lib::AcpAgentGatewaySender,
+    gateway: agent_tui_acp_lib::AcpAgentGatewaySender,
     persistence_tx: tokio::sync::mpsc::UnboundedSender<PersistenceMsg>,
 }
 
 impl GoalNotifySender {
     pub(crate) fn new(
         session_id: agent_client_protocol::SessionId,
-        gateway: xai_acp_lib::AcpAgentGatewaySender,
+        gateway: agent_tui_acp_lib::AcpAgentGatewaySender,
         persistence_tx: tokio::sync::mpsc::UnboundedSender<PersistenceMsg>,
     ) -> Self {
         Self {

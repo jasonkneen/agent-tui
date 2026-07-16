@@ -148,7 +148,7 @@ async fn spawn_mock(reject: Arc<AtomicBool>) -> (String, String, Arc<AtomicUsize
 /// re-fetch to reach the mock instead of the real proxy.
 async fn actor_with_proxy(
     proxy_base: &str,
-    gw_tx: tokio::sync::mpsc::UnboundedSender<xai_acp_lib::AcpClientMessage>,
+    gw_tx: tokio::sync::mpsc::UnboundedSender<agent_tui_acp_lib::AcpClientMessage>,
 ) -> (SessionActor, tempfile::TempDir) {
     let (persist_tx, _persist_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut actor = create_test_actor(100, 128_000, 80, gw_tx, persist_tx).await;
@@ -226,11 +226,11 @@ async fn seed_managed(actor: &SessionActor, mcp_url: &str) {
 
 /// Drain all `x.ai/mcp/server_status` pushes currently queued on `gw_rx`.
 fn drain_status_pushes(
-    gw_rx: &mut tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>,
+    gw_rx: &mut tokio::sync::mpsc::UnboundedReceiver<agent_tui_acp_lib::AcpClientMessage>,
 ) -> Vec<McpServerStatusPayload> {
     let mut out = Vec::new();
     while let Ok(msg) = gw_rx.try_recv() {
-        if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg
+        if let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg
             && args.request.method.as_ref() == SERVER_STATUS_METHOD
             && let Ok(payload) =
                 serde_json::from_str::<McpServerStatusPayload>(args.request.params.get())

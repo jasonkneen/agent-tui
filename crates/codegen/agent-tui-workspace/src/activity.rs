@@ -6,9 +6,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use dashmap::DashMap;
-use xai_file_utils::events::{Event, EventWriter, ToolOutcome};
-use xai_file_utils::queue::UploadQueueStats;
-use xai_tool_protocol::{ToolServerLifecycleStatus, ToolServerStatusPayload};
+use agent_tui_file_utils::events::{Event, EventWriter, ToolOutcome};
+use agent_tui_file_utils::queue::UploadQueueStats;
+use agent_tui_tool_protocol::{ToolServerLifecycleStatus, ToolServerStatusPayload};
 
 const LIFECYCLE_NONE: u8 = 0;
 const LIFECYCLE_DRAINING: u8 = 1;
@@ -710,7 +710,7 @@ impl ActivityTracker {
 
         ToolServerStatusPayload {
             status,
-            session_id: xai_tool_protocol::SessionId::new(session_id).ok(),
+            session_id: agent_tui_tool_protocol::SessionId::new(session_id).ok(),
             connection_id: None,
             active_tool_calls: active,
             active_tool_names,

@@ -182,7 +182,7 @@ fn gcs_object_path(config: &RemoteSyncConfig) -> String {
 pub async fn maybe_upload_index(
     db_path: PathBuf,
     config: RemoteSyncConfig,
-    gcs_config: xai_file_utils::TraceExportConfig,
+    gcs_config: agent_tui_file_utils::TraceExportConfig,
     auth_manager: Option<std::sync::Arc<crate::auth::AuthManager>>,
 ) {
     if !config.enabled {
@@ -207,7 +207,7 @@ pub async fn maybe_upload_index(
 async fn upload_index_inner(
     db_path: &Path,
     config: &RemoteSyncConfig,
-    gcs_config: &xai_file_utils::TraceExportConfig,
+    gcs_config: &agent_tui_file_utils::TraceExportConfig,
     auth_manager: Option<std::sync::Arc<crate::auth::AuthManager>>,
 ) -> io::Result<()> {
     let db_path = db_path.to_path_buf();
@@ -230,7 +230,7 @@ async fn upload_index_inner(
     // Upload to GCS
     let object_path = gcs_object_path(config);
     let upload_config = crate::upload::gcs::WithAuth::with_auth(gcs_config, auth_manager);
-    match xai_file_utils::gcs::upload_bytes(
+    match agent_tui_file_utils::gcs::upload_bytes(
         &upload_config,
         &object_path,
         &compressed_bytes,
@@ -269,7 +269,7 @@ async fn upload_index_inner(
 pub async fn maybe_download_index(
     db_path: &Path,
     config: &RemoteSyncConfig,
-    gcs_config: &xai_file_utils::TraceExportConfig,
+    gcs_config: &agent_tui_file_utils::TraceExportConfig,
     auth_manager: Option<std::sync::Arc<crate::auth::AuthManager>>,
 ) -> bool {
     if !config.enabled {
@@ -288,7 +288,7 @@ pub async fn maybe_download_index(
 async fn download_index_inner(
     db_path: &Path,
     config: &RemoteSyncConfig,
-    gcs_config: &xai_file_utils::TraceExportConfig,
+    gcs_config: &agent_tui_file_utils::TraceExportConfig,
     auth_manager: Option<std::sync::Arc<crate::auth::AuthManager>>,
 ) -> io::Result<bool> {
     let object_path = gcs_object_path(config);
@@ -396,7 +396,7 @@ trait ProxyHttpClient {
 
 impl ProxyHttpClient for crate::upload::gcs::TraceExportConfigWithAuth {
     fn proxy_http_client(&self) -> Option<reqwest::Client> {
-        <Self as xai_file_utils::gcs::StorageConfig>::proxy_http_client(self)
+        <Self as agent_tui_file_utils::gcs::StorageConfig>::proxy_http_client(self)
     }
 }
 

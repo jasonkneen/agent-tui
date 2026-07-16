@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use strip_ansi_escapes::strip_str;
-use xai_tool_types::SubagentCompletedOutput;
+use agent_tui_tool_types::SubagentCompletedOutput;
 /// `(added, removed)` line counts for the `edit.lines` telemetry counter.
 pub fn line_diff(old: &str, new: &str) -> (i64, i64) {
     let mut added = 0i64;
@@ -154,20 +154,20 @@ impl ToolRunResult {
     /// Like [`TypedToolOutput::from_value`], but reattaches `chat_completion_output` from `output`.
     pub fn into_typed_tool_output(
         self,
-        tool_id: xai_tool_protocol::ToolId,
-    ) -> xai_tool_runtime::TypedToolOutput {
+        tool_id: agent_tui_tool_protocol::ToolId,
+    ) -> agent_tui_tool_runtime::TypedToolOutput {
         typed_tool_output_preserving_cco(tool_id, &self, &self.output)
     }
 }
 /// Like [`TypedToolOutput::from_value`], but reattaches `chat_completion_output` from `source`.
 pub(crate) fn typed_tool_output_preserving_cco(
-    tool_id: xai_tool_protocol::ToolId,
+    tool_id: agent_tui_tool_protocol::ToolId,
     payload: &impl Serialize,
-    source: &impl xai_tool_runtime::ToolOutput,
-) -> xai_tool_runtime::TypedToolOutput {
+    source: &impl agent_tui_tool_runtime::ToolOutput,
+) -> agent_tui_tool_runtime::TypedToolOutput {
     let cco = source.chat_completion_output();
     let value = serde_json::to_value(payload).unwrap_or(serde_json::Value::Null);
-    xai_tool_runtime::TypedToolOutput::from_value(tool_id, value).with_chat_completion_output(cco)
+    agent_tui_tool_runtime::TypedToolOutput::from_value(tool_id, value).with_chat_completion_output(cco)
 }
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ListDirContent {
@@ -600,8 +600,8 @@ impl WebFetchOutput {
         }
     }
 }
-use xai_tool_types::KillTaskOutput;
-use xai_tool_types::TaskOutputOutput;
+use agent_tui_tool_types::KillTaskOutput;
+use agent_tui_tool_types::TaskOutputOutput;
 /// Output schema for the bash tool.
 ///
 /// The bash tool can either complete synchronously (`Bash`) or be started
@@ -613,10 +613,10 @@ pub enum BashToolOutput {
     Bash(BashOutput),
     BackgroundTaskStarted(BackgroundTaskStarted),
 }
-impl xai_tool_runtime::ToolOutput for BashToolOutput {
-    fn chat_completion_output(&self) -> Option<xai_tool_runtime::ToolChatCompletionResponse> {
+impl agent_tui_tool_runtime::ToolOutput for BashToolOutput {
+    fn chat_completion_output(&self) -> Option<agent_tui_tool_runtime::ToolChatCompletionResponse> {
         match self {
-            Self::Bash(bash) => xai_tool_runtime::ToolOutput::chat_completion_output(bash),
+            Self::Bash(bash) => agent_tui_tool_runtime::ToolOutput::chat_completion_output(bash),
             Self::BackgroundTaskStarted(_) => None,
         }
     }
@@ -1213,16 +1213,16 @@ impl MCPOutput {
         &mut self.output
     }
 }
-impl xai_tool_runtime::ToolOutput for ToolOutput {
-    fn chat_completion_output(&self) -> Option<xai_tool_runtime::ToolChatCompletionResponse> {
+impl agent_tui_tool_runtime::ToolOutput for ToolOutput {
+    fn chat_completion_output(&self) -> Option<agent_tui_tool_runtime::ToolChatCompletionResponse> {
         match self {
-            Self::Bash(bash) => xai_tool_runtime::ToolOutput::chat_completion_output(bash),
+            Self::Bash(bash) => agent_tui_tool_runtime::ToolOutput::chat_completion_output(bash),
             _ => None,
         }
     }
 }
-impl xai_tool_runtime::ToolOutput for BashOutput {
-    fn chat_completion_output(&self) -> Option<xai_tool_runtime::ToolChatCompletionResponse> {
+impl agent_tui_tool_runtime::ToolOutput for BashOutput {
+    fn chat_completion_output(&self) -> Option<agent_tui_tool_runtime::ToolChatCompletionResponse> {
         let mut stdout = String::from_utf8_lossy(&self.output).into_owned();
         let mut extra = serde_json::Map::new();
         if self.truncated {
@@ -1244,11 +1244,11 @@ impl xai_tool_runtime::ToolOutput for BashOutput {
                 );
             }
         }
-        Some(xai_tool_runtime::ToolChatCompletionResponse {
-            result: Some(xai_tool_runtime::ToolChatCompletion {
+        Some(agent_tui_tool_runtime::ToolChatCompletionResponse {
+            result: Some(agent_tui_tool_runtime::ToolChatCompletion {
                 sender: "assistant".into(),
                 message_tag: Some("raw_function_result".into()),
-                code_execution_result: Some(xai_tool_runtime::ToolCodeExecutionResult {
+                code_execution_result: Some(agent_tui_tool_runtime::ToolCodeExecutionResult {
                     stdout,
                     stderr: String::new(),
                     exit_code: self.exit_code,
@@ -1261,28 +1261,28 @@ impl xai_tool_runtime::ToolOutput for BashOutput {
         })
     }
 }
-impl xai_tool_runtime::ToolOutput for GrepSearchOutput {}
-impl xai_tool_runtime::ToolOutput for ReadFileOutput {}
-impl xai_tool_runtime::ToolOutput for ListDirOutput {}
-impl xai_tool_runtime::ToolOutput for SearchReplaceOutput {}
-impl xai_tool_runtime::ToolOutput for TodoWriteOutput {}
-impl xai_tool_runtime::ToolOutput for WebSearchOutput {}
-impl xai_tool_runtime::ToolOutput for WebFetchOutput {}
-impl xai_tool_runtime::ToolOutput for SkillOutput {}
-impl xai_tool_runtime::ToolOutput for ApplyPatchOutput {}
-impl xai_tool_runtime::ToolOutput for CodexGrepFilesOutput {}
-impl xai_tool_runtime::ToolOutput for SearchToolOutput {}
-impl xai_tool_runtime::ToolOutput for EnterPlanModeOutput {}
-impl xai_tool_runtime::ToolOutput for ExitPlanModeOutput {}
-impl xai_tool_runtime::ToolOutput for AskUserQuestionOutput {}
-impl xai_tool_runtime::ToolOutput for MCPOutput {}
+impl agent_tui_tool_runtime::ToolOutput for GrepSearchOutput {}
+impl agent_tui_tool_runtime::ToolOutput for ReadFileOutput {}
+impl agent_tui_tool_runtime::ToolOutput for ListDirOutput {}
+impl agent_tui_tool_runtime::ToolOutput for SearchReplaceOutput {}
+impl agent_tui_tool_runtime::ToolOutput for TodoWriteOutput {}
+impl agent_tui_tool_runtime::ToolOutput for WebSearchOutput {}
+impl agent_tui_tool_runtime::ToolOutput for WebFetchOutput {}
+impl agent_tui_tool_runtime::ToolOutput for SkillOutput {}
+impl agent_tui_tool_runtime::ToolOutput for ApplyPatchOutput {}
+impl agent_tui_tool_runtime::ToolOutput for CodexGrepFilesOutput {}
+impl agent_tui_tool_runtime::ToolOutput for SearchToolOutput {}
+impl agent_tui_tool_runtime::ToolOutput for EnterPlanModeOutput {}
+impl agent_tui_tool_runtime::ToolOutput for ExitPlanModeOutput {}
+impl agent_tui_tool_runtime::ToolOutput for AskUserQuestionOutput {}
+impl agent_tui_tool_runtime::ToolOutput for MCPOutput {}
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::implementations::grok_build::todo::{TodoPriority, TodoStatus};
     use serde_json::json;
-    use xai_tool_types::KillTaskResult;
-    use xai_tool_types::TaskOutputResult;
+    use agent_tui_tool_types::KillTaskResult;
+    use agent_tui_tool_types::TaskOutputResult;
     /// Serialize a ToolOutput to JSON value
     fn to_json(output: ToolOutput) -> serde_json::Value {
         serde_json::to_value(&output).unwrap()
@@ -2277,7 +2277,7 @@ mod tests {
         }
     }
     fn assert_cer(
-        resp: &xai_tool_runtime::ToolChatCompletionResponse,
+        resp: &agent_tui_tool_runtime::ToolChatCompletionResponse,
         stdout: &str,
         exit_code: i32,
         timed_out: bool,
@@ -2306,7 +2306,7 @@ mod tests {
     }
     #[test]
     fn bash_output_chat_completion_carries_exit_and_stdout() {
-        let resp = xai_tool_runtime::ToolOutput::chat_completion_output(&sample_bash(
+        let resp = agent_tui_tool_runtime::ToolOutput::chat_completion_output(&sample_bash(
             0, b"hello\n", false,
         ))
         .unwrap();
@@ -2316,13 +2316,13 @@ mod tests {
     #[test]
     fn bash_output_chat_completion_empty_stdout_still_emits() {
         let resp =
-            xai_tool_runtime::ToolOutput::chat_completion_output(&sample_bash(0, b"", false))
+            agent_tui_tool_runtime::ToolOutput::chat_completion_output(&sample_bash(0, b"", false))
                 .unwrap();
         assert_cer(&resp, "", 0, false);
     }
     #[test]
     fn bash_output_chat_completion_timeout_and_nonzero_exit() {
-        let resp = xai_tool_runtime::ToolOutput::chat_completion_output(&sample_bash(
+        let resp = agent_tui_tool_runtime::ToolOutput::chat_completion_output(&sample_bash(
             124, b"partial", true,
         ))
         .unwrap();
@@ -2330,7 +2330,7 @@ mod tests {
     }
     #[test]
     fn bash_output_chat_completion_lossy_utf8() {
-        let resp = xai_tool_runtime::ToolOutput::chat_completion_output(&sample_bash(
+        let resp = agent_tui_tool_runtime::ToolOutput::chat_completion_output(&sample_bash(
             1,
             &[0x66, 0x6f, 0x6f, 0xff, 0x62, 0x61, 0x72],
             false,
@@ -2354,7 +2354,7 @@ mod tests {
         bash.truncated = true;
         bash.total_bytes = 50_000;
         bash.output_file = "/tmp/out.log".into();
-        let resp = xai_tool_runtime::ToolOutput::chat_completion_output(&bash).unwrap();
+        let resp = agent_tui_tool_runtime::ToolOutput::chat_completion_output(&bash).unwrap();
         let result = resp.result.as_ref().unwrap();
         let stdout = &result.code_execution_result.as_ref().unwrap().stdout;
         assert!(stdout.starts_with("head...tail"));
@@ -2383,13 +2383,13 @@ mod tests {
     }
     #[test]
     fn bash_tool_output_foreground_delegates_background_skips() {
-        let resp = xai_tool_runtime::ToolOutput::chat_completion_output(&BashToolOutput::Bash(
+        let resp = agent_tui_tool_runtime::ToolOutput::chat_completion_output(&BashToolOutput::Bash(
             sample_bash(0, b"ok", false),
         ))
         .unwrap();
         assert_cer(&resp, "ok", 0, false);
         assert!(
-            xai_tool_runtime::ToolOutput::chat_completion_output(
+            agent_tui_tool_runtime::ToolOutput::chat_completion_output(
                 &BashToolOutput::BackgroundTaskStarted(bg_started())
             )
             .is_none()
@@ -2397,19 +2397,19 @@ mod tests {
     }
     #[test]
     fn aggregate_tool_output_bash_delegates_background_skips() {
-        let resp = xai_tool_runtime::ToolOutput::chat_completion_output(&ToolOutput::Bash(
+        let resp = agent_tui_tool_runtime::ToolOutput::chat_completion_output(&ToolOutput::Bash(
             sample_bash(0, b"agg", false),
         ))
         .unwrap();
         assert_cer(&resp, "agg", 0, false);
         assert!(
-            xai_tool_runtime::ToolOutput::chat_completion_output(
+            agent_tui_tool_runtime::ToolOutput::chat_completion_output(
                 &ToolOutput::BackgroundTaskStarted(bg_started())
             )
             .is_none()
         );
         assert!(
-            xai_tool_runtime::ToolOutput::chat_completion_output(&ToolOutput::Text(
+            agent_tui_tool_runtime::ToolOutput::chat_completion_output(&ToolOutput::Text(
                 TextOutput::from("noop")
             ))
             .is_none()
@@ -2423,8 +2423,8 @@ mod tests {
             output,
         }
     }
-    fn bash_tool_id() -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("bash").unwrap()
+    fn bash_tool_id() -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("bash").unwrap()
     }
     #[test]
     fn into_typed_tool_output_preserves_bash_foreground_cco() {
@@ -2442,13 +2442,13 @@ mod tests {
             0,
             false,
         );
-        let dropped = xai_tool_runtime::TypedToolOutput::from_value(typed.tool_id, expected_value);
+        let dropped = agent_tui_tool_runtime::TypedToolOutput::from_value(typed.tool_id, expected_value);
         assert!(dropped.chat_completion_output.is_none());
     }
     #[test]
     fn into_typed_tool_output_non_bash_cco_is_none() {
         let run = sample_run_result(ToolOutput::Text(TextOutput::from("noop")));
-        let typed = run.into_typed_tool_output(xai_tool_protocol::ToolId::new("text").unwrap());
+        let typed = run.into_typed_tool_output(agent_tui_tool_protocol::ToolId::new("text").unwrap());
         assert!(typed.chat_completion_output.is_none());
     }
     #[test]

@@ -92,7 +92,7 @@ pub(crate) async fn spawn_session_actor(
     session_info: SessionInfo,
     gateway: GatewaySender,
     sampling_config: SamplingConfig,
-    credentials: xai_chat_state::Credentials,
+    credentials: agent_tui_chat_state::Credentials,
     auth_method_id: crate::agent::auth_method::SharedAuthMethodId,
     auth_manager: Option<Arc<AuthManager>>,
     attribution_callback: Option<agent_tui_sampler::SharedAttributionCallback>,
@@ -116,7 +116,7 @@ pub(crate) async fn spawn_session_actor(
     client_type: ClientType,
     auto_compact_threshold_percent: u8,
     system_prompt_label: String,
-    compaction_mode: xai_chat_state::CompactionMode,
+    compaction_mode: agent_tui_chat_state::CompactionMode,
     compaction_verbatim_input: bool,
     two_pass_enabled: bool,
     buffering_settings: Option<BufferingSettings>,
@@ -413,7 +413,7 @@ pub(crate) async fn spawn_session_actor(
         reasoning_effort: sampling_config.reasoning_effort,
         stream_tool_calls: Some(sampling_config.stream_tool_calls),
     };
-    let actor_pruning_config = xai_chat_state::PruningConfig {
+    let actor_pruning_config = agent_tui_chat_state::PruningConfig {
         enabled: session_pruning_config.enabled,
         keep_last_n_turns: session_pruning_config.keep_last_n_turns,
         soft_trim_threshold: session_pruning_config.soft_trim_threshold,
@@ -422,7 +422,7 @@ pub(crate) async fn spawn_session_actor(
         hard_clear_age_turns: session_pruning_config.hard_clear_age_turns,
     };
     let (chat_state_event_tx, chat_state_event_rx) = mpsc::unbounded_channel();
-    let chat_state_handle = xai_chat_state::ChatStateActor::spawn_with_pruning(
+    let chat_state_handle = agent_tui_chat_state::ChatStateActor::spawn_with_pruning(
         conversation.clone(),
         chat_state_sampling_config,
         actor_pruning_config,
@@ -1075,9 +1075,9 @@ pub(crate) async fn spawn_session_actor(
         agent_tui_tools::implementations::grok_build::update_goal::UpdateGoalEnvelope,
     >();
     let obs_bridge = {
-        let sid = xai_tool_protocol::SessionId::new(&*session_info.id.0)
-            .unwrap_or_else(|_| xai_tool_protocol::SessionId::new("unknown").expect("valid"));
-        xai_computer_hub_sdk::ObservabilityBridge::new(None, sid)
+        let sid = agent_tui_tool_protocol::SessionId::new(&*session_info.id.0)
+            .unwrap_or_else(|_| agent_tui_tool_protocol::SessionId::new("unknown").expect("valid"));
+        agent_tui_computer_hub_sdk::ObservabilityBridge::new(None, sid)
     };
     let mut effective_config = crate::config::load_effective_config()
         .ok()
@@ -1672,7 +1672,7 @@ pub(crate) async fn spawn_session_on_thread(
     session_info: SessionInfo,
     gateway: GatewaySender,
     sampling_config: SamplingConfig,
-    credentials: xai_chat_state::Credentials,
+    credentials: agent_tui_chat_state::Credentials,
     auth_method_id: crate::agent::auth_method::SharedAuthMethodId,
     auth_manager: Option<Arc<AuthManager>>,
     attribution_callback: Option<agent_tui_sampler::SharedAttributionCallback>,
@@ -1694,7 +1694,7 @@ pub(crate) async fn spawn_session_on_thread(
     client_type: ClientType,
     auto_compact_threshold_percent: u8,
     system_prompt_label: String,
-    compaction_mode: xai_chat_state::CompactionMode,
+    compaction_mode: agent_tui_chat_state::CompactionMode,
     compaction_verbatim_input: bool,
     two_pass_enabled: bool,
     buffering_settings: Option<BufferingSettings>,
@@ -1824,7 +1824,7 @@ pub(crate) async fn spawn_session_on_thread(
                         .as_object()
                         .cloned()
                         .unwrap_or_default();
-                    let span = xai_file_utils::trace_context::span_from_meta_traceparent(&meta);
+                    let span = agent_tui_file_utils::trace_context::span_from_meta_traceparent(&meta);
                     span.entered()
                 });
                 let (handle, permission_events_rx, system_prompt, session_done_rx) =

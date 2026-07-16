@@ -5,13 +5,13 @@ edition.workspace = true
 license = "Apache-2.0"
 authors = ["xAI"]
 
-# `xai-ratatui-inline` is reached only through the pager's re-exported
+# `agent-tui-ratatui-inline` is reached only through the pager's re-exported
 # `PagerTerminal` type (its `insert_before` / viewport methods), so this crate
 # never names the crate in code — only in intra-doc links. cargo-shear can't see
 # doc links, so keep it ignored rather than dropping the dep (which would break
 # those links).
 [package.metadata.cargo-shear]
-ignored = ["xai-ratatui-inline"]
+ignored = ["agent-tui-ratatui-inline"]
 
 [dependencies]
 # The pager crate whose view-model (AppView / views / scrollback) this render
@@ -31,14 +31,14 @@ tracing = { workspace = true }
 # Native scrollback / inline viewport engine (`insert_before`, viewport sizing).
 # Used only via the pager's re-exported `PagerTerminal`; see the
 # `[package.metadata.cargo-shear]` note above.
-xai-ratatui-inline = { workspace = true }
+agent-tui-ratatui-inline = { workspace = true }
 
 # Misc used by the commit/live/full-view paths.
 chrono = { workspace = true }
 similar = { workspace = true }
 agent-tui-shell = { workspace = true }
 agent-tui-version = { workspace = true }
-xai-token-estimation = { workspace = true }
+agent-tui-token-estimation = { workspace = true }
 
 [dev-dependencies]
 # The unit tests reuse the pager's test-only view-model constructors

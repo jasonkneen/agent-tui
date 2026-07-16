@@ -48,10 +48,10 @@ impl HostOs {
     }
 }
 
-/// WSL detection. The implementation lives in `xai-tty-utils` (the shared
+/// WSL detection. The implementation lives in `agent-tui-tty-utils` (the shared
 /// low-level crate) so crates that must not depend on this UI crate can reuse
 /// it; re-exported here so existing `host::is_wsl()` callers are unchanged.
-pub use xai_tty_utils::is_wsl;
+pub use agent_tui_tty_utils::is_wsl;
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, strum::Display)]
 #[strum(serialize_all = "snake_case")]
@@ -128,7 +128,7 @@ mod unicode_env_tests {
 }
 
 // All remaining tests here are Linux-only DisplayServer tests; WSL detection
-// tests live with the implementation in `xai-tty-utils`.
+// tests live with the implementation in `agent-tui-tty-utils`.
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;

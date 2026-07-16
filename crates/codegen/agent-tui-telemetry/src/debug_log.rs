@@ -64,7 +64,7 @@ pub const RMCP_SSE_NOISE_TARGET: &str = "rmcp::transport::common::client_side_ss
 // crates at debug regardless of a narrowing RUST_LOG, with deps at info so they
 // don't flood. Curated first-party allowlist: new grok crates default to `info`
 // until added here.
-const FIREHOSE_BASE_DIRECTIVES: &str = "info,agent_tui_pager=debug,agent_tui_shell=debug,agent_tui_tools=debug,agent_tui_telemetry=debug,agent_tui_agent=debug,agent_tui_mcp=debug,xai_acp_lib=debug,sampling_log=off";
+const FIREHOSE_BASE_DIRECTIVES: &str = "info,agent_tui_pager=debug,agent_tui_shell=debug,agent_tui_tools=debug,agent_tui_telemetry=debug,agent_tui_agent=debug,agent_tui_mcp=debug,agent_tui_acp_lib=debug,sampling_log=off";
 
 // Full firehose directives: the curated crate list plus the pager's ACP
 // update target (built from the constant above, not a literal).

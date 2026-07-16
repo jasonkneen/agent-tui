@@ -10,7 +10,7 @@ async fn client_hooks_fire_without_file_registry() {
     local
         .run_until(async {
             let (gateway_tx, mut gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -41,7 +41,7 @@ async fn client_hooks_fire_without_file_registry() {
             let msg = gateway_rx
                 .try_recv()
                 .expect("client hook must fire with no file registry");
-            let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg else {
+            let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg else {
                 panic!("expected an x.ai/hooks/event ext notification");
             };
             assert_eq!(args.request.method.as_ref(), "x.ai/hooks/event");
@@ -63,7 +63,7 @@ async fn pre_tool_use_client_deny_blocks_the_tool() {
     local
         .run_until(async {
             let (gateway_tx, mut gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -84,7 +84,7 @@ async fn pre_tool_use_client_deny_blocks_the_tool() {
             tokio::task::spawn_local(async move {
                 while let Some(msg) = gateway_rx.recv().await {
                     match msg {
-                        xai_acp_lib::AcpClientMessage::ExtMethod(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::ExtMethod(args) => {
                             let deny: Arc<serde_json::value::RawValue> =
                                 serde_json::value::to_raw_value(&serde_json::json!({
                                     "decision": "deny",
@@ -94,7 +94,7 @@ async fn pre_tool_use_client_deny_blocks_the_tool() {
                                 .into();
                             let _ = args.response_tx.send(Ok(acp::ExtResponse::new(deny)));
                         }
-                        xai_acp_lib::AcpClientMessage::SessionNotification(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::SessionNotification(args) => {
                             let _ = args.response_tx.send(Ok(()));
                         }
                         _ => {}
@@ -150,7 +150,7 @@ async fn pre_tool_use_resolves_meta_dispatch_tool_name_end_to_end() {
     local
         .run_until(async {
             let (gateway_tx, mut gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -178,7 +178,7 @@ async fn pre_tool_use_resolves_meta_dispatch_tool_name_end_to_end() {
             tokio::task::spawn_local(async move {
                 while let Some(msg) = gateway_rx.recv().await {
                     match msg {
-                        xai_acp_lib::AcpClientMessage::ExtMethod(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::ExtMethod(args) => {
                             let deny: Arc<serde_json::value::RawValue> =
                                 serde_json::value::to_raw_value(&serde_json::json!({
                                     "decision": "deny",
@@ -188,7 +188,7 @@ async fn pre_tool_use_resolves_meta_dispatch_tool_name_end_to_end() {
                                 .into();
                             let _ = args.response_tx.send(Ok(acp::ExtResponse::new(deny)));
                         }
-                        xai_acp_lib::AcpClientMessage::SessionNotification(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::SessionNotification(args) => {
                             let _ = args.response_tx.send(Ok(()));
                         }
                         _ => {}
@@ -236,7 +236,7 @@ async fn subagent_inherits_parent_pre_tool_use_client_hook() {
     local
         .run_until(async {
             let (parent_gateway_tx, _parent_gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (parent_persistence_tx, _parent_persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let parent =
@@ -254,7 +254,7 @@ async fn subagent_inherits_parent_pre_tool_use_client_hook() {
             *parent.client_hooks.borrow_mut() = client_hooks;
 
             let (child_gateway_tx, mut child_gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (child_persistence_tx, _child_persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let subagent =
@@ -274,7 +274,7 @@ async fn subagent_inherits_parent_pre_tool_use_client_hook() {
             tokio::task::spawn_local(async move {
                 while let Some(msg) = child_gateway_rx.recv().await {
                     match msg {
-                        xai_acp_lib::AcpClientMessage::ExtMethod(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::ExtMethod(args) => {
                             let params: serde_json::Value =
                                 serde_json::from_str(args.request.params.get()).unwrap();
                             *seen.lock().unwrap() =
@@ -287,7 +287,7 @@ async fn subagent_inherits_parent_pre_tool_use_client_hook() {
                                 .into();
                             let _ = args.response_tx.send(Ok(acp::ExtResponse::new(deny)));
                         }
-                        xai_acp_lib::AcpClientMessage::SessionNotification(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::SessionNotification(args) => {
                             let _ = args.response_tx.send(Ok(()));
                         }
                         _ => {}
@@ -348,7 +348,7 @@ async fn pre_tool_use_slow_callback_does_not_starve_a_deny() {
     local
         .run_until(async {
             let (gateway_tx, mut gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -369,7 +369,7 @@ async fn pre_tool_use_slow_callback_does_not_starve_a_deny() {
                 let mut held = Vec::new();
                 while let Some(msg) = gateway_rx.recv().await {
                     match msg {
-                        xai_acp_lib::AcpClientMessage::ExtMethod(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::ExtMethod(args) => {
                             let params: serde_json::Value =
                                 serde_json::from_str(args.request.params.get()).unwrap();
                             if params["hookCallbackId"] == "deny_cb" {
@@ -384,7 +384,7 @@ async fn pre_tool_use_slow_callback_does_not_starve_a_deny() {
                                 held.push(args.response_tx);
                             }
                         }
-                        xai_acp_lib::AcpClientMessage::SessionNotification(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::SessionNotification(args) => {
                             let _ = args.response_tx.send(Ok(()));
                         }
                         _ => {}
@@ -439,7 +439,7 @@ async fn post_tool_use_and_failure_never_double_fire() {
     local
         .run_until(async {
             let (gateway_tx, mut gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -464,10 +464,10 @@ async fn post_tool_use_and_failure_never_double_fire() {
 
             // Collect the `hookEventName` of every `x.ai/hooks/event` notification queued.
             let drain =
-                |rx: &mut tokio::sync::mpsc::UnboundedReceiver<xai_acp_lib::AcpClientMessage>| {
+                |rx: &mut tokio::sync::mpsc::UnboundedReceiver<agent_tui_acp_lib::AcpClientMessage>| {
                     let mut events = Vec::new();
                     while let Ok(msg) = rx.try_recv() {
-                        if let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg
+                        if let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg
                             && args.request.method.as_ref() == "x.ai/hooks/event"
                         {
                             let params: serde_json::Value =
@@ -539,7 +539,7 @@ async fn pre_tool_use_deny_feeds_reason_back_and_continues_turn() {
     local
         .run_until(async {
             let (gateway_tx, mut gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -563,7 +563,7 @@ async fn pre_tool_use_deny_feeds_reason_back_and_continues_turn() {
             tokio::task::spawn_local(async move {
                 while let Some(msg) = gateway_rx.recv().await {
                     match msg {
-                        xai_acp_lib::AcpClientMessage::ExtMethod(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::ExtMethod(args) => {
                             let deny: Arc<serde_json::value::RawValue> =
                                 serde_json::value::to_raw_value(&serde_json::json!({
                                     "decision": "deny",
@@ -573,7 +573,7 @@ async fn pre_tool_use_deny_feeds_reason_back_and_continues_turn() {
                                 .into();
                             let _ = args.response_tx.send(Ok(acp::ExtResponse::new(deny)));
                         }
-                        xai_acp_lib::AcpClientMessage::SessionNotification(args) => {
+                        agent_tui_acp_lib::AcpClientMessage::SessionNotification(args) => {
                             let _ = args.response_tx.send(Ok(()));
                         }
                         _ => {}

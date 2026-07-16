@@ -6,7 +6,7 @@ This tree is a packaging/product fork of [Grok Build](https://x.ai/cli) (`grok-b
 |--|----------------------|-----------|
 | Product name | Grok Build | **Agent TUI** |
 | Binary | `grok` / `xai-grok-pager` | **`agent-tui`** |
-| Crates | `xai-grok-*` | **`agent-tui-*`** |
+| Crates | `xai-grok-*`, leaf `xai-*` | **`agent-tui-*`** (all product + utility crates) |
 | Config home | `~/.grok` / `$GROK_HOME` | **`~/.agent-tui`** / `$AGENT_TUI_HOME` (legacy `$GROK_HOME` still accepted) |
 | Providers | Grok.com, xAI API | **Unchanged** — same wire IDs and endpoints |
 | Models | Grok, Composer, … (xAI catalog) | **Unchanged** — model ids like `grok-build`, `composer-2-fast` stay as-is |
@@ -25,6 +25,7 @@ These remain stable so auth, models, and backends keep working:
 - **Model IDs** in the xAI/Grok catalog, including **Grok** models (`grok-build`, …) and **Composer** models (`composer-2-fast`, …) — Composer is a model name, not a separate product or provider
 - Production API endpoints (`*.grok.com`, etc.)
 - API User-Agent shape for xAI services (still `grok-shell/...` where required for server dashboards)
+- Leaf utility crates were also renamed from `xai-*` → `agent-tui-*` (worktree, ACP client lib, tools protocol, etc.). Only **provider wire contracts** stay xAI-named — not crate packages.
 
 > Note: pager source also uses the English word “composer” for the **prompt input box**. That is unrelated to the Composer model family and is left alone.
 

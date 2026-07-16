@@ -47,7 +47,7 @@ pub const IMAGE_EDIT_TOOL_NAME: &str = "image_edit";
 /// Returns `(bytes, mime)`. Small JPEG/PNG inputs pass through unchanged.
 fn compress_reference(
     raw_bytes: Vec<u8>,
-) -> Result<(Vec<u8>, &'static str), xai_tool_runtime::ToolError> {
+) -> Result<(Vec<u8>, &'static str), agent_tui_tool_runtime::ToolError> {
     // Fast path: small JPEG/PNG passes through unchanged. Other formats
     // (WebP, GIF, etc.) always re-encode to guarantee API-compatible output.
     if raw_bytes.len() <= MAX_REF_RAW_BYTES
@@ -64,7 +64,7 @@ fn compress_reference(
     let reader = ImageReader::new(Cursor::new(&raw_bytes))
         .with_guessed_format()
         .map_err(|_| {
-            xai_tool_runtime::ToolError::invalid_arguments(
+            agent_tui_tool_runtime::ToolError::invalid_arguments(
                 "could not detect image format for reference",
             )
         })?;
@@ -72,7 +72,7 @@ fn compress_reference(
     if let Ok((w, h)) = reader.into_dimensions()
         && (w as u64) * (h as u64) > MAX_REF_DECODE_PIXELS
     {
-        return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+        return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
             "image reference is too large to process ({w}\u{00d7}{h} pixels)",
         )));
     }
@@ -83,7 +83,7 @@ fn compress_reference(
         .ok()
         .and_then(|r| r.decode().ok())
         .ok_or_else(|| {
-            xai_tool_runtime::ToolError::invalid_arguments("failed to decode image reference")
+            agent_tui_tool_runtime::ToolError::invalid_arguments("failed to decode image reference")
         })?;
 
     let params = ReEncodeParams {
@@ -97,7 +97,7 @@ fn compress_reference(
     };
 
     let (buf, _w, _h, mime) = re_encode_under_limit(&img, &params).map_err(|e| {
-        xai_tool_runtime::ToolError::invalid_arguments(format!(
+        agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
             "could not compress image reference small enough for Imagine API: {e}"
         ))
     })?;
@@ -111,7 +111,7 @@ fn compress_reference(
 
 /// Resolve a reference (filesystem path or `data:image/...;base64,...` URL)
 /// into a compressed data URL for the Imagine API.
-async fn resolve_to_data_url(value: &str) -> Result<String, xai_tool_runtime::ToolError> {
+async fn resolve_to_data_url(value: &str) -> Result<String, agent_tui_tool_runtime::ToolError> {
     let value = value.trim();
     // Accept `file://` URIs (e.g. an attachment's durable URI) by reading
     // the underlying path. Data URLs and bare paths are untouched.
@@ -119,30 +119,30 @@ async fn resolve_to_data_url(value: &str) -> Result<String, xai_tool_runtime::To
 
     let raw_bytes = if value.starts_with("data:image/") {
         let comma = value.find(',').ok_or_else(|| {
-            xai_tool_runtime::ToolError::invalid_arguments("malformed data URL in image reference")
+            agent_tui_tool_runtime::ToolError::invalid_arguments("malformed data URL in image reference")
         })?;
         if !value[..comma].contains(";base64") {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(
                 "image references only support base64 data URLs",
             ));
         }
         base64::engine::general_purpose::STANDARD
             .decode(&value[comma + 1..])
             .map_err(|e| {
-                xai_tool_runtime::ToolError::invalid_arguments(format!(
+                agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                     "invalid base64 in image reference: {e}"
                 ))
             })?
     } else {
         tokio::fs::read(value).await.map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
+            agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "image reference not readable: {value} ({e})"
             ))
         })?
     };
 
     if raw_bytes.is_empty() {
-        return Err(xai_tool_runtime::ToolError::invalid_arguments(
+        return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(
             "image reference contained no data",
         ));
     }
@@ -193,7 +193,7 @@ fn parse_attachment_token(value: &str) -> Option<usize> {
 fn resolve_attachment_reference(
     reference: &str,
     attached: Option<&crate::types::resources::AttachedImages>,
-) -> Result<String, xai_tool_runtime::ToolError> {
+) -> Result<String, agent_tui_tool_runtime::ToolError> {
     let Some(n) = parse_attachment_token(reference) else {
         return Ok(reference.to_owned());
     };
@@ -202,7 +202,7 @@ fn resolve_attachment_reference(
         // empty registry usually means the image was attached in an earlier
         // message (cross-turn editing isn't supported yet), so steer the
         // model to ask for a re-attach rather than retry the dead token.
-        xai_tool_runtime::ToolError::invalid_arguments(format!(
+        agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
             "image reference {reference:?} matches no image attached to this message. If it was \
              attached earlier in the conversation, ask the user to re-attach it here; otherwise \
              pass an absolute filesystem path or a data: URL."
@@ -214,7 +214,7 @@ fn resolve_attachment_reference(
             .iter()
             .map(|(num, _)| format!("[Image #{num}]"))
             .collect();
-        xai_tool_runtime::ToolError::invalid_arguments(format!(
+        agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
             "image reference {reference:?} does not match any attached image. Available: {}.",
             available.join(", ")
         ))
@@ -273,28 +273,28 @@ impl crate::types::tool_metadata::ToolMetadata for ImageEditTool {
     }
 }
 
-impl xai_tool_runtime::Tool for ImageEditTool {
+impl agent_tui_tool_runtime::Tool for ImageEditTool {
     type Args = ImageEditInput;
     type Output = ToolOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("image_edit").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("image_edit").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "image_edit",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: false,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Write),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Write),
             ..Default::default()
         }
     }
@@ -306,14 +306,14 @@ impl xai_tool_runtime::Tool for ImageEditTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: ImageEditInput,
-    ) -> Result<ToolOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<ToolOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
         if input.image.is_empty() {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(
                 "image_edit requires at least one reference image. \
                  Use image_gen for text-only generation.",
             ));
@@ -382,7 +382,7 @@ impl xai_tool_runtime::Tool for ImageEditTool {
         }
 
         let response = req.send().await.map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
+            agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "Image edit API request failed: {e}"
             ))
         })?;
@@ -395,15 +395,15 @@ impl xai_tool_runtime::Tool for ImageEditTool {
             let body = response.text().await.unwrap_or_default();
             let truncated: String = body.chars().take(200).collect();
             tracing::warn!(http_status = %status, "Imagine edit API error: {truncated}");
-            return Err(xai_tool_runtime::ToolError::new(
-                xai_tool_runtime::ToolErrorKind::Custom,
+            return Err(agent_tui_tool_runtime::ToolError::new(
+                agent_tui_tool_runtime::ToolErrorKind::Custom,
                 format!("Image edit failed with HTTP {status}: {truncated}"),
             )
             .with_details(serde_json::json!({"code": "http_failure", "status": status.as_u16()})));
         }
 
         let body = response.text().await.map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
+            agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "Failed to read image edit response body: {e}"
             ))
         })?;
@@ -411,14 +411,14 @@ impl xai_tool_runtime::Tool for ImageEditTool {
         let resp_json: ImageGenResponse = serde_json::from_str(&body).map_err(|e| {
             let preview: String = body.chars().take(500).collect();
             tracing::warn!("Imagine edit API returned unparseable body: {preview}");
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
+            agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "Failed to parse image edit response: {e} — body preview: {preview}"
             ))
         })?;
 
         let b64_data = resp_json.b64_data().unwrap_or("");
         if b64_data.is_empty() {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(
                 "Image edit returned no image data.",
             ));
         }
@@ -426,7 +426,7 @@ impl xai_tool_runtime::Tool for ImageEditTool {
         let image_bytes = base64::engine::general_purpose::STANDARD
             .decode(b64_data)
             .map_err(|e| {
-                xai_tool_runtime::ToolError::invalid_arguments(format!(
+                agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                     "Failed to decode base64 image data: {e}"
                 ))
             })?;
@@ -440,7 +440,7 @@ impl xai_tool_runtime::Tool for ImageEditTool {
             .writer()
             .save(&session_folder, &image_bytes, None)
             .await
-            .map_err(|e| xai_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
+            .map_err(|e| agent_tui_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
 
         tracing::info!(
             path = %absolute_path.display(),
@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn tool_name_and_description() {
         let tool = ImageEditTool;
-        assert_eq!(xai_tool_runtime::Tool::id(&tool).as_str(), "image_edit");
+        assert_eq!(agent_tui_tool_runtime::Tool::id(&tool).as_str(), "image_edit");
         let desc = crate::types::tool_metadata::ToolMetadata::description_template(&tool);
         assert!(desc.contains("Edit or transform"));
     }
@@ -487,7 +487,7 @@ mod tests {
     async fn rejects_empty_image_array() {
         let tool = ImageEditTool;
         let resources = crate::types::resources::Resources::new();
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(resources.into_shared(), "test-call"),
             ImageEditInput {
@@ -505,7 +505,7 @@ mod tests {
     async fn errors_when_client_missing() {
         let tool = ImageEditTool;
         let resources = crate::types::resources::Resources::new();
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(resources.into_shared(), "test-call"),
             ImageEditInput {

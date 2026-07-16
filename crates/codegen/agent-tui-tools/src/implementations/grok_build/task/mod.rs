@@ -24,7 +24,7 @@ use crate::types::requirements::{Expr, ToolRequirement};
 #[allow(unused_imports)]
 use crate::types::resources::SharedResources;
 use crate::types::tool::{ToolKind, ToolNamespace};
-use xai_tool_types::{SubagentCompletedOutput, SubagentIsolationMode, TaskToolInput};
+use agent_tui_tool_types::{SubagentCompletedOutput, SubagentIsolationMode, TaskToolInput};
 
 /// Maximum nesting depth for subagents. A top-level session is depth 0;
 /// the first subagent is depth 1. Subagents cannot spawn further subagents.
@@ -76,28 +76,28 @@ impl crate::types::tool_metadata::ToolMetadata for TaskTool {
     }
 }
 
-impl xai_tool_runtime::Tool for TaskTool {
+impl agent_tui_tool_runtime::Tool for TaskTool {
     type Args = TaskToolInput;
     type Output = ToolOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("task").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("task").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "task",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: false,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Write),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Write),
             ..Default::default()
         }
     }
@@ -111,9 +111,9 @@ impl xai_tool_runtime::Tool for TaskTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: TaskToolInput,
-    ) -> Result<ToolOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<ToolOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -126,7 +126,7 @@ impl xai_tool_runtime::Tool for TaskTool {
             let backend = res
                 .get::<SubagentBackendResource>()
                 .ok_or_else(|| {
-                    xai_tool_runtime::ToolError::custom(
+                    agent_tui_tool_runtime::ToolError::custom(
                         "missing_resource",
                         "SubagentBackendResource (subagent support not initialized)",
                     )
@@ -155,7 +155,7 @@ impl xai_tool_runtime::Tool for TaskTool {
         };
 
         if depth >= MAX_SUBAGENT_DEPTH {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "Subagent depth limit exceeded (current depth: {depth}, max: {MAX_SUBAGENT_DEPTH}). \
                  Cannot spawn further nested subagents."
             )));
@@ -168,7 +168,7 @@ impl xai_tool_runtime::Tool for TaskTool {
         });
 
         // Model overrides are soft-ignored on resume (source model is always pinned).
-        let model = xai_tool_types::sanitize_optional_arg(input.model);
+        let model = agent_tui_tool_types::sanitize_optional_arg(input.model);
         let model = if resume_from.is_some() {
             if let Some(ref ignored) = model {
                 tracing::debug!(
@@ -194,7 +194,7 @@ impl xai_tool_runtime::Tool for TaskTool {
                 .as_deref()
                 .is_some_and(|p| std::path::Path::new(p).is_dir())
             {
-                return Err(xai_tool_runtime::ToolError::invalid_arguments(
+                return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(
                     "cwd and isolation=\"worktree\" are mutually exclusive. \
                      Use cwd to point the subagent at an existing directory, \
                      or isolation=\"worktree\" to create a new isolated worktree, \
@@ -222,7 +222,7 @@ impl xai_tool_runtime::Tool for TaskTool {
                 } else {
                     format!("cwd \"{cwd_path}\" does not exist")
                 };
-                return Err(xai_tool_runtime::ToolError::invalid_arguments(detail));
+                return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(detail));
             }
         }
 
@@ -240,19 +240,19 @@ impl xai_tool_runtime::Tool for TaskTool {
                 } else {
                     format!(". Available types: {}", available.join(", "))
                 };
-                return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+                return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                     "Unknown subagent type: {}{suffix}",
                     input.subagent_type
                 )));
             }
             SubagentValidateTypeOutcome::Disabled => {
-                return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+                return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                     "Subagent '{}' is disabled via [subagents.toggle] in config.toml",
                     input.subagent_type
                 )));
             }
             SubagentValidateTypeOutcome::NotAllowed { allowed } => {
-                return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+                return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                     "agent can only spawn: {}; '{}' not allowed",
                     allowed.join(", "),
                     input.subagent_type
@@ -261,7 +261,7 @@ impl xai_tool_runtime::Tool for TaskTool {
             SubagentValidateTypeOutcome::ValidationUnavailable => {
                 // `custom` (not `invalid_arguments`) so the model doesn't
                 // retry with a different name on transport faults.
-                return Err(xai_tool_runtime::ToolError::custom(
+                return Err(agent_tui_tool_runtime::ToolError::custom(
                     "validation_unavailable",
                     format!(
                         "Cannot validate subagent type '{}': the subagent coordinator is \
@@ -274,13 +274,13 @@ impl xai_tool_runtime::Tool for TaskTool {
 
         if let Some(ref requested) = model {
             let validator = model_validator.ok_or_else(|| {
-                xai_tool_runtime::ToolError::custom(
+                agent_tui_tool_runtime::ToolError::custom(
                     "validation_unavailable",
                     "Cannot validate Task.model: model catalog validator is unavailable.",
                 )
             })?;
             if let Some(error) = validator.error_for(requested) {
-                return Err(xai_tool_runtime::ToolError::invalid_arguments(error));
+                return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(error));
             }
         }
 
@@ -358,7 +358,7 @@ impl xai_tool_runtime::Tool for TaskTool {
             .unwrap_or_else(|_| "get_command_or_subagent_output".to_string());
 
             return Ok(ToolOutput::Text(
-                xai_tool_types::format_subagent_started_background(
+                agent_tui_tool_types::format_subagent_started_background(
                     &id,
                     &input.subagent_type,
                     &input.description,
@@ -417,7 +417,7 @@ impl xai_tool_runtime::Tool for TaskTool {
                 persona_hint,
             }))
         } else {
-            Err(xai_tool_runtime::ToolError::invalid_arguments(
+            Err(agent_tui_tool_runtime::ToolError::invalid_arguments(
                 result
                     .error
                     .unwrap_or_else(|| "Unknown subagent error".to_string()),
@@ -436,7 +436,7 @@ mod tests {
     use crate::types::tool_metadata::test_ctx;
     use std::sync::Arc;
     use tokio::sync::mpsc;
-    use xai_tool_types::SubagentCapabilityMode;
+    use agent_tui_tool_types::SubagentCapabilityMode;
 
     /// Backend whose `ValidateType` events are auto-acked with `Ok`.
     fn make_backend() -> (
@@ -505,7 +505,7 @@ mod tests {
         resources.insert(CurrentPromptIdResource("prompt-123".to_string()));
 
         let tool = TaskTool;
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             TaskToolInput {
@@ -537,7 +537,7 @@ mod tests {
         resources.insert(SessionIdResource("child-session".to_string()));
         resources.insert(CurrentPromptIdResource("prompt-456".to_string()));
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(resources.into_shared()),
             TaskToolInput {
@@ -568,7 +568,7 @@ mod tests {
         let resources = Resources::new();
 
         let tool = TaskTool;
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(resources.into_shared()),
             TaskToolInput {
@@ -627,7 +627,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(shared),
             TaskToolInput {
@@ -684,7 +684,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(shared),
             TaskToolInput {
@@ -727,7 +727,7 @@ mod tests {
             drop(request.result_tx);
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx(shared),
             TaskToolInput {
@@ -770,7 +770,7 @@ mod tests {
             }
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(resources.into_shared()),
             task_input("general-purpose", false), // blocking mode
@@ -847,7 +847,7 @@ mod tests {
             });
         let resources = resources_for_task(backend);
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(resources.into_shared()),
             task_input("invented-agent", true),
@@ -869,7 +869,7 @@ mod tests {
         let (backend, mut rx) = make_backend_with_validation(SubagentValidateTypeOutcome::Disabled);
         let resources = resources_for_task(backend);
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(resources.into_shared()),
             task_input("explore", true),
@@ -889,7 +889,7 @@ mod tests {
             });
         let resources = resources_for_task(backend);
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(resources.into_shared()),
             task_input("general-purpose", true),
@@ -907,7 +907,7 @@ mod tests {
         });
         let resources = resources_for_task(backend);
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(resources.into_shared()),
             task_input("invented", false),
@@ -924,7 +924,7 @@ mod tests {
         let (backend, mut rx) = make_backend_with_validation(SubagentValidateTypeOutcome::Disabled);
         let resources = resources_for_task(backend);
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(resources.into_shared()),
             task_input("explore", false),
@@ -954,7 +954,7 @@ mod tests {
         input.model = Some("invented-model".to_string());
 
         let result =
-            xai_tool_runtime::Tool::run(&TaskTool, test_ctx(resources.into_shared()), input).await;
+            agent_tui_tool_runtime::Tool::run(&TaskTool, test_ctx(resources.into_shared()), input).await;
 
         let msg = result
             .expect_err("invalid model must reject before spawn")
@@ -984,7 +984,7 @@ mod tests {
             }
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(resources.into_shared()),
             task_input("general-purpose", true),
@@ -1025,7 +1025,7 @@ mod tests {
             let _ = done_tx.send(());
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(resources.into_shared()),
             task_input("general-purpose", true),
@@ -1073,7 +1073,7 @@ mod tests {
         drop(rx);
         let resources = resources_for_task(backend);
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(resources.into_shared()),
             task_input("general-purpose", true),
@@ -1098,7 +1098,7 @@ mod tests {
             make_backend_with_validation(SubagentValidateTypeOutcome::ValidationUnavailable);
         let resources = resources_for_task(backend);
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(resources.into_shared()),
             task_input("explore", true),
@@ -1125,7 +1125,7 @@ mod tests {
         resources.insert(SessionIdResource("special-session-id".to_string()));
         resources.insert(CurrentPromptIdResource("prompt-x".to_string()));
 
-        let _ = xai_tool_runtime::Tool::run(
+        let _ = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(resources.into_shared()),
             task_input("explore", true),
@@ -1505,7 +1505,7 @@ mod tests {
                 .unwrap();
         });
 
-        let _ = xai_tool_runtime::Tool::run(
+        let _ = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
@@ -1588,7 +1588,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
@@ -1655,7 +1655,7 @@ mod tests {
                     .unwrap();
             });
 
-            let result = xai_tool_runtime::Tool::run(
+            let result = agent_tui_tool_runtime::Tool::run(
                 &TaskTool,
                 test_ctx(shared),
                 TaskToolInput {
@@ -1729,7 +1729,7 @@ mod tests {
         resources.insert(SessionIdResource("parent".to_string()));
         resources.insert(CurrentPromptIdResource("prompt-1".to_string()));
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(resources.into_shared()),
             TaskToolInput {
@@ -1784,7 +1784,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
@@ -1835,7 +1835,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
@@ -1886,7 +1886,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
@@ -1940,7 +1940,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
@@ -1974,7 +1974,7 @@ mod tests {
         resources.insert(SessionIdResource("parent".to_string()));
         resources.insert(CurrentPromptIdResource("prompt-1".to_string()));
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(resources.into_shared()),
             TaskToolInput {
@@ -2030,7 +2030,7 @@ mod tests {
                     .unwrap();
             });
 
-            let result = xai_tool_runtime::Tool::run(
+            let result = agent_tui_tool_runtime::Tool::run(
                 &TaskTool,
                 test_ctx(shared.clone()),
                 TaskToolInput {
@@ -2084,7 +2084,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
@@ -2142,7 +2142,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
@@ -2195,7 +2195,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
@@ -2244,7 +2244,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(shared),
             TaskToolInput {
@@ -2307,7 +2307,7 @@ mod tests {
 
         let mut input = task_input("general-purpose", false);
         input.model = Some("test-model".into());
-        let result = xai_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), input)
+        let result = agent_tui_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), input)
             .await
             .unwrap();
         handle.await.unwrap();
@@ -2342,7 +2342,7 @@ mod tests {
                 .unwrap();
         });
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &TaskTool,
             test_ctx(shared),
             task_input("general-purpose", false),
@@ -2393,7 +2393,7 @@ mod tests {
 
             let mut input = task_input("general-purpose", false);
             input.model = Some(sentinel.into());
-            let result = xai_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), input)
+            let result = agent_tui_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), input)
                 .await
                 .unwrap_or_else(|e| panic!("sentinel {sentinel:?} should not fail: {e}"));
             handle.await.unwrap();
@@ -2433,7 +2433,7 @@ mod tests {
 
         let mut input = task_input("general-purpose", false);
         input.model = Some("  test-model  ".into());
-        let _ = xai_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), input)
+        let _ = agent_tui_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), input)
             .await
             .unwrap();
         handle.await.unwrap();
@@ -2474,7 +2474,7 @@ mod tests {
         let mut input = task_input("general-purpose", false);
         input.resume_from = Some("prev-id".into());
         input.model = Some("test-model".into());
-        let result = xai_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), input)
+        let result = agent_tui_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), input)
             .await
             .unwrap();
         handle.await.unwrap();
@@ -2508,7 +2508,7 @@ mod tests {
 
         let mut input = task_input("general-purpose", false);
         input.resume_from = Some("prev-id".into());
-        let result = xai_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), input)
+        let result = agent_tui_tool_runtime::Tool::run(&TaskTool, test_ctx(shared), input)
             .await
             .unwrap();
         handle.await.unwrap();

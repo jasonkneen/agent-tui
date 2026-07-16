@@ -22,7 +22,7 @@ fn sample_image(path: Option<&str>, pixels: bool) -> PastedImage {
         })
         .unwrap_or_default();
     PastedImage {
-        element_id: xai_ratatui_textarea::ElementId::from_raw(1),
+        element_id: agent_tui_ratatui_textarea::ElementId::from_raw(1),
         display_number: 1,
         mime_type: "image/png".into(),
         dimensions: Some((640, 480)),

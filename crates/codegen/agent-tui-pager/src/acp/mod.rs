@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::client_identity::{HEADLESS_CLIENT_TYPE, PAGER_CLIENT_TYPE, PAGER_CLIENT_VERSION};
 use agent_client_protocol as acp;
-use xai_acp_lib::{AcpAgentTx, AcpClientRx, acp_send};
+use agent_tui_acp_lib::{AcpAgentTx, AcpClientRx, acp_send};
 use agent_tui_shell::agent::auth_method::AuthMethodKind;
 use agent_tui_shell::agent::config::Config as AgentConfig;
 use agent_tui_shell::sampling::types::ReasoningEffort;

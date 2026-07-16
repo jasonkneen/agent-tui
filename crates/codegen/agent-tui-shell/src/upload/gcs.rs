@@ -1,5 +1,5 @@
 //! Shell-side adapter that threads the live `AuthManager` through to the
-//! `StorageClient` constructed inside `xai_file_utils::gcs::*` helpers.
+//! `StorageClient` constructed inside `agent_tui_file_utils::gcs::*` helpers.
 //!
 //! Background: the data-collector helpers (`upload_bytes`,
 //! `upload_file`, `upload_stream`, `upload_bytes_signed`)
@@ -23,19 +23,19 @@
 //!
 //! Use [`WithAuth::with_auth`] at every shell-side upload call site that
 //! has an `AuthManager` in scope, immediately before passing the config
-//! to an `xai_file_utils::gcs::*` helper.
+//! to an `agent_tui_file_utils::gcs::*` helper.
 use crate::auth::AuthManager;
 use crate::auth::credential_provider::{
     ShellAuthCredentialProvider, StorageClientAttributionBridge,
 };
 use std::sync::Arc;
-use xai_file_utils::gcs::StorageConfig;
-use xai_file_utils::storage_client::Auth401AttributionCallback;
-use xai_file_utils::{TraceExportConfig, UploadMethod};
+use agent_tui_file_utils::gcs::StorageConfig;
+use agent_tui_file_utils::storage_client::Auth401AttributionCallback;
+use agent_tui_file_utils::{TraceExportConfig, UploadMethod};
 use agent_tui_auth::AuthCredentialProvider;
 /// Owned wrapper that pairs a `TraceExportConfig` with an optional live
 /// `AuthManager`. See module docs for why this exists; in short, it's the
-/// shell-side adapter that lets `xai_file_utils::gcs::*` helpers wire
+/// shell-side adapter that lets `agent_tui_file_utils::gcs::*` helpers wire
 /// refresh-aware credentials and 401-attribution into the per-call
 /// `StorageClient` they construct internally.
 ///
@@ -96,7 +96,7 @@ impl StorageConfig for TraceExportConfigWithAuth {
 /// sites. Pattern:
 ///
 /// ```ignore
-/// xai_file_utils::gcs::upload_bytes(
+/// agent_tui_file_utils::gcs::upload_bytes(
 ///     &gcs_config.with_auth(Some(auth_manager.clone())),
 ///     ...,
 /// ).await
@@ -161,7 +161,7 @@ pub(crate) async fn upload_to_auth_diagnostics(
         absolute_paths: false,
         archive_name_override: None,
     };
-    match xai_file_utils::gcs::upload_bytes(
+    match agent_tui_file_utils::gcs::upload_bytes(
         &config.with_auth(Some(auth_manager)),
         &object_path,
         log_bytes,

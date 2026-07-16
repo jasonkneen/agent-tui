@@ -348,7 +348,7 @@ pub fn render_via_subprocess(
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .envs(xai_tty_utils::pager_env());
+        .envs(agent_tui_tty_utils::pager_env());
     // The child runs under an `RLIMIT_AS` cap (see `cap_child_address_space`),
     // but jemalloc — the default global allocator — pre-reserves virtual address
     // space that scales with its arena count (default ~4×ncpus), which on a
@@ -365,7 +365,7 @@ pub fn render_via_subprocess(
             .env("MALLOC_CONF", "narenas:1");
     }
     // setsid/console detach via the sanctioned helper (never a raw pre_exec).
-    xai_tty_utils::detach_std_command(&mut cmd);
+    agent_tui_tty_utils::detach_std_command(&mut cmd);
 
     run_render_command(cmd, source.as_bytes(), out_path, timeout)
 }
@@ -1953,7 +1953,7 @@ mod tests {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
-            xai_tty_utils::detach_std_command(&mut cmd);
+            agent_tui_tty_utils::detach_std_command(&mut cmd);
             cmd
         }
 

@@ -240,7 +240,7 @@ impl SessionActor {
         }
         for contributor in self.extension_registry.session_lifecycle_contributors() {
             contributor
-                .on_session_idle(&xai_agent_lifecycle::SessionIdleInput)
+                .on_session_idle(&agent_tui_agent_lifecycle::SessionIdleInput)
                 .await;
         }
     }

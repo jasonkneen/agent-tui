@@ -1,10 +1,10 @@
 //! Server-authoritative prompt queue wire types.
 //!
-//! Canonical definitions live in `xai_prompt_queue`; this re-export keeps every existing
+//! Canonical definitions live in `agent_tui_prompt_queue`; this re-export keeps every existing
 //! `crate::session::prompt_queue::*` and cross-crate `agent_tui_shell::session::prompt_queue::*`
 //! path resolving without edits.
 
-pub use xai_prompt_queue::{QueueChanged, QueueEntryMeta, QueueEntryWire};
+pub use agent_tui_prompt_queue::{QueueChanged, QueueEntryMeta, QueueEntryWire};
 
 // Outbound method for broadcast_queue_changed. An ACP routing concern, not a queue concern.
 pub const QUEUE_CHANGED_METHOD: &str = "x.ai/queue/changed";

@@ -13,7 +13,7 @@ use super::*;
 /// String fallbacks remain for tools that surface auth failures without
 /// going through the structured `HttpFailure` path (e.g. JSON-only
 /// `invalid_token` payloads, BYOK key-validation messages).
-pub(super) fn is_auth_tool_error(err: &xai_tool_runtime::ToolError) -> bool {
+pub(super) fn is_auth_tool_error(err: &agent_tui_tool_runtime::ToolError) -> bool {
     if let Some(details) = &err.details
         && let Some(status) = details
             .get(HTTP_STATUS_DETAILS_KEY)
@@ -68,13 +68,13 @@ pub(super) async fn call_with_auth_retry<F, Fut>(
     shared_recovery: Option<&tokio::sync::OnceCell<bool>>,
     tool_name: &str,
     mut call: F,
-) -> Result<agent_tui_tools::types::output::ToolRunResult, xai_tool_runtime::ToolError>
+) -> Result<agent_tui_tools::types::output::ToolRunResult, agent_tui_tool_runtime::ToolError>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<
             Output = Result<
                 agent_tui_tools::types::output::ToolRunResult,
-                xai_tool_runtime::ToolError,
+                agent_tui_tool_runtime::ToolError,
             >,
         >,
 {
@@ -234,7 +234,7 @@ impl SessionActor {
         struct TraceContextInjector;
         impl agent_tui_sampler::HeaderInjector for TraceContextInjector {
             fn inject(&self, headers: &mut reqwest::header::HeaderMap) {
-                if let Some(tp) = xai_file_utils::trace_context::current_traceparent()
+                if let Some(tp) = agent_tui_file_utils::trace_context::current_traceparent()
                     && let Ok(v) = reqwest::header::HeaderValue::from_str(&tp)
                 {
                     headers.insert("traceparent", v);
@@ -588,7 +588,7 @@ impl SessionActor {
                 .expect("should_compact_on_error guarantees context_window");
             {
                 let total_tokens = self.chat_state_handle.get_estimated_total_tokens().await;
-                let percentage = xai_token_estimation::usage_percentage_u8(total_tokens, cw);
+                let percentage = agent_tui_token_estimation::usage_percentage_u8(total_tokens, cw);
                 if let Some(mut cfg) = self.chat_state_handle.get_sampling_config().await
                     && let Some(new_cw) = std::num::NonZeroU64::new(cw)
                     && self.compaction.context_window_override.is_none()

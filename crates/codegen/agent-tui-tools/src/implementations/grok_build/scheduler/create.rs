@@ -64,7 +64,7 @@ pub struct SchedulerCreateOutput {
     pub recurring: bool,
 }
 
-impl xai_tool_runtime::ToolOutput for SchedulerCreateOutput {}
+impl agent_tui_tool_runtime::ToolOutput for SchedulerCreateOutput {}
 
 #[derive(Debug, Default)]
 pub struct SchedulerCreateTool;
@@ -104,28 +104,28 @@ Usage notes:
     }
 }
 
-impl xai_tool_runtime::Tool for SchedulerCreateTool {
+impl agent_tui_tool_runtime::Tool for SchedulerCreateTool {
     type Args = SchedulerCreateInput;
     type Output = SchedulerCreateOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new(SCHEDULER_CREATE_TOOL_NAME).expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new(SCHEDULER_CREATE_TOOL_NAME).expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "scheduler_create",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: false,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Write),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Write),
             ..Default::default()
         }
     }
@@ -137,20 +137,20 @@ impl xai_tool_runtime::Tool for SchedulerCreateTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: SchedulerCreateInput,
-    ) -> Result<SchedulerCreateOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<SchedulerCreateOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
         let interval_secs = parse_interval(&input.interval)
-            .map_err(|e| xai_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
+            .map_err(|e| agent_tui_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
 
         let sender = {
             let res = resources.lock().await;
             res.get::<SchedulerHandle>()
                 .ok_or_else(|| {
-                    xai_tool_runtime::ToolError::custom("missing_resource", "SchedulerHandle")
+                    agent_tui_tool_runtime::ToolError::custom("missing_resource", "SchedulerHandle")
                 })?
                 .0
                 .clone()
@@ -172,18 +172,18 @@ impl xai_tool_runtime::Tool for SchedulerCreateTool {
                 reply: reply_tx,
             })
             .map_err(|_| {
-                xai_tool_runtime::ToolError::custom("process_manager", "Scheduler actor stopped")
+                agent_tui_tool_runtime::ToolError::custom("process_manager", "Scheduler actor stopped")
             })?;
 
         let created = reply_rx
             .await
             .map_err(|_| {
-                xai_tool_runtime::ToolError::custom(
+                agent_tui_tool_runtime::ToolError::custom(
                     "process_manager",
                     "Scheduler actor dropped reply",
                 )
             })?
-            .map_err(|e| xai_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
+            .map_err(|e| agent_tui_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
 
         Ok(SchedulerCreateOutput {
             id: created.id,

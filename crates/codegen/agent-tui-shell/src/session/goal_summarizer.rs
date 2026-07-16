@@ -20,7 +20,7 @@ use crate::session::goal_planner::{
 use crate::session::goal_role_tools::RoleToolNames;
 use std::path::Path;
 use std::sync::Arc;
-use xai_file_utils::events::EventWriter;
+use agent_tui_file_utils::events::EventWriter;
 
 // Constants
 
@@ -89,7 +89,7 @@ pub(crate) struct ChannelSpawner {
     pub(crate) cwd: Option<String>,
     /// Trace-artifact sink + resolved `task` tool name; `None` disables
     /// recording. See [`crate::session::goal_classifier::record_subagent_trace`].
-    pub(crate) trace_sink: Option<(xai_chat_state::ChatStateHandle, String)>,
+    pub(crate) trace_sink: Option<(agent_tui_chat_state::ChatStateHandle, String)>,
     /// Event sink for the spawn-and-retry-once fail-open telemetry; `None` in
     /// tests / when no event log is wired.
     pub(crate) events: Option<EventWriter>,
@@ -158,7 +158,7 @@ impl ChannelSpawner {
         use agent_tui_tools::implementations::grok_build::task::types::{
             SubagentEvent, SubagentRequest, SubagentRuntimeOverrides,
         };
-        use xai_tool_types::SubagentCapabilityMode;
+        use agent_tui_tool_types::SubagentCapabilityMode;
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         let request = SubagentRequest {
             id: id.to_string(),
@@ -633,7 +633,7 @@ mod tests {
         use agent_tui_tools::implementations::grok_build::task::types::{
             SubagentEvent, SubagentResult,
         };
-        use xai_tool_types::SubagentCapabilityMode;
+        use agent_tui_tool_types::SubagentCapabilityMode;
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let spawner = ChannelSpawner {

@@ -4,7 +4,7 @@ use super::KillTaskTool;
 use crate::implementations::grok_build::task_output::background_bash_requires_exprs;
 use crate::types::requirements::{Expr, ToolRequirement};
 use crate::types::tool::{ToolKind, ToolNamespace};
-use xai_tool_types::{KillTaskOutput, KillTaskToolInput};
+use agent_tui_tool_types::{KillTaskOutput, KillTaskToolInput};
 
 fn kill_terminal_command_requires_expr() -> Expr<ToolRequirement> {
     Expr::Or(background_bash_requires_exprs())
@@ -36,28 +36,28 @@ Usage notes:
     }
 }
 
-impl xai_tool_runtime::Tool for KillTerminalCommandTool {
+impl agent_tui_tool_runtime::Tool for KillTerminalCommandTool {
     type Args = KillTaskToolInput;
     type Output = KillTaskOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("kill_terminal_command").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("kill_terminal_command").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "kill_terminal_command",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: false,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Write),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Write),
             ..Default::default()
         }
     }
@@ -69,10 +69,10 @@ impl xai_tool_runtime::Tool for KillTerminalCommandTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: KillTaskToolInput,
-    ) -> Result<KillTaskOutput, xai_tool_runtime::ToolError> {
-        xai_tool_runtime::Tool::run(&KillTaskTool, ctx, input).await
+    ) -> Result<KillTaskOutput, agent_tui_tool_runtime::ToolError> {
+        agent_tui_tool_runtime::Tool::run(&KillTaskTool, ctx, input).await
     }
 }
 
@@ -136,7 +136,7 @@ mod tests {
     fn tool_name_and_description_are_subagent_free() {
         let tool = KillTerminalCommandTool;
         assert_eq!(
-            xai_tool_runtime::Tool::id(&tool).as_str(),
+            agent_tui_tool_runtime::Tool::id(&tool).as_str(),
             "kill_terminal_command"
         );
         let tmpl = ToolMetadata::description_template(&tool);
@@ -151,7 +151,7 @@ mod tests {
     #[tokio::test]
     async fn delegates_kill_killed() {
         let resources = resources_with_terminal(KillOutcome::Killed);
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &KillTerminalCommandTool,
             test_ctx_with_call_id(resources.into_shared(), "tool_call"),
             KillTaskToolInput {
@@ -173,7 +173,7 @@ mod tests {
     #[tokio::test]
     async fn delegates_kill_already_exited() {
         let resources = resources_with_terminal(KillOutcome::AlreadyExited);
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &KillTerminalCommandTool,
             test_ctx_with_call_id(resources.into_shared(), "tool_call"),
             KillTaskToolInput {
@@ -192,7 +192,7 @@ mod tests {
     #[tokio::test]
     async fn delegates_kill_not_found() {
         let resources = resources_with_terminal(KillOutcome::NotFound);
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &KillTerminalCommandTool,
             test_ctx_with_call_id(resources.into_shared(), "tool_call"),
             KillTaskToolInput {

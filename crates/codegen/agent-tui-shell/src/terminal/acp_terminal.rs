@@ -1,5 +1,5 @@
 use agent_client_protocol as acp;
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
 
 use super::runner::{AsyncTerminalRunner, TerminalError, TerminalRunRequest, TerminalRunResult};
 

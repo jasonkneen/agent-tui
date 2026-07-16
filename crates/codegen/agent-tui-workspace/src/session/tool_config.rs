@@ -31,9 +31,9 @@ pub(crate) fn resolve_session_toolset(
     session_env: Arc<HashMap<String, String>>,
     session_id: &str,
     factory: &dyn SessionContextFactory,
-    local_registry: Option<xai_computer_hub_sdk::LocalRegistry>,
+    local_registry: Option<agent_tui_computer_hub_sdk::LocalRegistry>,
     lsp: Option<std::sync::Arc<dyn agent_tui_tools::implementations::lsp::LspBackend>>,
-    viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
+    viewer_ctx: Option<agent_tui_tool_runtime::WorkspaceViewerContext>,
     notification_handle: Option<agent_tui_tools::notification::types::ToolNotificationHandle>,
 ) -> WorkspaceResult<(
     ToolServerConfig,
@@ -83,9 +83,9 @@ pub(crate) fn resolve_session_toolset_rebuild(
     session_env: Arc<HashMap<String, String>>,
     session_id: &str,
     factory: &dyn SessionContextFactory,
-    local_registry: Option<xai_computer_hub_sdk::LocalRegistry>,
+    local_registry: Option<agent_tui_computer_hub_sdk::LocalRegistry>,
     lsp: Option<std::sync::Arc<dyn agent_tui_tools::implementations::lsp::LspBackend>>,
-    viewer_ctx: Option<xai_tool_runtime::WorkspaceViewerContext>,
+    viewer_ctx: Option<agent_tui_tool_runtime::WorkspaceViewerContext>,
     notification_handle: Option<agent_tui_tools::notification::types::ToolNotificationHandle>,
     terminal_backend: Arc<dyn agent_tui_tools::computer::types::TerminalBackend>,
 ) -> WorkspaceResult<(ToolServerConfig, Arc<FinalizedToolset>)> {
@@ -279,7 +279,7 @@ fn sanitize_session_id(session_id: &str) -> String {
         modified = true;
     }
     if modified {
-        let digest = xai_file_utils::sha256_hex(session_id.as_bytes());
+        let digest = agent_tui_file_utils::sha256_hex(session_id.as_bytes());
         safe.push('-');
         safe.push_str(&digest[..8]);
     }
@@ -319,7 +319,7 @@ pub(crate) use crate::ENV_TEST_LOCK as TOOL_STATE_ENV_LOCK;
 /// [`build_session_context`]: crate::config::SessionContextFactory::build_session_context
 /// [`LocalTerminalBackend`]: agent_tui_tools::computer::local::LocalTerminalBackend
 pub struct WorkspaceSessionContextFactory {
-    auth: Option<xai_computer_hub_sdk::SharedAuthProvider>,
+    auth: Option<agent_tui_computer_hub_sdk::SharedAuthProvider>,
     api_base_url: Option<String>,
     /// Resolved `$GROK_WORKSPACE_HOME` when tool-state persistence is enabled;
     /// `None` disables it. Resolved once by the caller so the factory performs
@@ -340,7 +340,7 @@ impl WorkspaceSessionContextFactory {
         }
     }
     /// Factory with auth — gen tools use the provider's live token.
-    pub fn with_auth(auth: xai_computer_hub_sdk::SharedAuthProvider, api_base_url: String) -> Self {
+    pub fn with_auth(auth: agent_tui_computer_hub_sdk::SharedAuthProvider, api_base_url: String) -> Self {
         Self {
             auth: Some(auth),
             api_base_url: Some(api_base_url),
@@ -405,7 +405,7 @@ impl SessionContextFactory for WorkspaceSessionContextFactory {
             if let (Some(auth), Some(url)) = (&self.auth, &self.api_base_url) {
                 let cred = auth.current();
                 match cred {
-                    xai_computer_hub_sdk::AuthCredential::Bearer { token, .. } => {
+                    agent_tui_computer_hub_sdk::AuthCredential::Bearer { token, .. } => {
                         let headers = build_proxy_headers(url);
                         (
                             ImageGenConfig::Enabled {

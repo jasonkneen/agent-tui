@@ -1,13 +1,13 @@
 //! Clipboard providers for copy/paste.
 //!
 //! Re-exports [`ClipboardProvider`] and [`InternalClipboard`] from
-//! `xai-ratatui-textarea`, and adds [`SystemClipboard`] backed by `arboard`.
+//! `agent-tui-ratatui-textarea`, and adds [`SystemClipboard`] backed by `arboard`.
 //!
 //! Multi-fire writes (native / tmux / OSC 52); user-facing success is [`trust`].
 
 mod trust;
 
-pub use xai_ratatui_textarea::{ClipboardProvider, InternalClipboard};
+pub use agent_tui_ratatui_textarea::{ClipboardProvider, InternalClipboard};
 
 use std::sync::OnceLock;
 
@@ -152,7 +152,7 @@ fn write_tmux_buffer(text: &str) -> bool {
             .stdin(Stdio::from(stdin))
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        xai_tty_utils::detach_std_command(&mut cmd);
+        agent_tui_tty_utils::detach_std_command(&mut cmd);
         let mut child = cmd.spawn()?;
         // Bounded wait: a wedged tmux server must not freeze the UI thread.
         let status = agent_tui_shared::clipboard::wait_with_deadline(

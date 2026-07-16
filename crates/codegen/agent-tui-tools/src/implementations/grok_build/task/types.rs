@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use educe::Educe;
 use tokio::sync::{mpsc, oneshot};
-use xai_tool_types::{SubagentCapabilityMode, SubagentIsolationMode, WaitMode};
+use agent_tui_tool_types::{SubagentCapabilityMode, SubagentIsolationMode, WaitMode};
 
 use crate::register_resource;
 
@@ -107,8 +107,8 @@ pub struct SubagentRuntimeOverrides {
     pub harness_agent_type: Option<String>,
 }
 
-/// Re-export of [`xai_tool_types::is_not_sentinel`] for existing call sites.
-pub use xai_tool_types::is_not_sentinel;
+/// Re-export of [`agent_tui_tool_types::is_not_sentinel`] for existing call sites.
+pub use agent_tui_tool_types::is_not_sentinel;
 
 /// Sanitize a model-emitted `cwd` argument for the `task` tool.
 ///
@@ -709,7 +709,7 @@ impl MonitorEventNotification {
 /// Shared buffer for mid-turn monitor event notifications: an [`EventQueue`]
 /// of [`MonitorEventNotification`]. Producers `push_capped`; the turn loop
 /// drains its session's events via [`drain_owned`].
-pub type MonitorEventBuffer = xai_interjection_core::EventQueue<MonitorEventNotification>;
+pub type MonitorEventBuffer = agent_tui_interjection_core::EventQueue<MonitorEventNotification>;
 
 register_resource!("grok_build", "MonitorEventBuffer", MonitorEventBuffer);
 
@@ -728,7 +728,7 @@ pub fn drain_owned(
 ///
 /// This is the single shared definition of this type. The coordinator in
 /// agent-tui-shell produces it, the channel protocol carries it, and the
-/// compaction pipeline in xai-chat-state (via `RunningSubagentSummary`)
+/// compaction pipeline in agent-tui-chat-state (via `RunningSubagentSummary`)
 /// consumes it. Do not duplicate this type in other crates.
 #[derive(Debug, Clone)]
 pub struct ActiveSubagentSummary {

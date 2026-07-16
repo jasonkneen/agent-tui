@@ -27,8 +27,8 @@ agent-tui-update = { path = "../agent-tui-update" }
 agent-tui-version = { workspace = true }
 agent-tui-telemetry = { workspace = true }
 agent-tui-workspace = { workspace = true }
-xai-crash-handler = { path = "../xai-crash-handler" }
-xai-acp-lib = { workspace = true }
+agent-tui-crash-handler = { path = "../agent-tui-crash-handler" }
+agent-tui-acp-lib = { workspace = true }
 
 # Async runtime + misc.
 tokio = { workspace = true, features = [
@@ -47,7 +47,7 @@ tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
 dunce = { workspace = true }
 semver = { workspace = true }
-xai-tty-utils = { workspace = true }
+agent-tui-tty-utils = { workspace = true }
 agent-tui-config = { workspace = true }
 agent-tui-sandbox = { path = "../agent-tui-sandbox", default-features = false }
 rustls = { version = "0.23", default-features = false, features = [

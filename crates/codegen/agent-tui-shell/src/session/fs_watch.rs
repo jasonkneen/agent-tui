@@ -1,6 +1,6 @@
-//! Session-level fs-watch policy over [`xai_fsnotify`].
+//! Session-level fs-watch policy over [`agent_tui_fsnotify`].
 //!
-//! Mechanism (OS watch, coalesce, refcount) lives in `xai_fsnotify`. This module
+//! Mechanism (OS watch, coalesce, refcount) lives in `agent_tui_fsnotify`. This module
 //! decides which consumers exist, fans events through three explicit phases, and
 //! owns one `select!` loop (event hot path + debounced refresh).
 
@@ -13,10 +13,10 @@ use std::time::Duration;
 use agent_client_protocol as acp;
 use tokio::sync::mpsc;
 use tokio::time::sleep_until;
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
-use xai_fsnotify::{FsEvent, FsEventKind};
+use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_tui_fsnotify::{FsEvent, FsEventKind};
 use agent_tui_workspace::file_system::{CodebaseIndexManager, FileIndex, WalkOptions};
-use xai_hunk_tracker::HunkTrackerHandle;
+use agent_tui_hunk_tracker::HunkTrackerHandle;
 
 use crate::session::acp_session::SessionActor;
 use crate::session::persistence::PersistenceMsg;
@@ -91,8 +91,8 @@ pub(crate) fn git_head_dedup_key(
 fn fs_event_to_codebase_graph_event(
     paths: &[PathBuf],
     kind: FsEventKind,
-) -> xai_codebase_graph::FileEvent {
-    use xai_codebase_graph::{FileEvent, FileEventKind};
+) -> agent_tui_codebase_graph::FileEvent {
+    use agent_tui_codebase_graph::{FileEvent, FileEventKind};
     let kind = match kind {
         FsEventKind::Created => FileEventKind::Created,
         FsEventKind::Modified => FileEventKind::Modified,
@@ -155,22 +155,22 @@ const GIT_DIFF_REBUILD_THRESHOLD: usize = 500;
 fn parse_diff_name_status_line(
     line: &str,
     repo_root: &Path,
-) -> Option<xai_codebase_graph::FileEvent> {
+) -> Option<agent_tui_codebase_graph::FileEvent> {
     let mut parts = line.splitn(3, '\t');
     let status = parts.next()?.trim();
     let path = parts.next()?;
 
     match status.chars().next()? {
-        'A' => Some(xai_codebase_graph::FileEvent::created(repo_root.join(path))),
-        'D' => Some(xai_codebase_graph::FileEvent::removed(repo_root.join(path))),
+        'A' => Some(agent_tui_codebase_graph::FileEvent::created(repo_root.join(path))),
+        'D' => Some(agent_tui_codebase_graph::FileEvent::removed(repo_root.join(path))),
         'R' | 'C' => {
             let new_path = parts.next()?;
-            Some(xai_codebase_graph::FileEvent::renamed(
+            Some(agent_tui_codebase_graph::FileEvent::renamed(
                 repo_root.join(path),
                 repo_root.join(new_path),
             ))
         }
-        _ => Some(xai_codebase_graph::FileEvent::modified(
+        _ => Some(agent_tui_codebase_graph::FileEvent::modified(
             repo_root.join(path),
         )),
     }
@@ -179,7 +179,7 @@ fn parse_diff_name_status_line(
 /// After a HEAD change, diff ORIG_HEAD..HEAD and send targeted events
 /// to the codebase graph. Falls back to full rebuild if too many changes.
 async fn refresh_codebase_graph_after_head_change(
-    idx: &xai_codebase_graph::IndexManagerHandle,
+    idx: &agent_tui_codebase_graph::IndexManagerHandle,
     repo_root: &Path,
 ) {
     let mut cmd = tokio::process::Command::new("git");
@@ -542,7 +542,7 @@ pub(crate) struct FsWatchPlan {
     hunk: Option<HunkTracking>,
     index: Option<CodebaseIndex>,
     git_head: Option<GitHead>,
-    fs_config: xai_fsnotify::FsConfig,
+    fs_config: agent_tui_fsnotify::FsConfig,
     cwd: PathBuf,
 }
 
@@ -869,9 +869,9 @@ pub(crate) fn spawn(plan: FsWatchPlan) -> FsWatchHandle {
             timer.with_field("cwd", cwd.to_string_lossy().as_ref());
             let init_cwd = cwd.clone();
             let result =
-                tokio::task::spawn_blocking(move || xai_fsnotify::shared(init_cwd, fs_config))
+                tokio::task::spawn_blocking(move || agent_tui_fsnotify::shared(init_cwd, fs_config))
                     .await;
-            let ws = xai_fsnotify::stats();
+            let ws = agent_tui_fsnotify::stats();
             timer.with_field("live_watchers", ws.live_watchers as u64);
             timer.with_field("watchers_created_total", ws.created_total);
             timer.with_field("watchers_reused_total", ws.reused_total);
@@ -1071,7 +1071,7 @@ mod tests {
 
     #[test]
     fn parse_diff_name_status() {
-        use xai_codebase_graph::FileEventKind;
+        use agent_tui_codebase_graph::FileEventKind;
         let root = Path::new("/repo");
 
         let ev = parse_diff_name_status_line("M\tsrc/main.rs", root).unwrap();
@@ -1380,7 +1380,7 @@ mod tests {
         pick_period: Duration,
         pick_duration: Duration,
     ) -> usize {
-        let settle = Duration::from_millis(xai_fsnotify::SETTLE_MS);
+        let settle = Duration::from_millis(agent_tui_fsnotify::SETTLE_MS);
         // Uniform cadence: either every re-lock lands inside the previous
         // pick's settle window (one merged op) or none does (per-pick pairs).
         let merged = pick_period - pick_duration <= settle;
@@ -1593,7 +1593,7 @@ mod tests {
 
         match on_event(
             FsEvent::GitMetaChanged {
-                kind: xai_fsnotify::GitMetaKind::RefsChanged,
+                kind: agent_tui_fsnotify::GitMetaKind::RefsChanged,
             },
             &mut in_op,
             &mut op_buffer,

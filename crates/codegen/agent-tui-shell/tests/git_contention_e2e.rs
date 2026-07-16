@@ -35,7 +35,7 @@ use agent_client_protocol::{self as acp, Agent as _};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use xai_acp_lib::{
+use agent_tui_acp_lib::{
     AcpAgentGatewayReceiver as GatewayReceiver, AcpAgentGatewaySender as GatewaySender,
     LineBufferedRead,
 };
@@ -45,17 +45,17 @@ use agent_tui_test_support::{MockInferenceServer, ScriptedResponse, SseEvent};
 
 const DUPLEX_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 
-use xai_test_utils::env::env_usize;
+use agent_tui_test_utils::env::env_usize;
 
 /// Run a git command with deterministic author/committer; assert success.
 fn git(dir: &Path, args: &[&str]) -> String {
-    xai_test_utils::git::run_git(dir, args)
+    agent_tui_test_utils::git::run_git(dir, args)
 }
 
 // ── scan counting ─────────────────────────────────────────────────────────
 
-use xai_hunk_tracker::{REFRESH_SCAN_LOG_PREFIX, REFRESH_SKIP_LOG_PREFIX};
-use xai_test_utils::tracing_capture::MessagePrefixCounter;
+use agent_tui_hunk_tracker::{REFRESH_SCAN_LOG_PREFIX, REFRESH_SKIP_LOG_PREFIX};
+use agent_tui_test_utils::tracing_capture::MessagePrefixCounter;
 
 /// Counts hunk-tracker scan completions/skips across all threads (the session
 /// actor and its consumers run off the test thread). Only real scans log the
@@ -77,7 +77,7 @@ fn install_global_scan_counter() -> ScanCounter {
     // GROK_E2E_LOG=<filter> tees shell logs to stderr for local debugging.
     let filter = std::env::var("GROK_E2E_LOG").ok();
     ScanCounter(
-        xai_test_utils::tracing_capture::install_prefix_counter_global(
+        agent_tui_test_utils::tracing_capture::install_prefix_counter_global(
             &[REFRESH_SCAN_LOG_PREFIX, REFRESH_SKIP_LOG_PREFIX],
             filter.as_deref(),
         ),
@@ -97,11 +97,11 @@ fn build_repo(files: usize, picks: usize) -> (TempDir, String) {
     git(wd, &["config", "user.name", "Test User"]);
     git(wd, &["config", "user.email", "test@test.com"]);
 
-    xai_test_utils::git::write_fanout_tree(wd, files, 100);
+    agent_tui_test_utils::git::write_fanout_tree(wd, files, 100);
     git(wd, &["add", "."]);
     git(wd, &["commit", "-m", "populate tree"]);
 
-    let base = xai_test_utils::git::make_feature_branch(wd, picks);
+    let base = agent_tui_test_utils::git::make_feature_branch(wd, picks);
     (dir, base)
 }
 
@@ -299,7 +299,7 @@ async fn run_storm(
                 });
             tokio::task::spawn_local(
                 GatewayReceiver::new(gw_rx, agent_conn)
-                    .with_on_meta(xai_file_utils::trace_context::span_from_meta_traceparent)
+                    .with_on_meta(agent_tui_file_utils::trace_context::span_from_meta_traceparent)
                     .run(),
             );
             tokio::task::spawn_local(agent_io);

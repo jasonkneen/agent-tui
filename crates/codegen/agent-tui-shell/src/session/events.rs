@@ -1,10 +1,10 @@
 //! Re-exports of the crate-internal event types that live in
-//! `xai-file-utils`. The orphan-rule items (`From<&permission::Decision>`
+//! `agent-tui-file-utils`. The orphan-rule items (`From<&permission::Decision>`
 //! and the doom-loop categorizer) stay here since they need shell-local
 //! types.
 
-pub(crate) use xai_file_utils::events::tracker::EventTracker;
-pub(crate) use xai_file_utils::events::types::{
+pub(crate) use agent_tui_file_utils::events::tracker::EventTracker;
+pub(crate) use agent_tui_file_utils::events::types::{
     CancellationCategory, EVENT_SCHEMA_VERSION, Event, GoalClassifierVerdictTelemetry,
     GoalPauseReasonTelemetry, InterjectionSource, Phase, RedirectKind, SessionRelationship,
     ToolOutcome, TurnOutcomeLabel,
@@ -668,7 +668,7 @@ impl From<crate::session::goal_tracker::GoalClassifierVerdict> for GoalClassifie
 }
 
 /// Bridge `GoalPauseReason` (shell) → `GoalPauseReasonTelemetry`
-/// (`xai-file-utils`). The two enums are intentional mirrors and live in
+/// (`agent-tui-file-utils`). The two enums are intentional mirrors and live in
 /// different crates due to the orphan rule. The exhaustive `match` here
 /// ensures the compiler catches drift if either side adds a variant.
 impl From<crate::session::goal_tracker::GoalPauseReason> for GoalPauseReasonTelemetry {

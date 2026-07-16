@@ -188,7 +188,7 @@ pub struct UpdateGoalOutput {
     pub summary: String,
 }
 
-impl xai_tool_runtime::ToolOutput for UpdateGoalOutput {}
+impl agent_tui_tool_runtime::ToolOutput for UpdateGoalOutput {}
 
 // ---------------------------------------------------------------------------
 // Tool implementation
@@ -215,28 +215,28 @@ impl crate::types::tool_metadata::ToolMetadata for UpdateGoalTool {
     }
 }
 
-impl xai_tool_runtime::Tool for UpdateGoalTool {
+impl agent_tui_tool_runtime::Tool for UpdateGoalTool {
     type Args = UpdateGoalInput;
     type Output = UpdateGoalOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new(UPDATE_GOAL_TOOL_NAME).expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new(UPDATE_GOAL_TOOL_NAME).expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             UPDATE_GOAL_TOOL_NAME,
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: true,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Read),
             ..Default::default()
         }
     }
@@ -244,9 +244,9 @@ impl xai_tool_runtime::Tool for UpdateGoalTool {
     #[tracing::instrument(name = "new_tool.update_goal", skip_all)]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: UpdateGoalInput,
-    ) -> Result<UpdateGoalOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<UpdateGoalOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -262,7 +262,7 @@ impl xai_tool_runtime::Tool for UpdateGoalTool {
             let res = resources.lock().await;
             res.get::<GoalUpdateHandle>()
                 .ok_or_else(|| {
-                    xai_tool_runtime::ToolError::custom(
+                    agent_tui_tool_runtime::ToolError::custom(
                         "goal_not_active",
                         "No active goal to update (GoalUpdateHandle not registered)",
                     )
@@ -271,7 +271,7 @@ impl xai_tool_runtime::Tool for UpdateGoalTool {
                 .clone()
         };
         sender.send((input, ack_tx)).map_err(|_| {
-            xai_tool_runtime::ToolError::custom(
+            agent_tui_tool_runtime::ToolError::custom(
                 "goal_channel_closed",
                 "Goal update channel closed — the session may be shutting down",
             )
@@ -288,7 +288,7 @@ impl xai_tool_runtime::Tool for UpdateGoalTool {
                     "update_goal: actor dropped ack oneshot without responding — surfacing as \
                      tool error"
                 );
-                return Err(xai_tool_runtime::ToolError::custom(
+                return Err(agent_tui_tool_runtime::ToolError::custom(
                     "harness_no_ack",
                     format!(
                         "Goal-update harness dropped the response channel before producing an \
@@ -306,7 +306,7 @@ impl xai_tool_runtime::Tool for UpdateGoalTool {
 /// so host session tests can assert the same model-facing strings.
 pub fn render_ack_into_output(
     ack: UpdateGoalAck,
-) -> Result<UpdateGoalOutput, xai_tool_runtime::ToolError> {
+) -> Result<UpdateGoalOutput, agent_tui_tool_runtime::ToolError> {
     match ack {
         UpdateGoalAck::Accepted { summary } => Ok(UpdateGoalOutput {
             success: true,
@@ -333,7 +333,7 @@ pub fn render_ack_into_output(
             details_path,
             attempt,
             max_runs,
-        } => Err(xai_tool_runtime::ToolError::custom(
+        } => Err(agent_tui_tool_runtime::ToolError::custom(
             "goal_classifier_not_achieved",
             format!(
                 "Goal classifier rejected this completion attempt ({attempt}/{max_runs}). \
@@ -351,7 +351,7 @@ pub fn render_ack_into_output(
             } else {
                 format!(" See {details_path}")
             };
-            Err(xai_tool_runtime::ToolError::custom(
+            Err(agent_tui_tool_runtime::ToolError::custom(
                 "goal_classifier_cap_reached",
                 format!(
                     "Goal classifier rejected completion {attempt} times — goal auto-paused.{pointer}"
@@ -361,7 +361,7 @@ pub fn render_ack_into_output(
         UpdateGoalAck::ClassifierStalled {
             details_path,
             attempt,
-        } => Err(xai_tool_runtime::ToolError::custom(
+        } => Err(agent_tui_tool_runtime::ToolError::custom(
             "goal_classifier_stalled",
             format!(
                 "Goal verification saw no change in the flagged gaps across {attempt} attempts \
@@ -369,7 +369,7 @@ pub fn render_ack_into_output(
             ),
         )),
         UpdateGoalAck::ClassifierBlocked { details_path } => {
-            Err(xai_tool_runtime::ToolError::custom(
+            Err(agent_tui_tool_runtime::ToolError::custom(
                 "goal_classifier_blocked",
                 format!(
                     "Goal verification found no model-fixable path (objective/plan contradiction or \
@@ -390,7 +390,7 @@ pub fn render_ack_into_output(
             } else {
                 format!("; see {details_path}")
             };
-            Err(xai_tool_runtime::ToolError::custom(
+            Err(agent_tui_tool_runtime::ToolError::custom(
                 "goal_classifier_in_flight",
                 format!(
                     "Goal classifier is still verifying a previous completion — do NOT call \
@@ -408,7 +408,7 @@ pub fn render_ack_into_output(
                  again until you see it."
             ),
         }),
-        UpdateGoalAck::Rejected { reason, detail } => Err(xai_tool_runtime::ToolError::custom(
+        UpdateGoalAck::Rejected { reason, detail } => Err(agent_tui_tool_runtime::ToolError::custom(
             reason.error_code(),
             detail,
         )),

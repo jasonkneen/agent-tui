@@ -25,7 +25,7 @@ use crate::session::two_pass::{
 };
 use agent_client_protocol as acp;
 use std::sync::Arc;
-use xai_chat_state::compaction_utils::{
+use agent_tui_chat_state::compaction_utils::{
     CompactedHistoryInput, CompactionAttempt, build_compacted_history, is_degenerate_summary,
     prepare_conversation_for_verbatim_summarization, sanitize_compacted_history,
     validate_compacted_history,
@@ -226,7 +226,7 @@ impl SessionActor {
         let estimated_total = self.chat_state_handle.get_estimated_total_tokens().await;
         let threshold = self.compaction.threshold_percent.get() as u64;
         let start_pct = threshold.saturating_sub(prefire_lead_percent());
-        xai_token_estimation::exceeds_threshold(estimated_total, cw, start_pct as u8)
+        agent_tui_token_estimation::exceeds_threshold(estimated_total, cw, start_pct as u8)
     }
     /// Background pass-1: summarize the ~95% prefix → NOTE₁ and cache it for a
     /// later pass-2 apply. Always releases the in-flight guard. Spawned via
@@ -303,7 +303,7 @@ impl SessionActor {
             prepare_conversation_for_verbatim_summarization(split.prefix.to_vec(), strips);
         let prefix_est_tokens = prefix_prepared
             .iter()
-            .map(xai_chat_state::estimate_item_tokens)
+            .map(agent_tui_chat_state::estimate_item_tokens)
             .sum::<u64>();
         let prompt = build_two_pass_compaction_prompt(None);
         let pass1_history = build_two_pass_pass1_history(&prefix_prepared, &prompt);
@@ -496,7 +496,7 @@ fn preserve_inherited_prefix(
 /// Project the token count a re-pinned (preserved) history would reseed to, so the
 /// release decision compares against the same threshold the auto-compact trigger
 /// applies next turn. This only APPROXIMATES the compaction reseed
-/// (`xai-chat-state` `replace_conversation`, the authority): it matches the reseed's
+/// (`agent-tui-chat-state` `replace_conversation`, the authority): it matches the reseed's
 /// round-and-cap but divides by the current conversation estimate, not the reseed's
 /// frozen `estimate_at_last_response`. The conversation only grows, so the current
 /// estimate is >= that frozen value; this therefore under-estimates the reseed (a
@@ -739,11 +739,11 @@ impl SessionActor {
         match preserve_inherited_prefix(&full_conv, compacted_history, prefix_len) {
             Ok(preserved) => {
                 let projected_preserved = project_preserved_reseed_tokens(
-                    xai_chat_state::estimate_conversation_tokens(&preserved),
+                    agent_tui_chat_state::estimate_conversation_tokens(&preserved),
                     tokens_before,
-                    xai_chat_state::estimate_conversation_tokens(&full_conv),
+                    agent_tui_chat_state::estimate_conversation_tokens(&full_conv),
                 );
-                if xai_token_estimation::exceeds_threshold(
+                if agent_tui_token_estimation::exceeds_threshold(
                     projected_preserved,
                     context_window,
                     self.compaction.threshold_percent.get(),
@@ -870,7 +870,7 @@ impl SessionActor {
             self.chat_state_handle.get_conversation(),
         );
         let segment_messages = if self.compaction.compaction_mode.writes_segments() {
-            xai_chat_state::compaction_utils::prepare_conversation_for_segment(
+            agent_tui_chat_state::compaction_utils::prepare_conversation_for_segment(
                 full_conversation.clone(),
             )
         } else {
@@ -879,12 +879,12 @@ impl SessionActor {
         const SUMMARY_BUDGET_RESERVE_TOKENS: u64 = 32_768;
         let verbatim_input_enabled = self.compaction.verbatim_input;
         let simplified_messages = if verbatim_input_enabled {
-            xai_chat_state::compaction_utils::prepare_conversation_for_verbatim_summarization(
+            agent_tui_chat_state::compaction_utils::prepare_conversation_for_verbatim_summarization(
                 full_conversation,
                 summary_strips_reasoning,
             )
         } else {
-            xai_chat_state::compaction_utils::prepare_conversation_for_summarization(
+            agent_tui_chat_state::compaction_utils::prepare_conversation_for_summarization(
                 full_conversation,
             )
         };
@@ -939,7 +939,7 @@ impl SessionActor {
             .filter(|td| !use_backend_search || td.function.name != "web_search")
             .collect();
         let compaction_tool_tokens =
-            xai_chat_state::estimate_tool_definitions_tokens(&effective_tool_defs);
+            agent_tui_chat_state::estimate_tool_definitions_tokens(&effective_tool_defs);
         let compaction_tools: Vec<agent_tui_sampling_types::ToolSpec> = effective_tool_defs
             .into_iter()
             .map(agent_tui_sampling_types::ToolSpec::from)
@@ -982,7 +982,7 @@ impl SessionActor {
         let use_short_prompt = false;
         let started_at = chrono::Utc::now().to_rfc3339();
         let estimated_input_tokens =
-            xai_chat_state::estimate_conversation_tokens(&simplified_messages);
+            agent_tui_chat_state::estimate_conversation_tokens(&simplified_messages);
         let auto_trigger = matches!(trigger, agent_tui_telemetry::events::CompactionTrigger::Auto);
         let wall_clock_budget_secs = self
             .agent
@@ -1090,19 +1090,19 @@ impl SessionActor {
                                     let budget = context_window
                                         .saturating_sub(SUMMARY_BUDGET_RESERVE_TOKENS)
                                         .saturating_sub(compaction_tool_tokens);
-                                    let verbatim = xai_chat_state::compaction_utils::prepare_conversation_for_verbatim_summarization(
+                                    let verbatim = agent_tui_chat_state::compaction_utils::prepare_conversation_for_verbatim_summarization(
                                         conv,
                                         summary_strips_reasoning,
                                     );
-                                    xai_chat_state::compaction_utils::fit_conversation_to_budget(
+                                    agent_tui_chat_state::compaction_utils::fit_conversation_to_budget(
                                         verbatim, budget,
                                     )
                                 }
                                 InputStage::Lossy => {
                                     let lossy_budget = (context_window.saturating_mul(7) / 10)
                                         .saturating_sub(compaction_tool_tokens);
-                                    xai_chat_state::compaction_utils::fit_conversation_to_budget(
-                                        xai_chat_state::compaction_utils::prepare_conversation_for_summarization(
+                                    agent_tui_chat_state::compaction_utils::fit_conversation_to_budget(
+                                        agent_tui_chat_state::compaction_utils::prepare_conversation_for_summarization(
                                             conv,
                                         ),
                                         lossy_budget,
@@ -1595,7 +1595,7 @@ impl SessionActor {
             .replace_conversation_for_compaction(compacted_history);
         if self.startup_hints.inherited_prefix_len.is_some() {
             let post_replace_tokens = self.chat_state_handle.get_total_tokens().await;
-            if xai_token_estimation::exceeds_threshold(
+            if agent_tui_token_estimation::exceeds_threshold(
                 post_replace_tokens,
                 context_window,
                 self.compaction.threshold_percent.get(),
@@ -1712,12 +1712,12 @@ impl SessionActor {
         context_window: std::num::NonZeroU64,
     ) -> Option<AutoCompactTriggerInfo> {
         let cw = context_window.get();
-        if xai_token_estimation::exceeds_threshold(
+        if agent_tui_token_estimation::exceeds_threshold(
             total_tokens,
             cw,
             self.compaction.threshold_percent.get(),
         ) {
-            let percentage = xai_token_estimation::usage_percentage_u8(total_tokens, cw);
+            let percentage = agent_tui_token_estimation::usage_percentage_u8(total_tokens, cw);
             Some(AutoCompactTriggerInfo {
                 tokens_used: total_tokens,
                 context_window: cw,
@@ -1798,7 +1798,7 @@ impl SessionActor {
             )
             .is_ok()
         {
-            let percentage = xai_token_estimation::usage_percentage_u8(estimated_total, cw);
+            let percentage = agent_tui_token_estimation::usage_percentage_u8(estimated_total, cw);
             tracing::info!(
                 "Forced auto-compact trigger (debug): model={model}, \
                  {percentage}% full ({estimated_total}/{cw} tokens)",
@@ -1839,7 +1839,7 @@ impl SessionActor {
             return None;
         }
         let overflow = estimated_total.saturating_sub(cw);
-        let percentage = xai_token_estimation::usage_percentage_u8(estimated_total, cw);
+        let percentage = agent_tui_token_estimation::usage_percentage_u8(estimated_total, cw);
         tracing::warn!(
             estimated_total, context_window = cw, overflow, model = % cfg.model,
             "CONTEXT_OVERFLOW_PREFLIGHT: estimated tokens exceed context window \
@@ -2147,18 +2147,18 @@ mod inline_auto_compact_flow_tests {
         total_tokens: u64,
         context_window: u64,
         threshold_percent: u8,
-        gateway_tx: mpsc::UnboundedSender<xai_acp_lib::AcpClientMessage>,
+        gateway_tx: mpsc::UnboundedSender<agent_tui_acp_lib::AcpClientMessage>,
         persistence_tx: mpsc::UnboundedSender<PersistenceMsg>,
     ) -> SessionActor {
         let cwd = AbsPathBuf::new(std::path::PathBuf::from("/tmp")).unwrap();
         let fs = Arc::new(MockFs::new(cwd.to_path_buf()));
         let terminal = Arc::new(DummyTerminal {});
         let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
-        let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+        let hunk_tracker_handle = agent_tui_hunk_tracker::HunkTrackerActor::spawn(
             "test-auto-compact".to_string(),
             cwd.to_path_buf(),
             hunk_tx,
-            xai_hunk_tracker::TrackingMode::AgentOnly,
+            agent_tui_hunk_tracker::TrackingMode::AgentOnly,
             tokio_util::sync::CancellationToken::new(),
         );
         let tool_context =
@@ -2174,7 +2174,7 @@ mod inline_auto_compact_flow_tests {
         let (chat_event_tx, _chat_event_rx) = tokio::sync::mpsc::unbounded_channel();
         let (event_tx, _event_rx) =
             tokio::sync::mpsc::unbounded_channel::<crate::session::replay_events::SessionEvent>();
-        let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+        let chat_state_handle = agent_tui_chat_state::ChatStateActor::spawn(
             vec![],
             agent_tui_sampling_types::SamplingConfig {
                 base_url: "http://localhost".to_string(),
@@ -2189,7 +2189,7 @@ mod inline_auto_compact_flow_tests {
                 reasoning_effort: None,
                 stream_tool_calls: None,
             },
-            Box::new(xai_chat_state::NullChatPersistence),
+            Box::new(agent_tui_chat_state::NullChatPersistence),
             chat_event_tx,
             tokio_util::sync::CancellationToken::new(),
         );
@@ -2236,7 +2236,7 @@ mod inline_auto_compact_flow_tests {
                 count: std::sync::atomic::AtomicU64::new(0),
                 auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
                 previous_model: std::cell::Cell::new(None),
-                compaction_mode: xai_chat_state::CompactionMode::Transcript,
+                compaction_mode: agent_tui_chat_state::CompactionMode::Transcript,
                 verbatim_input: true,
                 prefire: crate::session::compaction_config::PrefireState::default(),
                 prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -2337,7 +2337,7 @@ mod inline_auto_compact_flow_tests {
             user_input_generation: std::sync::atomic::AtomicU64::new(0),
             laziness_debug_log: None,
             deferred_prefix: TaskSlot::new(),
-            extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+            extension_registry: agent_tui_agent_lifecycle::LocalExtensionRegistry::default(),
             last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
             last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
             last_api_request_at: std::sync::atomic::AtomicI64::new(0),
@@ -2378,7 +2378,7 @@ mod inline_auto_compact_flow_tests {
         local
             .run_until(async {
                 let (gateway_tx, _gateway_rx) =
-                    mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                    mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
                 let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor =
                     create_test_actor(90_000, 100_000, 85, gateway_tx, persistence_tx).await;
@@ -2399,7 +2399,7 @@ mod inline_auto_compact_flow_tests {
         local
             .run_until(async {
                 let (gateway_tx, _gateway_rx) =
-                    mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                    mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
                 let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor =
                     create_test_actor(86_000, 100_000, 85, gateway_tx, persistence_tx).await;
@@ -2426,7 +2426,7 @@ mod inline_auto_compact_flow_tests {
         local
             .run_until(async {
                 let (gateway_tx, _gateway_rx) =
-                    mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                    mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
                 let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor =
                     create_test_actor(86_000, 200_000, 85, gateway_tx, persistence_tx).await;
@@ -3022,7 +3022,7 @@ mod inline_auto_compact_flow_tests {
         total_tokens: u64,
         context_window: u64,
         threshold_percent: u8,
-        gateway_tx: mpsc::UnboundedSender<xai_acp_lib::AcpClientMessage>,
+        gateway_tx: mpsc::UnboundedSender<agent_tui_acp_lib::AcpClientMessage>,
         persistence_tx: mpsc::UnboundedSender<PersistenceMsg>,
         memory_config: Option<crate::config::MemoryConfig>,
     ) -> SessionActor {
@@ -3180,7 +3180,7 @@ mod inline_auto_compact_flow_tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                let (gateway_tx, _) = mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
                 let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor =
                     create_test_actor(214_000, 1_000_000, 85, gateway_tx, persistence_tx).await;
@@ -3196,7 +3196,7 @@ mod inline_auto_compact_flow_tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                let (gateway_tx, _) = mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
                 let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor =
                     create_test_actor(150_000, 1_000_000, 85, gateway_tx, persistence_tx).await;
@@ -3212,7 +3212,7 @@ mod inline_auto_compact_flow_tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                let (gateway_tx, _) = mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
                 let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor =
                     create_test_actor(500_000, 200_000, 85, gateway_tx, persistence_tx).await;
@@ -3237,7 +3237,7 @@ mod inline_auto_compact_flow_tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                let (gateway_tx, _) = mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
                 let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor =
                     create_test_actor(80_000, 100_000, 85, gateway_tx, persistence_tx).await;
@@ -3256,7 +3256,7 @@ mod inline_auto_compact_flow_tests {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
-                let (gateway_tx, _) = mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                let (gateway_tx, _) = mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
                 let (persistence_tx, _) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let actor =
                     create_test_actor(86_000, 100_000, 85, gateway_tx, persistence_tx).await;
@@ -3292,11 +3292,11 @@ mod inline_auto_compact_flow_tests {
         local
             .run_until(async {
                 let (gateway_tx, _gateway_rx) =
-                    mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                    mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
                 let (persistence_tx, _persistence_rx) = mpsc::unbounded_channel::<PersistenceMsg>();
                 let mut actor =
                     create_test_actor(50_000, 200_000, 85, gateway_tx, persistence_tx).await;
-                actor.compaction.compaction_mode = xai_chat_state::CompactionMode::Transcript;
+                actor.compaction.compaction_mode = agent_tui_chat_state::CompactionMode::Transcript;
                 let session_dir = crate::session::persistence::session_dir(&actor.session_info);
                 std::fs::create_dir_all(&session_dir).unwrap();
                 let updates_path = session_dir.join("updates.jsonl");
@@ -3311,7 +3311,7 @@ mod inline_auto_compact_flow_tests {
                 let hint = actor.transcript_hint().expect("transcript hint present");
                 assert!(hint.contains("read the full transcript"));
                 assert!(hint.ends_with("updates.jsonl"));
-                actor.compaction.compaction_mode = xai_chat_state::CompactionMode::Summary;
+                actor.compaction.compaction_mode = agent_tui_chat_state::CompactionMode::Summary;
                 assert!(actor.transcript_hint().is_none());
                 let _ = std::fs::remove_file(&updates_path);
                 let _ = std::fs::remove_dir_all(&session_dir);

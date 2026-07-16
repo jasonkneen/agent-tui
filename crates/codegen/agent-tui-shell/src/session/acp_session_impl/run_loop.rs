@@ -33,7 +33,7 @@ fn cleanup_session_scratch(_session: &SessionActor) {}
 pub(super) async fn run_session(
     session: Arc<SessionActor>,
     mut cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
-    mut chat_state_event_rx: mpsc::UnboundedReceiver<xai_chat_state::ChatStateEvent>,
+    mut chat_state_event_rx: mpsc::UnboundedReceiver<agent_tui_chat_state::ChatStateEvent>,
     mut event_rx: mpsc::UnboundedReceiver<SessionEvent>,
     fs_notify_config: Option<ClientFsConfig>,
     codebase_indexes: std::sync::Arc<parking_lot::Mutex<CodebaseIndexManager>>,
@@ -180,11 +180,11 @@ pub(super) async fn run_session(
             .changed() => { if changed.is_ok() { let new_gen = * model_switch_rx
             .borrow_and_update(); session.handle_model_switch_for_laziness(new_gen).
             await; } } event = chat_state_event_rx.recv() => { match event {
-            Some(xai_chat_state::ChatStateEvent::ConversationReset { new_len }) => {
+            Some(agent_tui_chat_state::ChatStateEvent::ConversationReset { new_len }) => {
             session.last_idle_flush_conversation_len.store(new_len,
             std::sync::atomic::Ordering::Relaxed); session.memory.context_injected
             .store(false, std::sync::atomic::Ordering::Relaxed); }
-            Some(xai_chat_state::ChatStateEvent::ImageBudget { body_bytes, trigger_bytes,
+            Some(agent_tui_chat_state::ChatStateEvent::ImageBudget { body_bytes, trigger_bytes,
             reclaim_target_bytes, inline_images, needs_image_compaction, evicted,
             body_bytes_after, }) => {
             agent_tui_telemetry::unified_log::info("shell.image_budget", Some(session
@@ -193,8 +193,8 @@ pub(super) async fn run_session(
             trigger_bytes, "reclaim_target_bytes" : reclaim_target_bytes, "inline_images"
             : inline_images, "images_remaining" : inline_images.saturating_sub(evicted),
             "needs_image_compaction" : needs_image_compaction, "evicted" : evicted,
-            })),); } Some(xai_chat_state::ChatStateEvent::PromptIndexChanged { .. }) |
-            Some(xai_chat_state::ChatStateEvent::TokensUpdated { .. }) => {} None => {} }
+            })),); } Some(agent_tui_chat_state::ChatStateEvent::PromptIndexChanged { .. }) |
+            Some(agent_tui_chat_state::ChatStateEvent::TokensUpdated { .. }) => {} None => {} }
             } maybe_event = event_rx.recv() => { if let Some(event) = maybe_event { match
             event { SessionEvent::Notification(notification) => { let out = replay_buffer
             .consume_chunk(notification); match out { None => {} Some((first, second)) =>
@@ -292,7 +292,7 @@ pub(super) async fn run_session(
             queue_depth = queue_depth,
             "auto-wake: session actor received synthetic prompt"); } if let Some(ref tp)
             = traceparent { let meta = serde_json::json!({ "traceparent" : tp });
-            xai_file_utils::trace_context::link_current_span_to_meta(& meta); } let
+            agent_tui_file_utils::trace_context::link_current_span_to_meta(& meta); } let
             (trace_gcs_config, artifact_tracker) = match artifact_upload_ctx { Some(tu)
             => (Some(tu.gcs_config), Some(tu.artifact_tracker)), None => (None, None), };
             let cancel_for_send_now = session.queue_input(prompt_blocks, prompt_id,
@@ -327,7 +327,7 @@ pub(super) async fn run_session(
             .get_credentials(). await; if let Some(r) = crate
             ::agent::config::try_resolve_model_credentials(model_name.as_str(), existing
             .api_key.as_deref()) { session.chat_state_handle
-            .update_credentials(xai_chat_state::Credentials { api_key : r.api_key,
+            .update_credentials(agent_tui_chat_state::Credentials { api_key : r.api_key,
             auth_type : r.auth_type, alpha_test_key : existing.alpha_test_key,
             client_version : existing.client_version, }); } session.model_auth_facts
             .replace(None); } } SessionCommand::GetCurrentModel { responds_to } => { let
@@ -357,7 +357,7 @@ pub(super) async fn run_session(
             }; let project_trusted = crate
             ::agent::folder_trust::project_scope_allowed(std::path::Path::new(& session
             .session_info.cwd),); let _ = respond_to
-            .send(xai_hooks_plugins_types::HooksListResponse { hooks, project_trusted,
+            .send(agent_tui_hooks_plugins_types::HooksListResponse { hooks, project_trusted,
             load_errors : session.hook_load_errors.borrow().clone(), }); }
             SessionCommand::HooksAction { action, respond_to } => { let outcome = session
             .handle_hooks_action(action). await; let _ = respond_to.send(outcome); }
@@ -534,7 +534,7 @@ pub(super) async fn run_session(
             .ensure_mcp_tools_initialized(). await; let _ = respond_to.send(Ok(())); });
             } SessionCommand::ToggleMcpServer { server_name, enabled, server_config,
             respond_to } => { session.events
-            .emit(xai_file_utils::events::Event::McpServerToggled { server_name :
+            .emit(agent_tui_file_utils::events::Event::McpServerToggled { server_name :
             server_name.clone(), enabled, }); let mut mcp_state = session.mcp_state
             .lock(). await; let mut configs = mcp_state.configs.clone(); if enabled { let
             already_present = configs.iter().any(| c | crate
@@ -837,7 +837,7 @@ pub(super) fn turn_texts_for_feedback(
         return (None, None);
     };
     let raw = conversation[start].text_content();
-    let extracted = xai_chat_state::compaction_utils::extract_user_query(&raw);
+    let extracted = agent_tui_chat_state::compaction_utils::extract_user_query(&raw);
     let user_text = (!extracted.is_empty()).then_some(extracted);
     let assistant_text = conversation
         .iter()

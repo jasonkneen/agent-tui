@@ -66,35 +66,35 @@ impl crate::types::tool_metadata::ToolMetadata for EnterPlanModeTool {
         Expr::Value(ToolRequirement::Tool {
             namespace: crate::types::tool_metadata::ToolMetadata::tool_namespace(&ExitPlanModeTool)
                 .to_string(),
-            id: xai_tool_runtime::Tool::id(&ExitPlanModeTool).to_string(),
+            id: agent_tui_tool_runtime::Tool::id(&ExitPlanModeTool).to_string(),
             if_params: None,
         })
     }
 }
 
-impl xai_tool_runtime::Tool for EnterPlanModeTool {
+impl agent_tui_tool_runtime::Tool for EnterPlanModeTool {
     type Args = EnterPlanModeInput;
     type Output = EnterPlanModeOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("enter_plan_mode").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("enter_plan_mode").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "enter_plan_mode",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
         // Read-only for permission UX; only FS write is seeding the session plan file.
-        xai_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: true,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Read),
             ..Default::default()
         }
     }
@@ -102,9 +102,9 @@ impl xai_tool_runtime::Tool for EnterPlanModeTool {
     #[tracing::instrument(name = "tool.enter_plan_mode", skip_all)]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         _input: EnterPlanModeInput,
-    ) -> Result<EnterPlanModeOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<EnterPlanModeOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -279,7 +279,7 @@ mod tests {
     fn tool_name_and_description() {
         let tool = EnterPlanModeTool;
         assert_eq!(
-            xai_tool_runtime::Tool::id(&tool).as_str(),
+            agent_tui_tool_runtime::Tool::id(&tool).as_str(),
             "enter_plan_mode"
         );
         let desc = crate::types::tool_metadata::ToolMetadata::description_template(&tool);
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn tool_is_read_only() {
         let tool = EnterPlanModeTool;
-        assert!(xai_tool_runtime::Tool::capabilities(&tool).is_read_only);
+        assert!(agent_tui_tool_runtime::Tool::capabilities(&tool).is_read_only);
     }
 
     #[test]
@@ -308,7 +308,7 @@ mod tests {
         let shared = resources.into_shared();
         let tool = EnterPlanModeTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(shared, "test-call"),
             EnterPlanModeInput {},
@@ -339,7 +339,7 @@ mod tests {
         let shared = resources.into_shared();
         let tool = EnterPlanModeTool;
 
-        xai_tool_runtime::Tool::run(
+        agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(shared, "call-42"),
             EnterPlanModeInput {},
@@ -362,7 +362,7 @@ mod tests {
         let shared = resources.into_shared();
         let tool = EnterPlanModeTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(shared, "test-call"),
             EnterPlanModeInput {},
@@ -377,7 +377,7 @@ mod tests {
         let resources = Resources::new();
         let shared = resources.into_shared();
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &EnterPlanModeTool,
             test_ctx_with_call_id(shared, "test-call"),
             EnterPlanModeInput {},
@@ -415,7 +415,7 @@ mod tests {
         resources.insert(FileSystem(fs.clone()));
         let shared = resources.into_shared();
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &EnterPlanModeTool,
             test_ctx_with_call_id(shared, "no-anchor"),
             EnterPlanModeInput {},
@@ -444,7 +444,7 @@ mod tests {
         let shared = resources.into_shared();
         let tool = EnterPlanModeTool;
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(shared, "test-call"),
             EnterPlanModeInput {},
@@ -481,7 +481,7 @@ mod tests {
         let fs = LocalFs;
         fs.write_file(&plan_path, b"# prior plan\n").await.unwrap();
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &EnterPlanModeTool,
             test_ctx_with_call_id(shared, "reentry"),
             EnterPlanModeInput {},
@@ -512,7 +512,7 @@ mod tests {
         let fs = LocalFs;
         fs.write_file(&plan_path, b"").await.unwrap();
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &EnterPlanModeTool,
             test_ctx_with_call_id(shared, "empty-reentry"),
             EnterPlanModeInput {},
@@ -596,7 +596,7 @@ mod tests {
         resources.insert(PlanFilePath(session_plan.clone()));
         let shared = resources.into_shared();
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &EnterPlanModeTool,
             test_ctx_with_call_id(shared, "t1"),
             EnterPlanModeInput {},
@@ -617,7 +617,7 @@ mod tests {
         resources.insert(Cwd(PathBuf::from("/workspace/my-project")));
         let shared = resources.into_shared();
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &EnterPlanModeTool,
             test_ctx_with_call_id(shared, "t2"),
             EnterPlanModeInput {},
@@ -645,7 +645,7 @@ mod tests {
         resources.insert(TemplateRenderer::new(tools, HashMap::new()));
         let shared = resources.into_shared();
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &EnterPlanModeTool,
             test_ctx_with_call_id(shared, "t5"),
             EnterPlanModeInput {},
@@ -664,7 +664,7 @@ mod tests {
         let resources = Resources::new();
         let shared = resources.into_shared();
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &EnterPlanModeTool,
             test_ctx_with_call_id(shared, "t6"),
             EnterPlanModeInput {},
@@ -690,7 +690,7 @@ mod tests {
         )));
         let shared = resources.into_shared();
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &EnterPlanModeTool,
             test_ctx_with_call_id(shared, "t4"),
             EnterPlanModeInput {},

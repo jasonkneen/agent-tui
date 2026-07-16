@@ -1146,7 +1146,7 @@ pub(super) mod paste_key_tests {
             ),
             vec![],
         );
-        let perm = xai_acp_lib::AcpArgs {
+        let perm = agent_tui_acp_lib::AcpArgs {
             request,
             response_tx,
         };

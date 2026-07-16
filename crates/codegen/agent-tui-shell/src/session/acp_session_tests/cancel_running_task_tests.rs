@@ -25,11 +25,11 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
             ));
             let terminal = Arc::new(DummyTerminal {});
             let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
-            let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+            let hunk_tracker_handle = agent_tui_hunk_tracker::HunkTrackerActor::spawn(
                 "test-persist-ack".to_string(),
                 cwd.to_path_buf(),
                 hunk_tx,
-                xai_hunk_tracker::TrackingMode::AgentOnly,
+                agent_tui_hunk_tracker::TrackingMode::AgentOnly,
                 tokio_util::sync::CancellationToken::new(),
             );
             let tool_context =
@@ -81,10 +81,10 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
             .await
             .expect("persistence actor should start");
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<SessionEvent>();
             let (chat_event_tx, _chat_event_rx) = tokio::sync::mpsc::unbounded_channel();
-            let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+            let chat_state_handle = agent_tui_chat_state::ChatStateActor::spawn(
                 vec![],
                 agent_tui_sampling_types::SamplingConfig {
                     base_url: "http://localhost".to_string(),
@@ -155,7 +155,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                     count: std::sync::atomic::AtomicU64::new(0),
                     auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
                     previous_model: std::cell::Cell::new(None),
-                    compaction_mode: xai_chat_state::CompactionMode::Transcript,
+                    compaction_mode: agent_tui_chat_state::CompactionMode::Transcript,
                     verbatim_input: true,
                     prefire: crate::session::compaction_config::PrefireState::default(),
                     prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -253,7 +253,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 user_input_generation: std::sync::atomic::AtomicU64::new(0),
                 laziness_debug_log: None,
                 deferred_prefix: TaskSlot::new(),
-                extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+                extension_registry: agent_tui_agent_lifecycle::LocalExtensionRegistry::default(),
                 last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
                 last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
                 last_api_request_at: std::sync::atomic::AtomicI64::new(0),
@@ -379,7 +379,7 @@ async fn first_turn_memory_injection_persists_to_chat_history() {
             .expect("persistence actor should start");
             let (_event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<SessionEvent>();
             let (chat_event_tx, _chat_event_rx) = tokio::sync::mpsc::unbounded_channel();
-            let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+            let chat_state_handle = agent_tui_chat_state::ChatStateActor::spawn(
                 vec![
                     ConversationItem::system("sys"),
                     ConversationItem::user("<user_info>OS Version: macos</user_info>"),
@@ -460,11 +460,11 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
             ));
             let terminal = Arc::new(DummyTerminal {});
             let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
-            let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+            let hunk_tracker_handle = agent_tui_hunk_tracker::HunkTrackerActor::spawn(
                 "test-memory-disabled".to_string(),
                 cwd.to_path_buf(),
                 hunk_tx,
-                xai_hunk_tracker::TrackingMode::AgentOnly,
+                agent_tui_hunk_tracker::TrackingMode::AgentOnly,
                 tokio_util::sync::CancellationToken::new(),
             );
             let tool_context =
@@ -512,7 +512,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
             .await
             .expect("persistence actor should start");
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (chat_event_tx, _chat_event_rx) = tokio::sync::mpsc::unbounded_channel();
             let initial_conversation = vec![
                 ConversationItem::system("sys"),
@@ -520,7 +520,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                     "<user_info>OS Version: macos</user_info>\n\n<user_query>hello</user_query>",
                 ),
             ];
-            let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+            let chat_state_handle = agent_tui_chat_state::ChatStateActor::spawn(
                 initial_conversation.clone(),
                 agent_tui_sampling_types::SamplingConfig {
                     base_url: "http://localhost".to_string(),
@@ -608,7 +608,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                     count: std::sync::atomic::AtomicU64::new(0),
                     auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
                     previous_model: std::cell::Cell::new(None),
-                    compaction_mode: xai_chat_state::CompactionMode::Transcript,
+                    compaction_mode: agent_tui_chat_state::CompactionMode::Transcript,
                     verbatim_input: true,
                     prefire: crate::session::compaction_config::PrefireState::default(),
                     prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -709,7 +709,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 user_input_generation: std::sync::atomic::AtomicU64::new(0),
                 laziness_debug_log: None,
                 deferred_prefix: TaskSlot::new(),
-                extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+                extension_registry: agent_tui_agent_lifecycle::LocalExtensionRegistry::default(),
                 last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
                 last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
                 last_api_request_at: std::sync::atomic::AtomicI64::new(0),
@@ -782,7 +782,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel::<
-                xai_acp_lib::AcpClientMessage,
+                agent_tui_acp_lib::AcpClientMessage,
             >();
             let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel::<
                 PersistenceMsg,
@@ -793,11 +793,11 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
             );
             let terminal = Arc::new(DummyTerminal {});
             let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
-            let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+            let hunk_tracker_handle = agent_tui_hunk_tracker::HunkTrackerActor::spawn(
                 "test-cancel".to_string(),
                 cwd.to_path_buf(),
                 hunk_tx,
-                xai_hunk_tracker::TrackingMode::AgentOnly,
+                agent_tui_hunk_tracker::TrackingMode::AgentOnly,
                 tokio_util::sync::CancellationToken::new(),
             );
             let tool_context = ToolContext::new(
@@ -850,7 +850,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 deny_read_globs: Vec::new(),
                 mcp_state: Arc::new(TokioMutex::new(McpState::new(vec![]))),
                 mcp_strategy: McpInitStrategy::Blocking,
-                chat_state_handle: xai_chat_state::ChatStateHandle::noop(),
+                chat_state_handle: agent_tui_chat_state::ChatStateHandle::noop(),
                 current_prompt_id: std::sync::Arc::new(
                     std::sync::Mutex::new(Some("running".to_string())),
                 ),
@@ -881,7 +881,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                     count: std::sync::atomic::AtomicU64::new(0),
                     auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
                     previous_model: std::cell::Cell::new(None),
-                    compaction_mode: xai_chat_state::CompactionMode::Transcript,
+                    compaction_mode: agent_tui_chat_state::CompactionMode::Transcript,
                     verbatim_input: true,
                     prefire: crate::session::compaction_config::PrefireState::default(),
                     prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -990,7 +990,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 user_input_generation: std::sync::atomic::AtomicU64::new(0),
                 laziness_debug_log: None,
                 deferred_prefix: TaskSlot::new(),
-                extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+                extension_registry: agent_tui_agent_lifecycle::LocalExtensionRegistry::default(),
                 last_announced_local_date: std::cell::Cell::new(
                     chrono::Local::now().date_naive(),
                 ),
@@ -1110,7 +1110,7 @@ async fn cancel_records_mid_turn_abort_interrupt_marker() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -1152,7 +1152,7 @@ async fn cancel_without_active_tool_arms_interrupt_reminder() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -1194,7 +1194,7 @@ async fn send_now_cancel_arms_no_interrupt_signals_and_resets_wait_depth() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -1255,7 +1255,7 @@ async fn cancel_with_dangling_tool_call_skips_interrupt_reminder() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -1341,7 +1341,7 @@ async fn maybe_inject_interrupt_reminder_injects_once() {
 /// gateway/persistence drains run on the `LocalSet` for the test's lifetime.
 async fn actor_with_persistence_drain() -> std::sync::Arc<SessionActor> {
     let (gateway_tx, mut gateway_rx) =
-        tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+        tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
     tokio::task::spawn_local(async move { while gateway_rx.recv().await.is_some() {} });
     let (persistence_tx, mut persistence_rx) =
         tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
@@ -1508,7 +1508,7 @@ async fn cancel_running_task_interactive_preserves_queued_work() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -1592,7 +1592,7 @@ async fn cancel_after_own_completion_sweep_preserves_queued_user_prompt() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -1702,7 +1702,7 @@ async fn cancel_resolves_front_when_running_task_is_none() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
@@ -1826,7 +1826,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 sampler_event_tx,
             );
             let (gateway_tx, _gateway_rx) = tokio::sync::mpsc::unbounded_channel::<
-                xai_acp_lib::AcpClientMessage,
+                agent_tui_acp_lib::AcpClientMessage,
             >();
             let (persistence_tx, _persistence_rx) = tokio::sync::mpsc::unbounded_channel::<
                 PersistenceMsg,
@@ -1837,11 +1837,11 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
             );
             let terminal = Arc::new(DummyTerminal {});
             let (hunk_tx, _hunk_rx) = tokio::sync::mpsc::unbounded_channel();
-            let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+            let hunk_tracker_handle = agent_tui_hunk_tracker::HunkTrackerActor::spawn(
                 "test-cancel-sampler".to_string(),
                 cwd.to_path_buf(),
                 hunk_tx,
-                xai_hunk_tracker::TrackingMode::AgentOnly,
+                agent_tui_hunk_tracker::TrackingMode::AgentOnly,
                 tokio_util::sync::CancellationToken::new(),
             );
             let tool_context = ToolContext::new(
@@ -1894,7 +1894,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 deny_read_globs: Vec::new(),
                 mcp_state: Arc::new(TokioMutex::new(McpState::new(vec![]))),
                 mcp_strategy: McpInitStrategy::Blocking,
-                chat_state_handle: xai_chat_state::ChatStateHandle::noop(),
+                chat_state_handle: agent_tui_chat_state::ChatStateHandle::noop(),
                 current_prompt_id: std::sync::Arc::new(
                     std::sync::Mutex::new(Some("running".to_string())),
                 ),
@@ -1925,7 +1925,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                     count: std::sync::atomic::AtomicU64::new(0),
                     auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
                     previous_model: std::cell::Cell::new(None),
-                    compaction_mode: xai_chat_state::CompactionMode::Transcript,
+                    compaction_mode: agent_tui_chat_state::CompactionMode::Transcript,
                     verbatim_input: true,
                     prefire: crate::session::compaction_config::PrefireState::default(),
                     prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -2034,7 +2034,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 user_input_generation: std::sync::atomic::AtomicU64::new(0),
                 laziness_debug_log: None,
                 deferred_prefix: TaskSlot::new(),
-                extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+                extension_registry: agent_tui_agent_lifecycle::LocalExtensionRegistry::default(),
                 last_announced_local_date: std::cell::Cell::new(
                     chrono::Local::now().date_naive(),
                 ),
@@ -2228,7 +2228,7 @@ async fn cancel_keeps_remaining_queued_prompts_visible_to_clients() {
     local
         .run_until(async {
             let (gateway_tx, _gateway_rx) =
-                tokio::sync::mpsc::unbounded_channel::<xai_acp_lib::AcpClientMessage>();
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _persistence_rx) =
                 tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;

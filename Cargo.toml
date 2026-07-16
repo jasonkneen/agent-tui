@@ -3,18 +3,18 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/build/xai-proto-build",
+    "crates/build/agent-tui-proto-build",
     "crates/codegen/ptyctl",
     "crates/codegen/ptyctl-cli",
-    "crates/codegen/xai-acp-lib",
-    "crates/codegen/xai-agent-lifecycle",
-    "crates/codegen/xai-chat-state",
-    "crates/codegen/xai-codebase-graph",
-    "crates/codegen/xai-crash-handler",
-    "crates/codegen/xai-fast-worktree",
-    "crates/codegen/xai-file-utils",
-    "crates/codegen/xai-fsnotify",
-    "crates/codegen/xai-gix-status",
+    "crates/codegen/agent-tui-acp-lib",
+    "crates/codegen/agent-tui-agent-lifecycle",
+    "crates/codegen/agent-tui-chat-state",
+    "crates/codegen/agent-tui-codebase-graph",
+    "crates/codegen/agent-tui-crash-handler",
+    "crates/codegen/agent-tui-fast-worktree",
+    "crates/codegen/agent-tui-file-utils",
+    "crates/codegen/agent-tui-fsnotify",
+    "crates/codegen/agent-tui-gix-status",
     "crates/codegen/agent-tui-agent",
     "crates/codegen/agent-tui-announcements",
     "crates/codegen/agent-tui-auth",
@@ -55,28 +55,28 @@ members = [
     "crates/codegen/agent-tui-workspace",
     "crates/codegen/agent-tui-workspace-client",
     "crates/codegen/agent-tui-workspace-types",
-    "crates/codegen/xai-hooks-plugins-types",
-    "crates/codegen/xai-hunk-tracker",
-    "crates/codegen/xai-mixpanel",
-    "crates/codegen/xai-prompt-queue",
-    "crates/codegen/xai-ratatui-inline",
-    "crates/codegen/xai-ratatui-textarea",
-    "crates/codegen/xai-sqlite-journal",
-    "crates/codegen/xai-system-power",
-    "crates/codegen/xai-token-estimation",
-    "crates/codegen/xai-tracing-macros",
-    "crates/codegen/xai-tty-utils",
-    "crates/common/xai-circuit-breaker",
-    "crates/common/xai-computer-hub-core",
-    "crates/common/xai-computer-hub-mcp-adapter",
-    "crates/common/xai-computer-hub-sdk",
+    "crates/codegen/agent-tui-hooks-plugins-types",
+    "crates/codegen/agent-tui-hunk-tracker",
+    "crates/codegen/agent-tui-mixpanel",
+    "crates/codegen/agent-tui-prompt-queue",
+    "crates/codegen/agent-tui-ratatui-inline",
+    "crates/codegen/agent-tui-ratatui-textarea",
+    "crates/codegen/agent-tui-sqlite-journal",
+    "crates/codegen/agent-tui-system-power",
+    "crates/codegen/agent-tui-token-estimation",
+    "crates/codegen/agent-tui-tracing-macros",
+    "crates/codegen/agent-tui-tty-utils",
+    "crates/common/agent-tui-circuit-breaker",
+    "crates/common/agent-tui-computer-hub-core",
+    "crates/common/agent-tui-computer-hub-mcp-adapter",
+    "crates/common/agent-tui-computer-hub-sdk",
     "crates/common/agent-tui-compaction",
-    "crates/common/xai-interjection-core",
-    "crates/common/xai-test-utils",
-    "crates/common/xai-tool-protocol",
-    "crates/common/xai-tool-runtime",
-    "crates/common/xai-tool-types",
-    "crates/common/xai-tracing",
+    "crates/common/agent-tui-interjection-core",
+    "crates/common/agent-tui-test-utils",
+    "crates/common/agent-tui-tool-protocol",
+    "crates/common/agent-tui-tool-runtime",
+    "crates/common/agent-tui-tool-types",
+    "crates/common/agent-tui-tracing",
     "prod/mc/cli-chat-proxy-types",
     "third_party/dagre_rust",
     "third_party/graphlib_rust",
@@ -270,12 +270,12 @@ whoami = "1.4"
 windows = { version = "0.61", features = ["Win32_Security", "Win32_Security_Authorization", "Win32_Foundation", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Console", "Win32_System_Pipes"] }
 wiremock = "0.6"
 wl-clipboard-rs = "0.9"
-xai-acp-lib = { path = "crates/codegen/xai-acp-lib" }
-xai-agent-lifecycle = { path = "crates/codegen/xai-agent-lifecycle" }
-xai-circuit-breaker = { path = "crates/common/xai-circuit-breaker" }
-xai-computer-hub-core = { path = "crates/common/xai-computer-hub-core" }
-xai-computer-hub-sdk = { path = "crates/common/xai-computer-hub-sdk" }
-xai-gix-status = { path = "crates/codegen/xai-gix-status" }
+agent-tui-acp-lib = { path = "crates/codegen/agent-tui-acp-lib" }
+agent-tui-agent-lifecycle = { path = "crates/codegen/agent-tui-agent-lifecycle" }
+agent-tui-circuit-breaker = { path = "crates/common/agent-tui-circuit-breaker" }
+agent-tui-computer-hub-core = { path = "crates/common/agent-tui-computer-hub-core" }
+agent-tui-computer-hub-sdk = { path = "crates/common/agent-tui-computer-hub-sdk" }
+agent-tui-gix-status = { path = "crates/codegen/agent-tui-gix-status" }
 agent-tui-agent = { path = "crates/codegen/agent-tui-agent" }
 agent-tui-announcements = { path = "crates/codegen/agent-tui-announcements" }
 agent-tui-auth = { path = "crates/codegen/agent-tui-auth" }
@@ -302,22 +302,22 @@ agent-tui-tools-api = { path = "crates/codegen/agent-tui-tools-api" }
 agent-tui-version = { path = "crates/codegen/agent-tui-version" }
 agent-tui-workspace = { path = "crates/codegen/agent-tui-workspace" }
 agent-tui-workspace-types = { path = "crates/codegen/agent-tui-workspace-types" }
-xai-hooks-plugins-types = { path = "crates/codegen/xai-hooks-plugins-types" }
-xai-interjection-core = { path = "crates/common/xai-interjection-core" }
-xai-mixpanel = { path = "crates/codegen/xai-mixpanel" }
-xai-prompt-queue = { path = "crates/codegen/xai-prompt-queue" }
-xai-proto-build = { path = "crates/build/xai-proto-build" }
-xai-ratatui-inline = { path = "crates/codegen/xai-ratatui-inline" }
-xai-ratatui-textarea = { path = "crates/codegen/xai-ratatui-textarea" }
-xai-sqlite-journal = { path = "crates/codegen/xai-sqlite-journal" }
-xai-system-power = { path = "crates/codegen/xai-system-power" }
-xai-test-utils = { path = "crates/common/xai-test-utils" }
-xai-token-estimation = { path = "crates/codegen/xai-token-estimation" }
-xai-tool-protocol = { path = "crates/common/xai-tool-protocol" }
-xai-tool-runtime = { path = "crates/common/xai-tool-runtime" }
-xai-tool-types = { path = "crates/common/xai-tool-types" }
-xai-tracing = { path = "crates/common/xai-tracing" }
-xai-tty-utils = { path = "crates/codegen/xai-tty-utils" }
+agent-tui-hooks-plugins-types = { path = "crates/codegen/agent-tui-hooks-plugins-types" }
+agent-tui-interjection-core = { path = "crates/common/agent-tui-interjection-core" }
+agent-tui-mixpanel = { path = "crates/codegen/agent-tui-mixpanel" }
+agent-tui-prompt-queue = { path = "crates/codegen/agent-tui-prompt-queue" }
+agent-tui-proto-build = { path = "crates/build/agent-tui-proto-build" }
+agent-tui-ratatui-inline = { path = "crates/codegen/agent-tui-ratatui-inline" }
+agent-tui-ratatui-textarea = { path = "crates/codegen/agent-tui-ratatui-textarea" }
+agent-tui-sqlite-journal = { path = "crates/codegen/agent-tui-sqlite-journal" }
+agent-tui-system-power = { path = "crates/codegen/agent-tui-system-power" }
+agent-tui-test-utils = { path = "crates/common/agent-tui-test-utils" }
+agent-tui-token-estimation = { path = "crates/codegen/agent-tui-token-estimation" }
+agent-tui-tool-protocol = { path = "crates/common/agent-tui-tool-protocol" }
+agent-tui-tool-runtime = { path = "crates/common/agent-tui-tool-runtime" }
+agent-tui-tool-types = { path = "crates/common/agent-tui-tool-types" }
+agent-tui-tracing = { path = "crates/common/agent-tui-tracing" }
+agent-tui-tty-utils = { path = "crates/codegen/agent-tui-tty-utils" }
 zbus = { version = "5" }
 zstd = "0.13"
 

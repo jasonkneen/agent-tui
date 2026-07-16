@@ -44,8 +44,8 @@ pub(super) fn cta_settle_installed(
 }
 
 pub(super) fn plugin_cta_candidates(
-    response: xai_hooks_plugins_types::MarketplaceListResponse,
-) -> (Vec<xai_hooks_plugins_types::MarketplacePluginEntry>, bool) {
+    response: agent_tui_hooks_plugins_types::MarketplaceListResponse,
+) -> (Vec<agent_tui_hooks_plugins_types::MarketplacePluginEntry>, bool) {
     let mut candidates = Vec::new();
     let mut official_source_present = false;
     for source in response.sources {
@@ -68,7 +68,7 @@ pub(super) fn plugin_cta_candidates(
 /// rebuild a retryable `CtaPhase::Error` after a post-install hop fails. Prefers
 /// the still-cached candidate entry; falls back to the official-source layout.
 pub(super) fn cta_install_relative_path(
-    candidates: &[xai_hooks_plugins_types::MarketplacePluginEntry],
+    candidates: &[agent_tui_hooks_plugins_types::MarketplacePluginEntry],
     name: &str,
 ) -> String {
     candidates
@@ -79,9 +79,9 @@ pub(super) fn cta_install_relative_path(
 }
 
 pub(super) fn cta_install_error_category(
-    result: &Result<xai_hooks_plugins_types::ActionOutcome, String>,
+    result: &Result<agent_tui_hooks_plugins_types::ActionOutcome, String>,
 ) -> Option<String> {
-    use xai_hooks_plugins_types::OutcomeStatus;
+    use agent_tui_hooks_plugins_types::OutcomeStatus;
     match result {
         Ok(outcome) => match outcome.status {
             OutcomeStatus::Success => None,
@@ -103,7 +103,7 @@ pub(super) fn cta_install_error_category(
 pub(super) fn plugin_cta_phase_for(
     enabled: bool,
     official_source_present: bool,
-    candidates: &[xai_hooks_plugins_types::MarketplacePluginEntry],
+    candidates: &[agent_tui_hooks_plugins_types::MarketplacePluginEntry],
     prompt_text: &str,
     is_dismissed: impl Fn(&str) -> bool,
 ) -> crate::app::agent_view::CtaPhase {
@@ -156,7 +156,7 @@ pub(super) fn handle_cta_plugin_install_done(
     app: &mut AppView,
     agent_id: AgentId,
     plugin_name: String,
-    result: Result<xai_hooks_plugins_types::ActionOutcome, String>,
+    result: Result<agent_tui_hooks_plugins_types::ActionOutcome, String>,
 ) -> Vec<Effect> {
     use crate::app::agent_view::CtaPhase;
     let Some(agent) = app.agents.get_mut(&agent_id) else {
@@ -187,7 +187,7 @@ pub(super) fn handle_cta_plugin_install_done(
     });
     // Ok(requires_reload) on success; Err(message) otherwise.
     let install_result = match result {
-        Ok(outcome) if outcome.status == xai_hooks_plugins_types::OutcomeStatus::Success => {
+        Ok(outcome) if outcome.status == agent_tui_hooks_plugins_types::OutcomeStatus::Success => {
             Ok(outcome.requires_reload)
         }
         Ok(outcome) => Err(crate::app::effects::sanitize_user_error(&outcome.message)),
@@ -235,7 +235,7 @@ pub(super) fn handle_cta_plugin_reload_done(
     app: &mut AppView,
     agent_id: AgentId,
     plugin_name: String,
-    result: Result<xai_hooks_plugins_types::ActionOutcome, String>,
+    result: Result<agent_tui_hooks_plugins_types::ActionOutcome, String>,
 ) -> Vec<Effect> {
     use crate::app::agent_view::CtaPhase;
     let Some(agent) = app.agents.get_mut(&agent_id) else {
@@ -254,7 +254,7 @@ pub(super) fn handle_cta_plugin_reload_done(
     // Mirror the install handler: a non-Success outcome is a failure, not
     // a reason to advance into the post-install pipeline.
     let reload_result = match result {
-        Ok(outcome) if outcome.status == xai_hooks_plugins_types::OutcomeStatus::Success => Ok(()),
+        Ok(outcome) if outcome.status == agent_tui_hooks_plugins_types::OutcomeStatus::Success => Ok(()),
         Ok(outcome) => Err(crate::app::effects::sanitize_user_error(&outcome.message)),
         Err(e) => Err(e),
     };
@@ -423,7 +423,7 @@ pub(super) fn handle_plugin_cta_mcps_loaded(
 pub(super) fn handle_plugin_cta_catalog_loaded(
     app: &mut AppView,
     agent_id: AgentId,
-    result: Result<xai_hooks_plugins_types::MarketplaceListResponse, String>,
+    result: Result<agent_tui_hooks_plugins_types::MarketplaceListResponse, String>,
 ) -> Vec<Effect> {
     use crate::app::agent_view::CtaPhase;
     match result {

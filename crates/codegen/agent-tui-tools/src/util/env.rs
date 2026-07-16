@@ -1,11 +1,11 @@
 //! Environment variable helpers and process isolation for terminal execution.
 //!
-//! All implementations now live in the lightweight [`xai_tty_utils`] crate
+//! All implementations now live in the lightweight [`agent_tui_tty_utils`] crate
 //! so that every crate in the workspace can use them without pulling in the
 //! heavyweight `agent-tui-tools` dependency. This module re-exports the public
 //! API for backward compatibility.
 
-pub use xai_tty_utils::{detach_from_tty, pager_env};
+pub use agent_tui_tty_utils::{detach_from_tty, pager_env};
 
 /// Env var set on agent-spawned terminal processes so host tools (e.g. `x ban`)
 /// can distinguish agent invocations from human interactive shells.

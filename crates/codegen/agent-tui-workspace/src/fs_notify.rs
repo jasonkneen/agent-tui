@@ -1,18 +1,18 @@
 #![allow(dead_code)] // Functions consumed by handle.rs event forwarder wiring
-//! FsNotify adapter functions bridging [`xai_fsnotify`] events to
+//! FsNotify adapter functions bridging [`agent_tui_fsnotify`] events to
 //! workspace subsystems (hunk tracker, codebase graph, workspace
 //! event broadcast).
 //!
 //! Codebase graph forwarding: FsNotify file-change
 //! events are converted via [`fs_event_to_codebase_graph_event`] and
-//! sent to the [`IndexManagerHandle`](xai_codebase_graph::IndexManagerHandle).
+//! sent to the [`IndexManagerHandle`](agent_tui_codebase_graph::IndexManagerHandle).
 //! The [`refresh_codebase_graph_after_head_change`] helper handles
 //! git HEAD changes by diffing `ORIG_HEAD..HEAD`.
 
 use std::path::{Path, PathBuf};
 
-use xai_fsnotify::{FsEvent, FsEventKind};
-use xai_hunk_tracker::HunkTrackerHandle;
+use agent_tui_fsnotify::{FsEvent, FsEventKind};
+use agent_tui_hunk_tracker::HunkTrackerHandle;
 
 /// True if `path` lies under a hidden component below `cwd`.
 ///
@@ -58,8 +58,8 @@ pub(crate) fn forward_to_hunk_tracker(
 pub(crate) fn fs_event_to_codebase_graph_event(
     paths: &[PathBuf],
     kind: FsEventKind,
-) -> xai_codebase_graph::FileEvent {
-    use xai_codebase_graph::{FileEvent, FileEventKind};
+) -> agent_tui_codebase_graph::FileEvent {
+    use agent_tui_codebase_graph::{FileEvent, FileEventKind};
     let graph_kind = match kind {
         FsEventKind::Created => FileEventKind::Created,
         FsEventKind::Modified => FileEventKind::Modified,
@@ -71,7 +71,7 @@ pub(crate) fn fs_event_to_codebase_graph_event(
     FileEvent::new(paths.to_vec(), graph_kind)
 }
 
-/// Convert [`xai_fsnotify::FsEventKind`] to the wire-type
+/// Convert [`agent_tui_fsnotify::FsEventKind`] to the wire-type
 /// [`agent_tui_workspace_types::FsEventKind`].
 ///
 /// Identity mapping today; kept explicit so all known variants are
@@ -104,7 +104,7 @@ pub(crate) fn spawn_fs_event_forwarder(
     events_tx: tokio::sync::broadcast::Sender<agent_tui_workspace_types::WorkspaceEvent>,
     cwd: PathBuf,
     cancel: tokio_util::sync::CancellationToken,
-    codebase_index: Option<std::sync::Arc<xai_codebase_graph::IndexManagerHandle>>,
+    codebase_index: Option<std::sync::Arc<agent_tui_codebase_graph::IndexManagerHandle>>,
 ) {
     tokio::spawn(async move {
         loop {
@@ -163,22 +163,22 @@ const GIT_DIFF_REBUILD_THRESHOLD: usize = 500;
 fn parse_diff_name_status_line(
     line: &str,
     repo_root: &Path,
-) -> Option<xai_codebase_graph::FileEvent> {
+) -> Option<agent_tui_codebase_graph::FileEvent> {
     let mut parts = line.splitn(3, '\t');
     let status = parts.next()?.trim();
     let path = parts.next()?;
 
     match status.chars().next()? {
-        'A' => Some(xai_codebase_graph::FileEvent::created(repo_root.join(path))),
-        'D' => Some(xai_codebase_graph::FileEvent::removed(repo_root.join(path))),
+        'A' => Some(agent_tui_codebase_graph::FileEvent::created(repo_root.join(path))),
+        'D' => Some(agent_tui_codebase_graph::FileEvent::removed(repo_root.join(path))),
         'R' | 'C' => {
             let new_path = parts.next()?;
-            Some(xai_codebase_graph::FileEvent::renamed(
+            Some(agent_tui_codebase_graph::FileEvent::renamed(
                 repo_root.join(path),
                 repo_root.join(new_path),
             ))
         }
-        _ => Some(xai_codebase_graph::FileEvent::modified(
+        _ => Some(agent_tui_codebase_graph::FileEvent::modified(
             repo_root.join(path),
         )),
     }
@@ -193,7 +193,7 @@ fn parse_diff_name_status_line(
 /// events or a full rebuild). Skips the event if the index actor
 /// channel is closed (i.e. the actor has been dropped).
 pub(crate) async fn refresh_codebase_graph_after_head_change(
-    idx: &xai_codebase_graph::IndexManagerHandle,
+    idx: &agent_tui_codebase_graph::IndexManagerHandle,
     repo_root: &Path,
     events_tx: &tokio::sync::broadcast::Sender<agent_tui_workspace_types::WorkspaceEvent>,
 ) {
@@ -262,8 +262,8 @@ pub(crate) async fn refresh_codebase_graph_after_head_change(
 pub(crate) fn ws_event_to_codebase_graph_event(
     path: &std::path::Path,
     kind: agent_tui_workspace_types::FsEventKind,
-) -> xai_codebase_graph::FileEvent {
-    use xai_codebase_graph::{FileEvent, FileEventKind};
+) -> agent_tui_codebase_graph::FileEvent {
+    use agent_tui_codebase_graph::{FileEvent, FileEventKind};
     let graph_kind = match kind {
         agent_tui_workspace_types::FsEventKind::Created => FileEventKind::Created,
         agent_tui_workspace_types::FsEventKind::Modified => FileEventKind::Modified,
@@ -326,7 +326,7 @@ mod tests {
 
     #[test]
     fn codebase_graph_event_mapping() {
-        use xai_codebase_graph::FileEventKind;
+        use agent_tui_codebase_graph::FileEventKind;
         let paths = vec![PathBuf::from("/workspace/src/main.rs")];
 
         let ev = fs_event_to_codebase_graph_event(&paths, FsEventKind::Created);
@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn parse_diff_name_status_all_variants() {
         use std::path::Path;
-        use xai_codebase_graph::FileEventKind;
+        use agent_tui_codebase_graph::FileEventKind;
         let root = Path::new("/repo");
 
         let ev = parse_diff_name_status_line("M\tsrc/main.rs", root).unwrap();

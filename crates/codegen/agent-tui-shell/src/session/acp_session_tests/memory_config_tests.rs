@@ -63,7 +63,7 @@ async fn create_test_actor_with_memory(
     total_tokens: u64,
     context_window: u64,
     threshold_percent: u8,
-    gateway_tx: mpsc::UnboundedSender<xai_acp_lib::AcpClientMessage>,
+    gateway_tx: mpsc::UnboundedSender<agent_tui_acp_lib::AcpClientMessage>,
     persistence_tx: mpsc::UnboundedSender<PersistenceMsg>,
     memory_config: Option<crate::config::MemoryConfig>,
 ) -> SessionActor {
@@ -73,11 +73,11 @@ async fn create_test_actor_with_memory(
     let fs = Arc::new(MockFs::new(cwd.to_path_buf()));
     let terminal = Arc::new(DummyTerminal {});
     let (hunk_tx, _) = tokio::sync::mpsc::unbounded_channel();
-    let hunk_tracker_handle = xai_hunk_tracker::HunkTrackerActor::spawn(
+    let hunk_tracker_handle = agent_tui_hunk_tracker::HunkTrackerActor::spawn(
         "test-memory".to_string(),
         cwd.to_path_buf(),
         hunk_tx,
-        xai_hunk_tracker::TrackingMode::AgentOnly,
+        agent_tui_hunk_tracker::TrackingMode::AgentOnly,
         tokio_util::sync::CancellationToken::new(),
     );
     let tool_context = ToolContext::new(cwd.clone(), None, None, fs, terminal, hunk_tracker_handle);
@@ -95,7 +95,7 @@ async fn create_test_actor_with_memory(
     });
     let (chat_event_tx, _chat_event_rx) = tokio::sync::mpsc::unbounded_channel();
     let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<SessionEvent>();
-    let chat_state_handle = xai_chat_state::ChatStateActor::spawn(
+    let chat_state_handle = agent_tui_chat_state::ChatStateActor::spawn(
         vec![],
         agent_tui_sampling_types::SamplingConfig {
             base_url: "http://localhost".to_string(),
@@ -110,7 +110,7 @@ async fn create_test_actor_with_memory(
             reasoning_effort: None,
             stream_tool_calls: None,
         },
-        Box::new(xai_chat_state::NullChatPersistence),
+        Box::new(agent_tui_chat_state::NullChatPersistence),
         chat_event_tx,
         tokio_util::sync::CancellationToken::new(),
     );
@@ -161,7 +161,7 @@ async fn create_test_actor_with_memory(
             count: std::sync::atomic::AtomicU64::new(0),
             auto_compact_suppressed: std::sync::atomic::AtomicU8::new(0),
             previous_model: std::cell::Cell::new(None),
-            compaction_mode: xai_chat_state::CompactionMode::Transcript,
+            compaction_mode: agent_tui_chat_state::CompactionMode::Transcript,
             verbatim_input: true,
             prefire: crate::session::compaction_config::PrefireState::default(),
             prefix_released: std::sync::atomic::AtomicBool::new(false),
@@ -267,7 +267,7 @@ async fn create_test_actor_with_memory(
         user_input_generation: std::sync::atomic::AtomicU64::new(0),
         laziness_debug_log: None,
         deferred_prefix: TaskSlot::new(),
-        extension_registry: xai_agent_lifecycle::LocalExtensionRegistry::default(),
+        extension_registry: agent_tui_agent_lifecycle::LocalExtensionRegistry::default(),
         last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
         last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
         last_api_request_at: std::sync::atomic::AtomicI64::new(0),
@@ -546,7 +546,7 @@ async fn test_first_turn_reminder_injects_without_persisted_block() {
             let reminder = actor.first_turn_memory_reminder().await;
             let reminder = reminder.expect("first turn with matching index must inject");
             assert!(
-                reminder.contains(xai_chat_state::MEMORY_CONTEXT_OPEN_TAG),
+                reminder.contains(agent_tui_chat_state::MEMORY_CONTEXT_OPEN_TAG),
                 "reminder must be a tagged memory-context block, got: {reminder}"
             );
             assert!(

@@ -1,4 +1,4 @@
-//! Auth dependency-inversion seam shared between `xai-file-utils`
+//! Auth dependency-inversion seam shared between `agent-tui-file-utils`
 //! (the holder) and `agent-tui-shell` (the implementer). Keeps shell types
 //! out of data-collector's import graph while still letting refresh-aware
 //! token resolution drive HTTP requests.

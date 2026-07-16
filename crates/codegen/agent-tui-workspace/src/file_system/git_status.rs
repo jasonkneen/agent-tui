@@ -75,7 +75,7 @@ pub async fn git_status_short(working_directory: impl Into<PathBuf>) -> Result<S
     let working_directory = working_directory.into();
 
     tokio::task::spawn_blocking(move || {
-        let output = xai_tty_utils::git_command()
+        let output = agent_tui_tty_utils::git_command()
             .args(["status", "--short", "--branch"])
             .current_dir(&working_directory)
             .stdout(std::process::Stdio::piped())
@@ -239,7 +239,7 @@ fn git_status_impl(working_directory: &Path) -> Result<String, FsError> {
 /// refreshes.  This function is called from background tasks (system prompt
 /// generation) and must never contend with foreground git operations.
 fn run_git(cwd: &Path, args: &[&str]) -> Option<String> {
-    let output = xai_tty_utils::git_command()
+    let output = agent_tui_tty_utils::git_command()
         .args(args)
         .current_dir(cwd)
         .stdout(std::process::Stdio::piped())

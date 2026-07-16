@@ -194,7 +194,7 @@ impl MemoryBackendImpl {
     fn open_readonly(&self) -> Result<rusqlite::Connection, rusqlite::Error> {
         // Journal-mode-aware open (busy_timeout included): never mmap a legacy
         // WAL -shm on network mounts (SIGBUS); see JournalMode::open_readonly.
-        xai_sqlite_journal::JournalMode::for_db_path(&self.db_path).open_readonly(&self.db_path)
+        agent_tui_sqlite_journal::JournalMode::for_db_path(&self.db_path).open_readonly(&self.db_path)
     }
 
     async fn make_embedding_provider(&self) -> Option<super::embedding::ApiEmbeddingProvider> {

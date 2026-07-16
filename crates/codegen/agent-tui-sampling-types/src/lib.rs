@@ -4,7 +4,7 @@
 //! request/response types, streaming types, and error types used across the
 //! xAI agent stack.  It intentionally contains **no I/O** (no HTTP clients,
 //! no file system access) so it can be depended on by downstream crates
-//! (e.g., `xai-chat-state`) without pulling in the full `agent-tui-shell`.
+//! (e.g., `agent-tui-chat-state`) without pulling in the full `agent-tui-shell`.
 
 pub mod conversation;
 pub mod doom_loop;

@@ -23,7 +23,7 @@ pub use self::share::{ShareSessionRequest, ShareSessionResponse};
 pub use prod_mc_cli_chat_proxy_types::feedback_types::{
     ClientType, FeedbackTerminalInfo, RatingType,
 };
-pub use xai_fsnotify::{FsConfig, FsEvent, FsEventKind, FsEventSource, FsNotifyError, GitMetaKind};
+pub use agent_tui_fsnotify::{FsConfig, FsEvent, FsEventKind, FsEventSource, FsNotifyError, GitMetaKind};
 /// `false` twin: this template is not compiled into this build, so no
 /// template matches. Keeps ungated call sites compiling in both
 /// configurations.
@@ -255,7 +255,7 @@ mod tests {
         );
     }
 }
-/// Client-requested fs notification mode (was xai_fsnotify::FsNotifyMode).
+/// Client-requested fs notification mode (was agent_tui_fsnotify::FsNotifyMode).
 /// Determines whether the session sends an initial file index to the client
 /// or just streams raw file events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]

@@ -712,8 +712,8 @@ fn coordinator_with_completed(id: &str) -> SubagentCoordinator {
 /// and asserts all three post-conditions hold together.
 #[tokio::test]
 async fn completion_snapshot_sequence_persists_ref_then_removes_worktree() {
-    xai_test_utils::require_git!();
-    use xai_test_utils::git::{git_commit_all, init_git_repo};
+    agent_tui_test_utils::require_git!();
+    use agent_tui_test_utils::git::{git_commit_all, init_git_repo};
     let temp = tempfile::TempDir::new().unwrap();
     let repo = temp.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
@@ -721,7 +721,7 @@ async fn completion_snapshot_sequence_persists_ref_then_removes_worktree() {
     std::fs::write(repo.join("tracked.txt"), "original").unwrap();
     git_commit_all(&repo, "initial");
     let wt = temp.path().join("subagent-glue-1");
-    xai_fast_worktree::WorktreeBuilder::new(&repo, &wt)
+    agent_tui_fast_worktree::WorktreeBuilder::new(&repo, &wt)
         .standalone(true)
         .create()
         .unwrap();
@@ -814,8 +814,8 @@ async fn gate_on_completion_retains_worktree_path_when_not_removed() {
 /// already reflects a removed worktree plus a recorded snapshot_ref.
 #[tokio::test]
 async fn disposal_completes_before_subagent_is_observable() {
-    xai_test_utils::require_git!();
-    use xai_test_utils::git::{git_commit_all, init_git_repo};
+    agent_tui_test_utils::require_git!();
+    use agent_tui_test_utils::git::{git_commit_all, init_git_repo};
     let temp = tempfile::TempDir::new().unwrap();
     let repo = temp.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
@@ -823,7 +823,7 @@ async fn disposal_completes_before_subagent_is_observable() {
     std::fs::write(repo.join("tracked.txt"), "original").unwrap();
     git_commit_all(&repo, "initial");
     let wt = temp.path().join("subagent-order-1");
-    xai_fast_worktree::WorktreeBuilder::new(&repo, &wt)
+    agent_tui_fast_worktree::WorktreeBuilder::new(&repo, &wt)
         .standalone(true)
         .create()
         .unwrap();
@@ -1391,10 +1391,10 @@ fn token_estimation_for_window_safety() {
         ConversationItem::user("Hello, how are you?"),
         ConversationItem::assistant("I'm doing well, thank you!"),
     ];
-    let estimated = xai_chat_state::estimate_conversation_tokens(&conversation);
+    let estimated = agent_tui_chat_state::estimate_conversation_tokens(&conversation);
     assert!(estimated > 0, "should produce non-zero estimate");
     assert!(estimated < 100, "short conversation should have small token estimate");
-    assert_eq!(xai_chat_state::estimate_conversation_tokens(& []), 0);
+    assert_eq!(agent_tui_chat_state::estimate_conversation_tokens(& []), 0);
 }
 #[test]
 fn token_estimation_accounts_for_images() {
@@ -1403,20 +1403,20 @@ fn token_estimation_accounts_for_images() {
         ConversationItem::User(UserItem { content : vec![ContentPart::Text { text :
         "describe this".into(), }], synthetic_reason : None, ..Default::default() })
     ];
-    let text_tokens = xai_chat_state::estimate_conversation_tokens(&text_only);
+    let text_tokens = agent_tui_chat_state::estimate_conversation_tokens(&text_only);
     let with_image = vec![
         ConversationItem::User(UserItem { content : vec![ContentPart::Text { text :
         "describe this".into(), }, ContentPart::Image { url : "data:image/png;base64,abc"
         .into(), },], synthetic_reason : None, ..Default::default() })
     ];
-    let image_tokens = xai_chat_state::estimate_conversation_tokens(&with_image);
+    let image_tokens = agent_tui_chat_state::estimate_conversation_tokens(&with_image);
     assert_eq!(image_tokens, text_tokens + 765, "one image should add 765 tokens");
     let multi_image = vec![
         ConversationItem::User(UserItem { content : vec![ContentPart::Image { url :
         "img1".into() }, ContentPart::Image { url : "img2".into() }, ContentPart::Image {
         url : "img3".into() },], synthetic_reason : None, ..Default::default() })
     ];
-    let multi_tokens = xai_chat_state::estimate_conversation_tokens(&multi_image);
+    let multi_tokens = agent_tui_chat_state::estimate_conversation_tokens(&multi_image);
     assert_eq!(multi_tokens, 765 * 3, "three images = 3 * 765 tokens");
 }
 #[test]
@@ -1526,7 +1526,7 @@ fn drain_cancelled_finish_broadcasts(
 ) -> usize {
     let mut count = 0;
     while let Ok(msg) = gateway_rx.try_recv() {
-        let xai_acp_lib::AcpClientMessage::ExtNotification(args) = msg else {
+        let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg else {
             continue;
         };
         assert_eq!(args.request.method.as_ref(), "x.ai/session_notification");
@@ -2950,7 +2950,7 @@ fn persona_injection_into_empty_conversation() {
 mod cancellation_error_message_tests {
     use super::super::cancellation_error_message;
     use crate::session::commands::CancellationContext;
-    use xai_file_utils::events::types::CancellationCategory;
+    use agent_tui_file_utils::events::types::CancellationCategory;
     #[test]
     fn permission_rejected_with_context() {
         let ctx = CancellationContext {

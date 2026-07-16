@@ -24,7 +24,7 @@ use anyhow::{Context, Result, bail};
 pub fn pbcopy(text: &str) -> Result<()> {
     let mut cmd = Command::new("pbcopy");
     cmd.stdin(Stdio::piped());
-    xai_tty_utils::detach_std_command(&mut cmd);
+    agent_tui_tty_utils::detach_std_command(&mut cmd);
     let mut child = cmd.spawn().context("spawn pbcopy")?;
     child
         .stdin
@@ -51,7 +51,7 @@ pub fn pbcopy(text: &str) -> Result<()> {
         "Set-Clipboard -Value ([Console]::In.ReadToEnd())",
     ])
     .stdin(Stdio::piped());
-    xai_tty_utils::detach_std_command(&mut cmd);
+    agent_tui_tty_utils::detach_std_command(&mut cmd);
     let mut child = cmd.spawn().context("spawn powershell Set-Clipboard")?;
     child
         .stdin
@@ -70,7 +70,7 @@ pub fn pbcopy(text: &str) -> Result<()> {
 #[cfg(not(target_os = "windows"))]
 pub fn pbpaste() -> Option<String> {
     let mut cmd = Command::new("pbpaste");
-    xai_tty_utils::detach_std_command(&mut cmd);
+    agent_tui_tty_utils::detach_std_command(&mut cmd);
     let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
@@ -91,7 +91,7 @@ pub fn pbpaste() -> Option<String> {
         "-Command",
         "$c = Get-Clipboard -Raw; if ($null -ne $c) { [Console]::Out.Write($c) }",
     ]);
-    xai_tty_utils::detach_std_command(&mut cmd);
+    agent_tui_tty_utils::detach_std_command(&mut cmd);
     let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
@@ -108,7 +108,7 @@ pub fn set_clipboard_png(path: &Path) -> Result<()> {
     );
     let mut cmd = Command::new("osascript");
     cmd.arg("-e").arg(&script);
-    xai_tty_utils::detach_std_command(&mut cmd);
+    agent_tui_tty_utils::detach_std_command(&mut cmd);
     let status = cmd.status().context("spawn osascript")?;
     if !status.success() {
         bail!("osascript set-clipboard-PNG exited with {status}");
@@ -144,7 +144,7 @@ pub fn set_clipboard_png(path: &Path) -> Result<()> {
         "-EncodedCommand",
         &encoded,
     ]);
-    xai_tty_utils::detach_std_command(&mut cmd);
+    agent_tui_tty_utils::detach_std_command(&mut cmd);
     let status = cmd.status().context("spawn powershell SetImage")?;
     if !status.success() {
         bail!("powershell SetImage exited with {status}");

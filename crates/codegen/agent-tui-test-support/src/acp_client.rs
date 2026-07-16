@@ -13,7 +13,7 @@ use std::time::Duration;
 use agent_client_protocol::{self as acp, Agent as _};
 use tempfile::TempDir;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use xai_acp_lib::LineBufferedRead;
+use agent_tui_acp_lib::LineBufferedRead;
 
 use crate::env::{grok_binary, test_env_cmd_tokio};
 use crate::headless::stderr_tail;

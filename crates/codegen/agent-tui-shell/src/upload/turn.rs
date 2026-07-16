@@ -59,7 +59,7 @@ pub(crate) struct PromptTraceContext {
     pub(crate) turn_number: u64,
     pub(crate) session_handle: crate::session::SessionHandle,
     pub(crate) session_registry_enabled: bool,
-    pub(crate) upload_queue: Option<xai_file_utils::queue::UploadQueue>,
+    pub(crate) upload_queue: Option<agent_tui_file_utils::queue::UploadQueue>,
     pub(crate) artifact_tracker: super::manifest::ArtifactTracker,
     pub(crate) auth_manager: std::sync::Arc<crate::auth::AuthManager>,
 }
@@ -172,7 +172,7 @@ pub(crate) async fn complete_prompt_trace(
     session_copy_rx: oneshot::Receiver<
         anyhow::Result<crate::session::persistence::SessionStateCopy>,
     >,
-    turn_messages: Option<xai_chat_state::TurnCapture>,
+    turn_messages: Option<agent_tui_chat_state::TurnCapture>,
     streaming_partial: Option<crate::session::acp_session::StreamingTurnCapture>,
     wait: UploadWait,
 ) -> anyhow::Result<bool> {

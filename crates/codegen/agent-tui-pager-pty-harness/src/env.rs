@@ -45,8 +45,8 @@ fn ensure_local_pager_binary(binary: &std::path::Path) -> Result<()> {
             "agent-tui-pager",
         ])
         .stdin(Stdio::null())
-        .envs(xai_tty_utils::pager_env());
-    xai_tty_utils::detach_std_command(&mut cmd);
+        .envs(agent_tui_tty_utils::pager_env());
+    agent_tui_tty_utils::detach_std_command(&mut cmd);
     let output = cmd
         .output()
         .with_context(|| format!("failed to spawn {cargo} to build agent-tui-pager"))?;

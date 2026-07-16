@@ -24,7 +24,7 @@ use base64::Engine as _;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use xai_chat_state::compaction_utils::{extract_real_user_queries, extract_user_query};
+use agent_tui_chat_state::compaction_utils::{extract_real_user_queries, extract_user_query};
 use agent_tui_sampling_types::conversation::{ContentPart, ConversationItem, UserItem};
 use agent_tui_tools::util::truncate::truncate_middle;
 /// Per-entry character cap for the conversation outline sent to the

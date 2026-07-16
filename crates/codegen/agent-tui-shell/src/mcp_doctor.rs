@@ -362,7 +362,7 @@ async fn check_server_start(
     cwd: &Path,
 ) -> Result<(mcp_servers::McpClient, Check), Check> {
     let start = std::time::Instant::now();
-    let noop = xai_file_utils::events::EventWriter::noop();
+    let noop = agent_tui_file_utils::events::EventWriter::noop();
     match mcp_servers::start_mcp_server(
         acp_server,
         None,

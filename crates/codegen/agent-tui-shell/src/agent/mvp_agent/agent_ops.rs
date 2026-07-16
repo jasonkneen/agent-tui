@@ -671,11 +671,11 @@ impl MvpAgent {
     ///
     /// The session-based clause is load-bearing: without it, chat_state can get
     /// locked into `auth_type = ApiKey` and skip token refresh on later prompts.
-    pub(crate) fn auth_type(&self) -> xai_chat_state::AuthType {
+    pub(crate) fn auth_type(&self) -> agent_tui_chat_state::AuthType {
         if self.auth_manager.current().is_some() || self.is_session_based_auth() {
-            xai_chat_state::AuthType::SessionToken
+            agent_tui_chat_state::AuthType::SessionToken
         } else {
-            xai_chat_state::AuthType::ApiKey
+            agent_tui_chat_state::AuthType::ApiKey
         }
     }
     /// When `cached_token` cannot proceed, prefer non-interactive `xai.api_key`
@@ -1099,17 +1099,17 @@ impl MvpAgent {
         );
         if matches!(preferred, Some(crate ::auth::PreferredAuthMethod::Oidc))
             && !model.has_own_credentials()
-            && credentials.auth_type == xai_chat_state::AuthType::ApiKey
+            && credentials.auth_type == agent_tui_chat_state::AuthType::ApiKey
         {
             credentials.api_key = None;
-            credentials.auth_type = xai_chat_state::AuthType::SessionToken;
+            credentials.auth_type = agent_tui_chat_state::AuthType::SessionToken;
         }
         crate::agent::config::enforce_disable_api_key_auth(
             &mut credentials,
             self.cfg.borrow().grok_com_config.api_key_auth_disabled(),
             session.as_ref().map(|a| a.key.as_str()),
         );
-        if !has_session_key && credentials.auth_type == xai_chat_state::AuthType::ApiKey
+        if !has_session_key && credentials.auth_type == agent_tui_chat_state::AuthType::ApiKey
             && !model.has_own_credentials() && self.is_session_based_auth()
         {
             tracing::info!(
@@ -1121,7 +1121,7 @@ impl MvpAgent {
                 None,
                 Some(serde_json::json!({ "model" : model.info().model.as_str() })),
             );
-            credentials.auth_type = xai_chat_state::AuthType::SessionToken;
+            credentials.auth_type = agent_tui_chat_state::AuthType::SessionToken;
         }
         if !has_session_key && !model.has_own_credentials() {
             tracing::warn!(
@@ -2018,7 +2018,7 @@ impl MvpAgent {
     pub async fn list_hooks(
         &self,
         session_id: &acp::SessionId,
-    ) -> Option<xai_hooks_plugins_types::HooksListResponse> {
+    ) -> Option<agent_tui_hooks_plugins_types::HooksListResponse> {
         let handle = self.get_session_handle(session_id)?;
         handle.get_hooks_list().await
     }
@@ -2026,9 +2026,9 @@ impl MvpAgent {
     pub async fn execute_hooks_action(
         &self,
         session_id: &acp::SessionId,
-        action: xai_hooks_plugins_types::HooksAction,
-    ) -> Option<xai_hooks_plugins_types::ActionOutcome> {
-        if matches!(action, xai_hooks_plugins_types::HooksAction::Untrust)
+        action: agent_tui_hooks_plugins_types::HooksAction,
+    ) -> Option<agent_tui_hooks_plugins_types::ActionOutcome> {
+        if matches!(action, agent_tui_hooks_plugins_types::HooksAction::Untrust)
             && let Some(cwd) = self.get_session_cwd(session_id)
         {
             self.interactive_trust_prompted
@@ -2042,14 +2042,14 @@ impl MvpAgent {
     pub async fn execute_plugins_action(
         &self,
         session_id: &acp::SessionId,
-        action: xai_hooks_plugins_types::PluginsAction,
-    ) -> Option<xai_hooks_plugins_types::ActionOutcome> {
-        let is_reload = matches!(action, xai_hooks_plugins_types::PluginsAction::Reload);
+        action: agent_tui_hooks_plugins_types::PluginsAction,
+    ) -> Option<agent_tui_hooks_plugins_types::ActionOutcome> {
+        let is_reload = matches!(action, agent_tui_hooks_plugins_types::PluginsAction::Reload);
         let handle = self.get_session_handle(session_id)?;
         let outcome = handle.execute_plugins_action(action).await;
         let succeeded = matches!(
             outcome.as_ref().map(| o | & o.status),
-            Some(xai_hooks_plugins_types::OutcomeStatus::Success)
+            Some(agent_tui_hooks_plugins_types::OutcomeStatus::Success)
         );
         if is_reload && succeeded {
             self.broadcast_plugin_registry_to_sessions(Some(session_id));
@@ -2512,7 +2512,7 @@ impl MvpAgent {
         model: &str,
         base: u64,
         turns: Vec<Vec<agent_tui_sampling_types::conversation::ConversationItem>>,
-    ) -> Vec<(PromptTraceContext, PromptMetadata, xai_chat_state::TurnCapture)> {
+    ) -> Vec<(PromptTraceContext, PromptMetadata, agent_tui_chat_state::TurnCapture)> {
         let mut uploads = Vec::with_capacity(turns.len());
         for (offset, items) in turns.into_iter().enumerate() {
             let turn_number = base.saturating_add(offset as u64);
@@ -2556,7 +2556,7 @@ impl MvpAgent {
                 workspace_type: None,
                 sandbox: local_sandbox_telemetry(),
             };
-            let capture = xai_chat_state::TurnCapture {
+            let capture = agent_tui_chat_state::TurnCapture {
                 messages: items,
                 compaction_occurred: false,
             };
@@ -2899,7 +2899,7 @@ impl MvpAgent {
             .and_then(|m| m.get("x.ai/fs_notify"))
             .and_then(|v| {
                 use crate::session::{ClientFsConfig, ClientFsMode};
-                use xai_fsnotify::FsConfig;
+                use agent_tui_fsnotify::FsConfig;
                 if v.as_bool() == Some(true) {
                     return Some(ClientFsConfig::default());
                 }
@@ -3002,7 +3002,7 @@ impl MvpAgent {
                 );
                 (handle, Some((hunk_event_rx, cancel)))
             }
-            None => (xai_hunk_tracker::HunkTrackerHandle::noop(), None),
+            None => (agent_tui_hunk_tracker::HunkTrackerHandle::noop(), None),
         };
         let has_xai_auth = self.auth_manager.current().is_some_and(|a| a.is_xai_auth());
         let loc_tracking_enabled = hunk_tracking_enabled && has_xai_auth
@@ -3030,15 +3030,15 @@ impl MvpAgent {
                 let (loc_agg_tx, loc_agg_rx) = tokio::sync::mpsc::unbounded_channel();
                 let loc_path = crate::session::persistence::session_dir(&session_info)
                     .join("hunk_records.jsonl");
-                let loc_writer = xai_hunk_tracker::JsonlHunkRecordWriter::new(loc_path);
-                let loc_ctx = xai_hunk_tracker::LocSinkContext {
+                let loc_writer = agent_tui_hunk_tracker::JsonlHunkRecordWriter::new(loc_path);
+                let loc_ctx = agent_tui_hunk_tracker::LocSinkContext {
                     session_id: session_info.id.0.to_string(),
                     agent_id: agent_id(),
                     user_id: self.auth_manager.current().map(|a| a.user_id.clone()),
                     aggregate_tx: Some(loc_agg_tx),
                 };
                 tokio::spawn(
-                    xai_hunk_tracker::run_loc_sink(
+                    agent_tui_hunk_tracker::run_loc_sink(
                         hunk_event_rx,
                         loc_writer,
                         loc_ctx,
@@ -3392,7 +3392,7 @@ impl MvpAgent {
             init_meta,
         ) && !chat_history.is_empty()
             && !startup_hints.preserve_inherited_system
-            && !xai_chat_state::conversation_util::has_inference_history(&chat_history)
+            && !agent_tui_chat_state::conversation_util::has_inference_history(&chat_history)
         {
             let changed = replace_or_insert_system_head(
                 &mut chat_history,
@@ -3413,7 +3413,7 @@ impl MvpAgent {
         let (mut handle, permission_events_rx, agent_system_prompt, session_thread) = {
             let _timer = crate::instrumentation_timer!("session.spawn_actor_call");
             let session_key = self.auth_manager.current_or_expired().map(|a| a.key);
-            let credentials = xai_chat_state::Credentials {
+            let credentials = agent_tui_chat_state::Credentials {
                 api_key: sampling_config.api_key.clone(),
                 auth_type: crate::agent::config::resolve_chat_state_auth_type(
                     sampling_config.model.as_str(),
@@ -3657,14 +3657,14 @@ impl MvpAgent {
             tokio::spawn(async move {
                 while let Some(agg) = loc_rx.recv().await {
                     match agg {
-                        xai_hunk_tracker::LocAggregate::LinesChanged {
+                        agent_tui_hunk_tracker::LocAggregate::LinesChanged {
                             author_type,
                             lines_added,
                             lines_removed,
                             file_path,
                         } => {
                             let is_agent = author_type
-                                == xai_hunk_tracker::AuthorType::Agent;
+                                == agent_tui_hunk_tracker::AuthorType::Agent;
                             signals
                                 .record_loc_change(
                                     is_agent,
@@ -3673,7 +3673,7 @@ impl MvpAgent {
                                     file_path,
                                 );
                         }
-                        xai_hunk_tracker::LocAggregate::LinesReverted {
+                        agent_tui_hunk_tracker::LocAggregate::LinesReverted {
                             lines_added_reverted,
                             lines_removed_reverted,
                         } => {

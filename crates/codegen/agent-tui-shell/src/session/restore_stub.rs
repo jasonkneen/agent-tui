@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use xai_file_utils::storage_client::StorageClient;
+use agent_tui_file_utils::storage_client::StorageClient;
 
 use crate::agent::session_registry_client::{SessionRecord, SessionRegistryClient};
 

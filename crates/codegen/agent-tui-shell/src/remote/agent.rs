@@ -82,7 +82,7 @@ impl SandboxClient {
                 crate::http::process_client_mode(),
             );
 
-        Ok(xai_file_utils::trace_context::inject_trace_context_into_request(builder))
+        Ok(agent_tui_file_utils::trace_context::inject_trace_context_into_request(builder))
     }
 
     /// Check an HTTP response for errors, then deserialize the JSON body.

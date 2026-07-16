@@ -8,9 +8,9 @@ use super::persistence::{LocalFeedbackEntry, PersistenceMsg};
 use agent_client_protocol as acp;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::{mpsc, oneshot};
-use xai_file_utils::queue::UploadQueue;
+use agent_tui_file_utils::queue::UploadQueue;
 use agent_tui_sampling_types::ReasoningEffort;
-use xai_hunk_tracker::HunkTrackerHandle;
+use agent_tui_hunk_tracker::HunkTrackerHandle;
 /// Coarse lifecycle state of a session as known to the leader/agent.
 ///
 /// A grok session has no
@@ -61,7 +61,7 @@ pub struct SessionHandle {
     /// Handle to the hunk tracker for this session
     pub hunk_tracker_handle: HunkTrackerHandle,
     /// Actor-based chat state handle — lets callers inspect final conversation state.
-    pub chat_state_handle: xai_chat_state::ChatStateHandle,
+    pub chat_state_handle: agent_tui_chat_state::ChatStateHandle,
     /// Handle to session signals (used for completion tracking)
     pub signals_handle: super::signals::SessionSignalsHandle,
     /// Shared gate controlling whether the session actor forwards
@@ -166,7 +166,7 @@ pub struct SessionHandle {
 }
 impl SessionHandle {
     /// Last assistant `model_id` / `model_fingerprint` in conversation (global, not turn-scoped).
-    pub(crate) async fn get_model_metadata(&self) -> xai_chat_state::ModelMetadata {
+    pub(crate) async fn get_model_metadata(&self) -> agent_tui_chat_state::ModelMetadata {
         let (tx, rx) = oneshot::channel();
         if self
             .cmd_tx
@@ -175,7 +175,7 @@ impl SessionHandle {
         {
             rx.await.unwrap_or_default()
         } else {
-            xai_chat_state::ModelMetadata::default()
+            agent_tui_chat_state::ModelMetadata::default()
         }
     }
     /// Move a foreground bash command to background by tool_call_id.
@@ -258,7 +258,7 @@ impl SessionHandle {
         rx.await.unwrap_or(None)
     }
     /// Get hooks list for the pager modal.
-    pub async fn get_hooks_list(&self) -> Option<xai_hooks_plugins_types::HooksListResponse> {
+    pub async fn get_hooks_list(&self) -> Option<agent_tui_hooks_plugins_types::HooksListResponse> {
         let (tx, rx) = oneshot::channel();
         if self
             .cmd_tx
@@ -272,8 +272,8 @@ impl SessionHandle {
     /// Execute a hooks management action from the pager modal.
     pub async fn execute_hooks_action(
         &self,
-        action: xai_hooks_plugins_types::HooksAction,
-    ) -> Option<xai_hooks_plugins_types::ActionOutcome> {
+        action: agent_tui_hooks_plugins_types::HooksAction,
+    ) -> Option<agent_tui_hooks_plugins_types::ActionOutcome> {
         let (tx, rx) = oneshot::channel();
         if self
             .cmd_tx
@@ -290,8 +290,8 @@ impl SessionHandle {
     /// Execute a plugins management action from the pager modal.
     pub async fn execute_plugins_action(
         &self,
-        action: xai_hooks_plugins_types::PluginsAction,
-    ) -> Option<xai_hooks_plugins_types::ActionOutcome> {
+        action: agent_tui_hooks_plugins_types::PluginsAction,
+    ) -> Option<agent_tui_hooks_plugins_types::ActionOutcome> {
         let (tx, rx) = oneshot::channel();
         if self
             .cmd_tx

@@ -7,16 +7,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value;
-use xai_computer_hub_mcp_adapter::{
+use agent_tui_computer_hub_mcp_adapter::{
     McpBridgeConfig, McpCallResult, McpContent, McpServerInfo, McpToolDefinition, McpToolHandler,
     McpTransport,
 };
-use xai_computer_hub_sdk::ToolServerHandler;
+use agent_tui_computer_hub_sdk::ToolServerHandler;
 use agent_tui_mcp::rmcp;
 use agent_tui_mcp::servers::McpClient;
-use xai_tool_protocol::ToolId;
-use xai_tool_runtime::{ToolCallContext, ToolStream, TypedToolOutput};
-use xai_tool_types::ToolDescription;
+use agent_tui_tool_protocol::ToolId;
+use agent_tui_tool_runtime::{ToolCallContext, ToolStream, TypedToolOutput};
+use agent_tui_tool_types::ToolDescription;
 
 /// Adapts [`McpClient`] to the [`McpTransport`] trait for [`McpBridge`].
 pub(crate) struct McpClientTransportAdapter {
@@ -31,14 +31,14 @@ impl McpClientTransportAdapter {
 
 #[async_trait]
 impl McpTransport for McpClientTransportAdapter {
-    async fn initialize(&self) -> Result<McpServerInfo, xai_computer_hub_mcp_adapter::McpError> {
+    async fn initialize(&self) -> Result<McpServerInfo, agent_tui_computer_hub_mcp_adapter::McpError> {
         let service = self
             .client
             .ensure_initialized()
             .await
-            .map_err(|e| xai_computer_hub_mcp_adapter::McpError::Transport(e.to_string()))?;
+            .map_err(|e| agent_tui_computer_hub_mcp_adapter::McpError::Transport(e.to_string()))?;
         let info = service.peer_info().ok_or_else(|| {
-            xai_computer_hub_mcp_adapter::McpError::Transport("no peer info after init".into())
+            agent_tui_computer_hub_mcp_adapter::McpError::Transport("no peer info after init".into())
         })?;
         Ok(McpServerInfo {
             name: info.server_info.name.clone(),
@@ -49,12 +49,12 @@ impl McpTransport for McpClientTransportAdapter {
 
     async fn list_tools(
         &self,
-    ) -> Result<Vec<McpToolDefinition>, xai_computer_hub_mcp_adapter::McpError> {
+    ) -> Result<Vec<McpToolDefinition>, agent_tui_computer_hub_mcp_adapter::McpError> {
         let service = self
             .client
             .ensure_initialized()
             .await
-            .map_err(|e| xai_computer_hub_mcp_adapter::McpError::Transport(e.to_string()))?;
+            .map_err(|e| agent_tui_computer_hub_mcp_adapter::McpError::Transport(e.to_string()))?;
 
         let mut all_tools = Vec::new();
         let mut cursor: Option<String> = None;
@@ -64,7 +64,7 @@ impl McpTransport for McpClientTransportAdapter {
                     rmcp::model::PaginatedRequestParams::default().with_cursor(cursor.clone()),
                 ))
                 .await
-                .map_err(|e| xai_computer_hub_mcp_adapter::McpError::Transport(e.to_string()))?;
+                .map_err(|e| agent_tui_computer_hub_mcp_adapter::McpError::Transport(e.to_string()))?;
 
             all_tools.extend(result.tools.into_iter().map(|t| McpToolDefinition {
                 name: t.name.to_string(),
@@ -85,12 +85,12 @@ impl McpTransport for McpClientTransportAdapter {
         &self,
         name: &str,
         arguments: Value,
-    ) -> Result<McpCallResult, xai_computer_hub_mcp_adapter::McpError> {
+    ) -> Result<McpCallResult, agent_tui_computer_hub_mcp_adapter::McpError> {
         let service = self
             .client
             .ensure_initialized()
             .await
-            .map_err(|e| xai_computer_hub_mcp_adapter::McpError::Transport(e.to_string()))?;
+            .map_err(|e| agent_tui_computer_hub_mcp_adapter::McpError::Transport(e.to_string()))?;
         // MCP spec requires arguments to be an object; coerce if needed.
         let args_object = match arguments {
             Value::Object(map) => Some(map),
@@ -108,7 +108,7 @@ impl McpTransport for McpClientTransportAdapter {
                 params
             })
             .await
-            .map_err(|e| xai_computer_hub_mcp_adapter::McpError::Transport(e.to_string()))?;
+            .map_err(|e| agent_tui_computer_hub_mcp_adapter::McpError::Transport(e.to_string()))?;
 
         Ok(McpCallResult {
             content: result
@@ -129,7 +129,7 @@ impl McpTransport for McpClientTransportAdapter {
         })
     }
 
-    async fn close(&self) -> Result<(), xai_computer_hub_mcp_adapter::McpError> {
+    async fn close(&self) -> Result<(), agent_tui_computer_hub_mcp_adapter::McpError> {
         // No-op: cleanup happens when McpClient is dropped.
         Ok(())
     }
@@ -210,7 +210,7 @@ pub(crate) fn server_name_from_mcp_error(e: &agent_tui_mcp::servers::McpError) -
 
 /// Bridge config factory for MCP bridge connections.
 pub(crate) fn make_bridge_config(
-    session_id: xai_tool_protocol::SessionId,
+    session_id: agent_tui_tool_protocol::SessionId,
     server_name: &str,
 ) -> McpBridgeConfig {
     McpBridgeConfig {

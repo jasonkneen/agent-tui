@@ -416,7 +416,7 @@ impl TokenUsageCategory {
     pub fn skills_listing(text: &str, skill_count: usize) -> Self {
         Self {
             label: "Skills".to_string(),
-            tokens: xai_token_estimation::estimate_tokens(text),
+            tokens: agent_tui_token_estimation::estimate_tokens(text),
             detail: Some(count_detail(skill_count as u64, "skill")),
         }
     }
@@ -426,7 +426,7 @@ impl TokenUsageCategory {
     pub fn mcp_servers(text: &str, server_count: usize) -> Self {
         Self {
             label: "MCP servers".to_string(),
-            tokens: xai_token_estimation::estimate_tokens(text),
+            tokens: agent_tui_token_estimation::estimate_tokens(text),
             detail: Some(count_detail(server_count as u64, "server")),
         }
     }
@@ -476,8 +476,8 @@ impl ContextInfo {
         Self {
             used,
             total,
-            usage_pct: xai_token_estimation::usage_percentage_u8(used, total),
-            free_tokens: xai_token_estimation::free_tokens(total, used),
+            usage_pct: agent_tui_token_estimation::usage_percentage_u8(used, total),
+            free_tokens: agent_tui_token_estimation::free_tokens(total, used),
             auto_compact_threshold_percent: DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT,
             ..Self::default()
         }

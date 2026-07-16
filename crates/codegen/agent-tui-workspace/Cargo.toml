@@ -49,8 +49,8 @@ agent-tui-config-types = { workspace = true }
 toml = { workspace = true, features = ["preserve_order"] }
 dashmap = { workspace = true }
 agent-client-protocol = { workspace = true }
-xai-acp-lib = { workspace = true }
-xai-codebase-graph = { path = "../xai-codebase-graph" }
+agent-tui-acp-lib = { workspace = true }
+agent-tui-codebase-graph = { path = "../agent-tui-codebase-graph" }
 agent-tui-paths = { path = "../agent-tui-paths" }
 base64 = { workspace = true }
 infer = { workspace = true }
@@ -72,33 +72,33 @@ prometheus = { workspace = true }
 glob = "0.3"
 agent-tui-sandbox = { path = "../agent-tui-sandbox", default-features = false }
 agent-tui-hooks = { path = "../agent-tui-hooks" }
-xai-hunk-tracker = { path = "../xai-hunk-tracker" }
+agent-tui-hunk-tracker = { path = "../agent-tui-hunk-tracker" }
 # `metrics` enables the SDK's metric-donation client (periodic Prometheus
 # registry gather → OTLP → hub donation pump); see metric_donation_reporter.
-xai-computer-hub-sdk = { workspace = true, features = ["metrics"] }
-xai-computer-hub-mcp-adapter = { path = "../../common/xai-computer-hub-mcp-adapter" }
+agent-tui-computer-hub-sdk = { workspace = true, features = ["metrics"] }
+agent-tui-computer-hub-mcp-adapter = { path = "../../common/agent-tui-computer-hub-mcp-adapter" }
 agent-tui-mcp = { path = "../agent-tui-mcp" }
-xai-file-utils = { path = "../xai-file-utils" }
+agent-tui-file-utils = { path = "../agent-tui-file-utils" }
 agent-tui-auth = { path = "../agent-tui-auth" }
 agent-tui-telemetry = { workspace = true }
-xai-tty-utils = { workspace = true }
-xai-sqlite-journal = { workspace = true }
+agent-tui-tty-utils = { workspace = true }
+agent-tui-sqlite-journal = { workspace = true }
 reqwest = { workspace = true }
-xai-tool-protocol = { workspace = true }
-xai-tool-runtime = { workspace = true }
-xai-tool-types = { workspace = true }
+agent-tui-tool-protocol = { workspace = true }
+agent-tui-tool-runtime = { workspace = true }
+agent-tui-tool-types = { workspace = true }
 tokio-util = { workspace = true, features = ["rt"] }
 urlencoding = "2"
-xai-fast-worktree = { path = "../xai-fast-worktree", features = ["metadata"] }
+agent-tui-fast-worktree = { path = "../agent-tui-fast-worktree", features = ["metadata"] }
 # tonic stays for `tonic::Status`/`Code` mapping in workspace_ops deploy errors.
 tonic = { workspace = true }
 
-xai-fsnotify = { path = "../xai-fsnotify" }
+agent-tui-fsnotify = { path = "../agent-tui-fsnotify" }
 clap = { workspace = true }
 tracing-subscriber = { workspace = true }
 # "enable" required for the SDK's spans to record at all.
 fastrace = { workspace = true, features = ["enable"] }
-xai-tracing = { workspace = true }
+agent-tui-tracing = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
 tempfile = { workspace = true }
@@ -113,7 +113,7 @@ libc = { workspace = true }
 windows = { workspace = true }
 
 [[bin]]
-name = "xai-workspace-server"
+name = "agent-tui-workspace-server"
 path = "src/bin/workspace_server.rs"
 
 [[bin]]
@@ -134,7 +134,7 @@ test-support = []
 filetime = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
-xai-test-utils = { path = "../../common/xai-test-utils" }
+agent-tui-test-utils = { path = "../../common/agent-tui-test-utils" }
 # Decode tar.gz archives produced by workspace upload helpers in tests.
 flate2 = { workspace = true }
 tar = { workspace = true }

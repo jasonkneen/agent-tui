@@ -32,7 +32,7 @@ impl SamplerHandle {
     ///
     /// Useful for tests and callers that need a `SamplerHandle` field
     /// before the actor is wired up. Mirrors
-    /// [`HunkTrackerHandle::noop`](https://docs.rs/xai-hunk-tracker).
+    /// [`HunkTrackerHandle::noop`](https://docs.rs/agent-tui-hunk-tracker).
     pub fn noop() -> Self {
         let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
         // Receiver is dropped immediately; sends will fail but every

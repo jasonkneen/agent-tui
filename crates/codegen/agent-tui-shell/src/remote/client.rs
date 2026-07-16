@@ -81,7 +81,7 @@ async fn add_bundle_fetch_headers(
             crate::http::CLIENT_MODE_HEADER,
             crate::http::process_client_mode(),
         );
-    xai_file_utils::trace_context::inject_trace_context_into_request(builder)
+    agent_tui_file_utils::trace_context::inject_trace_context_into_request(builder)
 }
 /// Fetch the bundled subagent cache payload from cli-chat-proxy `GET /v1/subagents/bundle`.
 ///
@@ -432,7 +432,7 @@ impl BackendClient {
         builder: reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, BackendError> {
         let headers = self.auth_header_map().await?;
-        let builder = xai_file_utils::trace_context::inject_trace_context_into_request(
+        let builder = agent_tui_file_utils::trace_context::inject_trace_context_into_request(
             builder.headers(headers),
         );
         let request = builder.build()?;

@@ -2,7 +2,7 @@
 use std::path::Path;
 use agent_client_protocol as acp;
 use tokio::task::JoinSet;
-use xai_acp_lib::{AcpAgentTx, acp_send};
+use agent_tui_acp_lib::{AcpAgentTx, acp_send};
 use super::actions::{PermissionModePersist, SubagentKillOutcome, TaskResult};
 use super::agent::AgentId;
 use crate::unified_log as ulog;
@@ -168,8 +168,8 @@ pub(crate) fn parse_session_load_running_prompt_id(
 /// Strips protocol jargon (ACP, JSON-RPC) and other technical noise that would
 /// be meaningless in a toast, and collapses known disk-full markers.
 pub(crate) fn sanitize_user_error(raw: &str) -> String {
-    if raw.contains(xai_fast_worktree::OUT_OF_DISK_CONTEXT)
-        || raw.contains(xai_fast_worktree::ENOSPC_OS_MESSAGE)
+    if raw.contains(agent_tui_fast_worktree::OUT_OF_DISK_CONTEXT)
+        || raw.contains(agent_tui_fast_worktree::ENOSPC_OS_MESSAGE)
     {
         return "Out of disk space.".to_string();
     }
@@ -1125,9 +1125,9 @@ pub(super) fn should_send_yolo_acp_notification(
     }
 }
 pub(super) fn marketplace_outcome_succeeded(
-    outcome: &xai_hooks_plugins_types::ActionOutcome,
+    outcome: &agent_tui_hooks_plugins_types::ActionOutcome,
 ) -> bool {
-    outcome.status == xai_hooks_plugins_types::OutcomeStatus::Success
+    outcome.status == agent_tui_hooks_plugins_types::OutcomeStatus::Success
 }
 /// Extract the typed kill outcome from an `x.ai/task/kill` ext response.
 ///
@@ -1322,7 +1322,7 @@ pub(super) fn has_prepaid_credits(
 /// A transport failure yields [`AutoTopupFetch::Unchanged`] so the caller keeps
 /// any cached rule rather than treating the blip as "no auto top-up".
 pub(super) async fn fetch_auto_topup_info(
-    tx: &xai_acp_lib::AcpAgentTx,
+    tx: &agent_tui_acp_lib::AcpAgentTx,
 ) -> crate::views::credit_bar::AutoTopupFetch {
     use crate::views::credit_bar::AutoTopupFetch;
     let req = acp::ExtRequest::new(

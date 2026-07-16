@@ -21,7 +21,7 @@ pub struct SchedulerDeleteOutput {
     pub message: String,
 }
 
-impl xai_tool_runtime::ToolOutput for SchedulerDeleteOutput {}
+impl agent_tui_tool_runtime::ToolOutput for SchedulerDeleteOutput {}
 
 #[derive(Debug, Default)]
 pub struct SchedulerDeleteTool;
@@ -50,34 +50,34 @@ Returns success: true if the task was found and removed, false if no task with t
         use crate::types::tool_metadata::ToolMetadata as TM;
         Expr::Value(ToolRequirement::Tool {
             namespace: TM::tool_namespace(&SchedulerCreateTool).to_string(),
-            id: xai_tool_runtime::Tool::id(&SchedulerCreateTool).to_string(),
+            id: agent_tui_tool_runtime::Tool::id(&SchedulerCreateTool).to_string(),
             if_params: None,
         })
     }
 }
 
-impl xai_tool_runtime::Tool for SchedulerDeleteTool {
+impl agent_tui_tool_runtime::Tool for SchedulerDeleteTool {
     type Args = SchedulerDeleteInput;
     type Output = SchedulerDeleteOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("scheduler_delete").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("scheduler_delete").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "scheduler_delete",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: false,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Write),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Write),
             ..Default::default()
         }
     }
@@ -89,9 +89,9 @@ impl xai_tool_runtime::Tool for SchedulerDeleteTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: SchedulerDeleteInput,
-    ) -> Result<SchedulerDeleteOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<SchedulerDeleteOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -99,7 +99,7 @@ impl xai_tool_runtime::Tool for SchedulerDeleteTool {
             let res = resources.lock().await;
             res.get::<SchedulerHandle>()
                 .ok_or_else(|| {
-                    xai_tool_runtime::ToolError::custom("missing_resource", "SchedulerHandle")
+                    agent_tui_tool_runtime::ToolError::custom("missing_resource", "SchedulerHandle")
                 })?
                 .0
                 .clone()
@@ -112,11 +112,11 @@ impl xai_tool_runtime::Tool for SchedulerDeleteTool {
                 reply: reply_tx,
             })
             .map_err(|_| {
-                xai_tool_runtime::ToolError::custom("process_manager", "Scheduler actor stopped")
+                agent_tui_tool_runtime::ToolError::custom("process_manager", "Scheduler actor stopped")
             })?;
 
         let removed = reply_rx.await.map_err(|_| {
-            xai_tool_runtime::ToolError::custom("process_manager", "Scheduler actor dropped reply")
+            agent_tui_tool_runtime::ToolError::custom("process_manager", "Scheduler actor dropped reply")
         })?;
 
         if removed {

@@ -47,7 +47,7 @@ enum PluginEntry {
         has_agents: bool,
         has_mcp: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
-        components: Option<xai_hooks_plugins_types::PluginComponents>,
+        components: Option<agent_tui_hooks_plugins_types::PluginComponents>,
     },
 }
 

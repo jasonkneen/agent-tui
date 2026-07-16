@@ -20,10 +20,10 @@ use crate::upload::trace::{
     upload_subagent_metadata, upload_turn_result,
 };
 use crate::upload::turn::{PromptTraceContext, complete_prompt_trace};
-use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use agent_tui_tools::implementations::grok_build::task::types::*;
 use agent_tui_workspace::file_system::AsyncFileSystem;
-use xai_hunk_tracker::HunkTrackerHandle;
+use agent_tui_hunk_tracker::HunkTrackerHandle;
 use super::*;
 pub(super) fn task_model_override_error(
     requested: Option<&str>,
@@ -155,7 +155,7 @@ pub(crate) async fn handle_subagent_request(
             .map(|e| <&str>::from(e).to_string());
     }
     {
-        use xai_tool_types::SubagentIsolationMode;
+        use agent_tui_tool_types::SubagentIsolationMode;
         if effective_runtime.isolation == SubagentIsolationMode::None
             && definition.isolation
                 == Some(agent_tui_agent::config::IsolationMode::Worktree)
@@ -243,7 +243,7 @@ pub(crate) async fn handle_subagent_request(
         return;
     }
     let worktree_path = if let Some(ref source) = resume_source {
-        if effective_runtime.isolation != xai_tool_types::SubagentIsolationMode::None
+        if effective_runtime.isolation != agent_tui_tool_types::SubagentIsolationMode::None
             && source.worktree_path.is_none()
         {
             tracing::info!(
@@ -300,7 +300,7 @@ pub(crate) async fn handle_subagent_request(
                 }
             }
         }
-    } else if effective_runtime.isolation != xai_tool_types::SubagentIsolationMode::None
+    } else if effective_runtime.isolation != agent_tui_tool_types::SubagentIsolationMode::None
     {
         let source_cwd = parent_source_cwd(&ctx);
         let dest = match crate::session::worktree::worktree_base_dir_for_source(
@@ -317,18 +317,18 @@ pub(crate) async fn handle_subagent_request(
         };
         let source_clone = source_cwd;
         let subagent_id = request.id.clone();
-        let creation_mode: xai_fast_worktree::CreationMode = ctx.worktree_type.into();
+        let creation_mode: agent_tui_fast_worktree::CreationMode = ctx.worktree_type.into();
         let btrfs_delegate = crate::session::worktree::btrfs_delegate_from_env();
         match tokio::task::spawn_blocking(move || {
-                let mut builder = xai_fast_worktree::WorktreeBuilder::new(
+                let mut builder = agent_tui_fast_worktree::WorktreeBuilder::new(
                         &source_clone,
                         &dest,
                     )
                     .working_tree_mode(
-                        xai_fast_worktree::WorkingTreeMode::PreserveWorkingTree,
+                        agent_tui_fast_worktree::WorkingTreeMode::PreserveWorkingTree,
                     )
                     .creation_mode(creation_mode)
-                    .worktree_kind(xai_fast_worktree::WorktreeKind::Subagent)
+                    .worktree_kind(agent_tui_fast_worktree::WorktreeKind::Subagent)
                     .session_id(subagent_id);
                 if let Some(delegate) = btrfs_delegate {
                     builder = builder.btrfs_delegate(delegate);
@@ -752,10 +752,10 @@ pub(crate) async fn handle_subagent_request(
     tool_ctx.monitor_event_buffer = Some(MonitorEventBuffer::default());
     tool_ctx.subagent_depth = ctx.parent_depth + 1;
     tool_ctx.lsp = ctx.lsp.clone();
-    let parent_traceparent = xai_file_utils::trace_context::current_traceparent();
+    let parent_traceparent = agent_tui_file_utils::trace_context::current_traceparent();
     let tracker_child_cwd = child_session_info.cwd.clone();
     let tracker_model_id = effective_model_id.0.to_string();
-    let initial_child_tokens = xai_chat_state::estimate_conversation_tokens(
+    let initial_child_tokens = agent_tui_chat_state::estimate_conversation_tokens(
         &forked_conversation,
     );
     let model_entry = crate::agent::config::find_model_by_id(
@@ -765,7 +765,7 @@ pub(crate) async fn handle_subagent_request(
     let model_has_own_creds = model_entry
         .is_some_and(|entry| entry.has_own_credentials());
     let inherited_auth_type = subagent_auth_type(model_entry, &ctx.auth_method_id);
-    let credentials = xai_chat_state::Credentials {
+    let credentials = agent_tui_chat_state::Credentials {
         api_key: effective_sampling_config.api_key.clone(),
         auth_type: inherited_auth_type,
         alpha_test_key: ctx.alpha_test_key.clone(),
@@ -1081,7 +1081,7 @@ pub(crate) async fn handle_subagent_request(
             agent_tui_workspace::permission::ClientType::Generic,
             ctx.resolve_auto_compact_threshold_percent(&subagent_model_id),
             agent_tui_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_string(),
-            xai_chat_state::CompactionMode::Summary,
+            agent_tui_chat_state::CompactionMode::Summary,
             ctx.resolve_compaction_verbatim_input(),
             false,
             None,
@@ -1302,7 +1302,7 @@ pub(crate) async fn handle_subagent_request(
             client_identifier: None,
             screen_mode: None,
             verbatim: true,
-            traceparent: xai_file_utils::trace_context::current_traceparent(),
+            traceparent: agent_tui_file_utils::trace_context::current_traceparent(),
             json_schema: None,
             send_now: false,
             respond_to: prompt_tx,
@@ -1599,7 +1599,7 @@ pub(crate) async fn handle_subagent_request(
             .send(SessionCommand::CopyFile {
                 respond_to: copy_tx,
             });
-        let turn_messages: Option<xai_chat_state::TurnCapture> = {
+        let turn_messages: Option<agent_tui_chat_state::TurnCapture> = {
             let (tx, rx) = tokio::sync::oneshot::channel();
             if child_handle
                 .cmd_tx

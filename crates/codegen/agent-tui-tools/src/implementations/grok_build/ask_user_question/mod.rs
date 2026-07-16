@@ -268,9 +268,9 @@ impl AskUserQuestionTool {
     async fn fallback_fire_and_forget(
         &self,
         input: &AskUserQuestionInput,
-        ctx: &xai_tool_runtime::ToolCallContext,
+        ctx: &agent_tui_tool_runtime::ToolCallContext,
         resources: &SharedResources,
-    ) -> Result<AskUserQuestionOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<AskUserQuestionOutput, agent_tui_tool_runtime::ToolError> {
         let question_count = input.questions.len();
 
         let questions_json = serde_json::to_value(&input.questions)
@@ -315,28 +315,28 @@ impl AskUserQuestionTool {
     }
 }
 
-impl xai_tool_runtime::Tool for AskUserQuestionTool {
+impl agent_tui_tool_runtime::Tool for AskUserQuestionTool {
     type Args = AskUserQuestionInput;
     type Output = AskUserQuestionOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("ask_user_question").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("ask_user_question").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "ask_user_question",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: true,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Read),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Read),
             ..Default::default()
         }
     }
@@ -348,9 +348,9 @@ impl xai_tool_runtime::Tool for AskUserQuestionTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: AskUserQuestionInput,
-    ) -> Result<AskUserQuestionOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<AskUserQuestionOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -368,7 +368,7 @@ impl xai_tool_runtime::Tool for AskUserQuestionTool {
             let mut seen = std::collections::HashSet::new();
             for q in &input.questions {
                 if !seen.insert(&q.question) {
-                    return Err(xai_tool_runtime::ToolError::invalid_arguments(format!(
+                    return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                         "Duplicate question text: \"{}\"",
                         q.question
                     )));
@@ -394,7 +394,7 @@ impl xai_tool_runtime::Tool for AskUserQuestionTool {
                         .fallback_fire_and_forget(&input, &ctx, &resources)
                         .await;
                 }
-                return Err(xai_tool_runtime::ToolError::custom(
+                return Err(agent_tui_tool_runtime::ToolError::custom(
                     "missing_resource",
                     "UserQuestionSender".to_string(),
                 ));
@@ -412,8 +412,8 @@ impl xai_tool_runtime::Tool for AskUserQuestionTool {
         };
 
         if sender.0.send(request).is_err() {
-            return Err(xai_tool_runtime::ToolError::execution(
-                xai_tool_protocol::ToolId::new("ask_user_question").expect("valid"),
+            return Err(agent_tui_tool_runtime::ToolError::execution(
+                agent_tui_tool_protocol::ToolId::new("ask_user_question").expect("valid"),
                 "User question session ended unexpectedly (coordinator channel closed)",
             ));
         }
@@ -454,8 +454,8 @@ impl xai_tool_runtime::Tool for AskUserQuestionTool {
         let result = match outcome {
             Ok(Ok(r)) => r,
             Ok(Err(_recv_error)) => {
-                return Err(xai_tool_runtime::ToolError::execution(
-                    xai_tool_protocol::ToolId::new("ask_user_question").expect("valid"),
+                return Err(agent_tui_tool_runtime::ToolError::execution(
+                    agent_tui_tool_protocol::ToolId::new("ask_user_question").expect("valid"),
                     "User question session ended unexpectedly (client may have disconnected)",
                 ));
             }
@@ -510,14 +510,14 @@ impl xai_tool_runtime::Tool for AskUserQuestionTool {
                 message: format::CANCEL_TEXT.to_string(),
             }),
             Err(UserQuestionError::TransportError(msg)) => {
-                Err(xai_tool_runtime::ToolError::execution(
-                    xai_tool_protocol::ToolId::new("ask_user_question").expect("valid"),
+                Err(agent_tui_tool_runtime::ToolError::execution(
+                    agent_tui_tool_protocol::ToolId::new("ask_user_question").expect("valid"),
                     format!("Failed to reach the client for user question: {msg}"),
                 ))
             }
             Err(UserQuestionError::MalformedResponse(msg)) => {
-                Err(xai_tool_runtime::ToolError::execution(
-                    xai_tool_protocol::ToolId::new("ask_user_question").expect("valid"),
+                Err(agent_tui_tool_runtime::ToolError::execution(
+                    agent_tui_tool_protocol::ToolId::new("ask_user_question").expect("valid"),
                     format!("Client returned an invalid response to user question: {msg}"),
                 ))
             }
@@ -582,7 +582,7 @@ mod tests {
     fn tool_name_and_description() {
         let tool = AskUserQuestionTool;
         assert_eq!(
-            xai_tool_runtime::Tool::id(&tool).as_str(),
+            agent_tui_tool_runtime::Tool::id(&tool).as_str(),
             "ask_user_question"
         );
         let desc = crate::types::tool_metadata::ToolMetadata::description_template(&tool);
@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn tool_is_read_only() {
-        assert!(xai_tool_runtime::Tool::capabilities(&AskUserQuestionTool).is_read_only);
+        assert!(agent_tui_tool_runtime::Tool::capabilities(&AskUserQuestionTool).is_read_only);
     }
 
     #[test]
@@ -672,7 +672,7 @@ mod tests {
         };
 
         let result =
-            xai_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "test-call"), input)
+            agent_tui_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "test-call"), input)
                 .await
                 .unwrap();
 
@@ -700,7 +700,7 @@ mod tests {
         };
 
         let result =
-            xai_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "test-call"), input)
+            agent_tui_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "test-call"), input)
                 .await
                 .unwrap();
 
@@ -731,7 +731,7 @@ mod tests {
             use_id_keyed_format: false,
         };
 
-        xai_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "call-q"), input)
+        agent_tui_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "call-q"), input)
             .await
             .unwrap();
 
@@ -761,7 +761,7 @@ mod tests {
         };
 
         let err =
-            xai_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "test-call"), input)
+            agent_tui_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "test-call"), input)
                 .await
                 .unwrap_err();
 
@@ -785,7 +785,7 @@ mod tests {
         let handle = tokio::spawn({
             let shared = shared.clone();
             async move {
-                xai_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "tc-1"), input)
+                agent_tui_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "tc-1"), input)
                     .await
             }
         });
@@ -828,7 +828,7 @@ mod tests {
         let handle = tokio::spawn({
             let shared = shared.clone();
             async move {
-                xai_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "tc-4"), input)
+                agent_tui_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "tc-4"), input)
                     .await
             }
         });
@@ -867,7 +867,7 @@ mod tests {
         let handle = tokio::spawn({
             let shared = shared.clone();
             async move {
-                xai_tool_runtime::Tool::run(
+                agent_tui_tool_runtime::Tool::run(
                     &tool,
                     test_ctx_with_call_id(shared, "tc-timeout"),
                     input,
@@ -907,7 +907,7 @@ mod tests {
         let handle = tokio::spawn({
             let shared = shared.clone();
             async move {
-                xai_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "tc-ok"), input)
+                agent_tui_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "tc-ok"), input)
                     .await
             }
         });
@@ -991,7 +991,7 @@ mod tests {
         let handle = tokio::spawn({
             let shared = shared.clone();
             async move {
-                xai_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "tc-short"), input)
+                agent_tui_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "tc-short"), input)
                     .await
             }
         });
@@ -1026,7 +1026,7 @@ mod tests {
         let handle = tokio::spawn({
             let shared = shared.clone();
             async move {
-                xai_tool_runtime::Tool::run(
+                agent_tui_tool_runtime::Tool::run(
                     &tool,
                     test_ctx_with_call_id(shared, "tc-forever"),
                     input,
@@ -1073,7 +1073,7 @@ mod tests {
         let handle = tokio::spawn({
             let shared = shared.clone();
             async move {
-                xai_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "tc-5"), input)
+                agent_tui_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "tc-5"), input)
                     .await
             }
         });
@@ -1099,7 +1099,7 @@ mod tests {
         let handle = tokio::spawn({
             let shared = shared.clone();
             async move {
-                xai_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "tc-6"), input)
+                agent_tui_tool_runtime::Tool::run(&tool, test_ctx_with_call_id(shared, "tc-6"), input)
                     .await
             }
         });

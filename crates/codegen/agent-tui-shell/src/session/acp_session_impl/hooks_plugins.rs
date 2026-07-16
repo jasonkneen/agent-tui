@@ -87,9 +87,9 @@ impl SessionActor {
     /// Handle a hooks management action from the pager modal.
     pub(super) async fn handle_hooks_action(
         self: &Arc<Self>,
-        action: xai_hooks_plugins_types::HooksAction,
-    ) -> xai_hooks_plugins_types::ActionOutcome {
-        use xai_hooks_plugins_types::{ActionOutcome, HooksAction, OutcomeStatus};
+        action: agent_tui_hooks_plugins_types::HooksAction,
+    ) -> agent_tui_hooks_plugins_types::ActionOutcome {
+        use agent_tui_hooks_plugins_types::{ActionOutcome, HooksAction, OutcomeStatus};
 
         match action {
             HooksAction::Reload => {
@@ -272,9 +272,9 @@ impl SessionActor {
     /// Handle a plugins management action from the pager modal.
     pub(super) async fn handle_plugins_action(
         self: &Arc<Self>,
-        action: xai_hooks_plugins_types::PluginsAction,
-    ) -> xai_hooks_plugins_types::ActionOutcome {
-        use xai_hooks_plugins_types::{ActionOutcome, OutcomeStatus, PluginsAction};
+        action: agent_tui_hooks_plugins_types::PluginsAction,
+    ) -> agent_tui_hooks_plugins_types::ActionOutcome {
+        use agent_tui_hooks_plugins_types::{ActionOutcome, OutcomeStatus, PluginsAction};
 
         match action {
             PluginsAction::Reload => match &self.plugin_registry_handle {

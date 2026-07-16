@@ -22,7 +22,7 @@ urlencoding = { workspace = true }
 agent-tui-config-types = { workspace = true }
 agent-tui-models = { workspace = true }
 agent-tui-tools = { workspace = true }
-xai-tty-utils = { workspace = true }
+agent-tui-tty-utils = { workspace = true }
 
 [dev-dependencies]
 uuid = { workspace = true, features = ["v4"] }

@@ -75,7 +75,7 @@ impl ImageGenClient {
     pub fn new(
         config: &ImageGenConfig,
         api_key_provider: Option<SharedApiKeyProvider>,
-    ) -> Result<Self, xai_tool_runtime::ToolError> {
+    ) -> Result<Self, agent_tui_tool_runtime::ToolError> {
         let ImageGenConfig::Enabled {
             api_key,
             base_url,
@@ -85,7 +85,7 @@ impl ImageGenClient {
             ..
         } = config
         else {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(
                 "Cannot create ImageGenClient from disabled config",
             ));
         };
@@ -101,7 +101,7 @@ impl ImageGenClient {
         headers.insert(
             AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {api_key}")).map_err(|e| {
-                xai_tool_runtime::ToolError::invalid_arguments(format!(
+                agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                     "Invalid API key for header: {e}"
                 ))
             })?,
@@ -110,17 +110,17 @@ impl ImageGenClient {
         extra_headers.into_iter().try_for_each(|(key, value)| {
             let header_name =
                 reqwest::header::HeaderName::from_bytes(key.as_bytes()).map_err(|e| {
-                    xai_tool_runtime::ToolError::invalid_arguments(format!(
+                    agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                         "Invalid header name '{key}': {e}"
                     ))
                 })?;
             let header_value = HeaderValue::from_str(value).map_err(|e| {
-                xai_tool_runtime::ToolError::invalid_arguments(format!(
+                agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                     "Invalid header value for '{key}': {e}"
                 ))
             })?;
             headers.insert(header_name, header_value);
-            Ok::<(), xai_tool_runtime::ToolError>(())
+            Ok::<(), agent_tui_tool_runtime::ToolError>(())
         })?;
 
         let http = reqwest::Client::builder()
@@ -129,7 +129,7 @@ impl ImageGenClient {
             .default_headers(headers)
             .build()
             .map_err(|e| {
-                xai_tool_runtime::ToolError::invalid_arguments(format!(
+                agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                     "Failed to build HTTP client: {e}"
                 ))
             })?;
@@ -187,7 +187,7 @@ impl ImageGenClient {
         &self,
         prompt: &str,
         aspect_ratio: &str,
-    ) -> Result<Vec<u8>, xai_tool_runtime::ToolError> {
+    ) -> Result<Vec<u8>, agent_tui_tool_runtime::ToolError> {
         let url = format!("{}/images/generations", self.base_url.trim_end_matches('/'));
 
         let payload = serde_json::json!({
@@ -209,7 +209,7 @@ impl ImageGenClient {
         }
 
         let response = req.send().await.map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
+            agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "Image generation API request failed: {e}"
             ))
         })?;
@@ -222,15 +222,15 @@ impl ImageGenClient {
             let body = response.text().await.unwrap_or_default();
             let truncated: String = body.chars().take(200).collect();
             tracing::warn!(http_status = %status, "Imagine API error: {truncated}");
-            return Err(xai_tool_runtime::ToolError::new(
-                xai_tool_runtime::ToolErrorKind::Custom,
+            return Err(agent_tui_tool_runtime::ToolError::new(
+                agent_tui_tool_runtime::ToolErrorKind::Custom,
                 format!("Image generation failed with HTTP {status}: {truncated}"),
             )
             .with_details(serde_json::json!({"code": "http_failure", "status": status.as_u16()})));
         }
 
         let body = response.text().await.map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
+            agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "Failed to read image generation response body: {e}"
             ))
         })?;
@@ -238,7 +238,7 @@ impl ImageGenClient {
         let resp_json: ImageGenResponse = serde_json::from_str(&body).map_err(|e| {
             let preview: String = body.chars().take(500).collect();
             tracing::warn!("Imagine API returned unparseable body: {preview}");
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
+            agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                 "Failed to parse image generation response: {e} — body preview: {preview}"
             ))
         })?;
@@ -246,7 +246,7 @@ impl ImageGenClient {
         let b64_data = resp_json.b64_data().unwrap_or("");
 
         if b64_data.is_empty() {
-            return Err(xai_tool_runtime::ToolError::invalid_arguments(
+            return Err(agent_tui_tool_runtime::ToolError::invalid_arguments(
                 "Image generation returned no image data.",
             ));
         }
@@ -254,7 +254,7 @@ impl ImageGenClient {
         base64::engine::general_purpose::STANDARD
             .decode(b64_data)
             .map_err(|e| {
-                xai_tool_runtime::ToolError::invalid_arguments(format!(
+                agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
                     "Failed to decode base64 image data: {e}"
                 ))
             })
@@ -379,28 +379,28 @@ impl crate::types::tool_metadata::ToolMetadata for ImageGenTool {
     }
 }
 
-impl xai_tool_runtime::Tool for ImageGenTool {
+impl agent_tui_tool_runtime::Tool for ImageGenTool {
     type Args = ImageGenInput;
     type Output = ToolOutput;
 
-    fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("image_gen").expect("valid tool id")
+    fn id(&self) -> agent_tui_tool_protocol::ToolId {
+        agent_tui_tool_protocol::ToolId::new("image_gen").expect("valid tool id")
     }
 
     fn description(
         &self,
-        _ctx: &::xai_tool_runtime::ListToolsContext,
-    ) -> xai_tool_types::ToolDescription {
-        xai_tool_types::ToolDescription::new(
+        _ctx: &::agent_tui_tool_runtime::ListToolsContext,
+    ) -> agent_tui_tool_types::ToolDescription {
+        agent_tui_tool_types::ToolDescription::new(
             "image_gen",
             crate::types::tool_metadata::ToolMetadata::description_template(self),
         )
     }
 
-    fn capabilities(&self) -> xai_tool_protocol::ToolCapabilities {
-        xai_tool_protocol::ToolCapabilities {
+    fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
+        agent_tui_tool_protocol::ToolCapabilities {
             is_read_only: false,
-            tool_scope: Some(xai_tool_protocol::ToolScope::Write),
+            tool_scope: Some(agent_tui_tool_protocol::ToolScope::Write),
             ..Default::default()
         }
     }
@@ -412,9 +412,9 @@ impl xai_tool_runtime::Tool for ImageGenTool {
     )]
     async fn run(
         &self,
-        ctx: xai_tool_runtime::ToolCallContext,
+        ctx: agent_tui_tool_runtime::ToolCallContext,
         input: ImageGenInput,
-    ) -> Result<ToolOutput, xai_tool_runtime::ToolError> {
+    ) -> Result<ToolOutput, agent_tui_tool_runtime::ToolError> {
         use crate::types::tool_metadata::shared_resources;
         let resources = shared_resources(&ctx)?;
 
@@ -441,7 +441,7 @@ impl xai_tool_runtime::Tool for ImageGenTool {
             .writer
             .save(&session_folder, &image_bytes, None)
             .await
-            .map_err(|e| xai_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
+            .map_err(|e| agent_tui_tool_runtime::ToolError::invalid_arguments(e.to_string()))?;
 
         tracing::info!(
             path = %absolute_path.display(),
@@ -461,7 +461,7 @@ mod tests {
     #[test]
     fn tool_name_and_description() {
         let tool = ImageGenTool;
-        assert_eq!(xai_tool_runtime::Tool::id(&tool).as_str(), "image_gen");
+        assert_eq!(agent_tui_tool_runtime::Tool::id(&tool).as_str(), "image_gen");
         assert!(
             crate::types::tool_metadata::ToolMetadata::description_template(&tool)
                 .contains("Generate a new image from a text description")
@@ -527,7 +527,7 @@ mod tests {
     async fn errors_when_client_missing() {
         let tool = ImageGenTool;
         let resources = crate::types::resources::Resources::new();
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &tool,
             test_ctx_with_call_id(resources.into_shared(), "test-call"),
             ImageGenInput {
@@ -563,7 +563,7 @@ mod tests {
         let mut resources = crate::types::resources::Resources::new();
         resources.insert(ImageGenClient::new(&cfg, None).unwrap());
 
-        let result = xai_tool_runtime::Tool::run(
+        let result = agent_tui_tool_runtime::Tool::run(
             &ImageGenTool,
             test_ctx_with_call_id(resources.into_shared(), "test-call"),
             ImageGenInput {
