@@ -17,7 +17,9 @@ use xai_acp_lib::{AcpAgentTx, AcpClientMessageBox, AcpClientRx, acp_send};
 use xai_grok_shell::agent::auth_method::AuthMethodKind;
 use xai_grok_shell::agent::config::Config as AgentConfig;
 use xai_grok_shell::extensions::task::{CancelSubagentRequest, KillTaskRequest};
-use xai_grok_shell::sampling::error::{RATE_LIMITED_ERROR_CODE, rate_limited_user_message};
+use xai_grok_shell::sampling::error::{
+    RATE_LIMITED_ERROR_CODE, error_detail_from_data, format_rate_limited_user_message,
+};
 use xai_grok_shell::sampling::types::{
     REASONING_EFFORT_META_KEY, parse_canonical_effort_token, reasoning_effort_meta_value,
 };
@@ -1321,13 +1323,8 @@ pub async fn run_single_turn(
         }
         Some(Err(err)) => {
             let msg = if i32::from(err.code) == RATE_LIMITED_ERROR_CODE {
-                // The -32003 data is the flattened server message; a
-                // free-usage 429 carries the well-known code inline there.
-                if crate::app::acp_error_is_free_usage_exhausted(&err) {
-                    crate::app::FREE_USAGE_USER_MESSAGE.to_string()
-                } else {
-                    rate_limited_user_message(is_api_key_auth).to_string()
-                }
+                let detail = err.data.as_ref().and_then(error_detail_from_data);
+                format_rate_limited_user_message(detail.as_deref(), is_api_key_auth)
             } else {
                 err.to_string()
             };

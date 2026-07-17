@@ -164,6 +164,9 @@ pub struct AuthManager {
     disk_state: RwLock<Option<DiskAuthState>>,
     /// See [`Self::cached_disk_api_key`].
     static_key_cache: parking_lot::Mutex<Option<StaticKeyCacheEntry>>,
+    /// Model `api_key` / resolved `env_key` for voice/tools without a session.
+    /// Not a session token (those live on `inner`). Prefers over disk; env wins.
+    process_static_api_key: parking_lot::RwLock<Option<String>>,
     sleep_gate: SleepGate,
     /// Count of in-flight IdP refreshes (the network call only), so a
     /// sleep-imminent transition can wait for a refresh straddling suspend to
@@ -405,6 +408,7 @@ impl AuthManager {
             refresh_notify: Arc::new(tokio::sync::Notify::new()),
             disk_state: RwLock::new(disk_state),
             static_key_cache: parking_lot::Mutex::new(None),
+            process_static_api_key: parking_lot::RwLock::new(None),
             sleep_gate: SleepGate::default(),
             refresh_in_flight: std::sync::atomic::AtomicU32::new(0),
             refresh_drain_lock: parking_lot::Mutex::new(()),
@@ -2221,11 +2225,8 @@ pub(crate) fn compute_proactive_sleep(this: &AuthManager) -> StdDuration {
     }
 }
 
-/// Tools + pager voice: session token first, then static API key.
-///
-/// Static fallthrough (`XAI_API_KEY` / `auth.json` `xai::api_key`) makes voice
-/// work on API-key-only setups without OAuth. API-key login already persists
-/// the env key to disk.
+/// Tools + pager voice bearer. Static: env → process model key → disk.
+/// Kill-switch / `preferred_method = oidc` block static keys.
 pub(crate) struct SharedAuthKeyProvider(pub Arc<AuthManager>);
 
 impl xai_grok_tools::types::ApiKeyProvider for SharedAuthKeyProvider {
@@ -2266,7 +2267,7 @@ fn prefers_static_api_key(am: &AuthManager) -> bool {
     )
 }
 
-/// Env → `auth.json` `xai::api_key`. Off under kill-switch or `preferred_method = oidc`.
+/// Env → process model key → disk. Off under kill-switch / oidc pin.
 fn resolve_static_api_key(am: &AuthManager) -> Option<String> {
     if am.grok_com_config.api_key_auth_disabled() {
         return None;
@@ -2278,6 +2279,7 @@ fn resolve_static_api_key(am: &AuthManager) -> Option<String> {
         return None;
     }
     non_empty_key(crate::agent::auth_method::read_xai_api_key_env().ok())
+        .or_else(|| non_empty_key(am.process_static_api_key.read().clone()))
         .or_else(|| am.cached_disk_api_key())
 }
 
@@ -2327,6 +2329,12 @@ impl AuthManager {
                 key
             }
         }
+    }
+
+    /// Set the process model key (empty clears). Not for session tokens.
+    pub fn set_process_static_api_key(&self, key: Option<String>) {
+        let key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
+        *self.process_static_api_key.write() = key;
     }
 }
 

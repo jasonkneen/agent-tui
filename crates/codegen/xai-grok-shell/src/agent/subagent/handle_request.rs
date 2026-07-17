@@ -1765,7 +1765,8 @@ pub(crate) async fn handle_subagent_request(
             }
         }
     }
-    update_subagent_meta_completed(&subagent_meta_dir, &result, &gcs_upload_ctx);
+    let persisted_output_dir = persist_subagent_output(&subagent_meta_dir, &result);
+    persist_subagent_completion(&subagent_meta_dir, &result, &gcs_upload_ctx);
     let final_status = result.status().to_string();
     let snapshot_dispose_enabled = ctx.resolve_subagent_worktree_snapshot_enabled();
     let telemetry_tokens = if result.tool_calls > 0 || result.success {
@@ -1994,6 +1995,7 @@ pub(crate) async fn handle_subagent_request(
             request.description.clone(),
             request.subagent_type.clone(),
             result.clone(),
+            persisted_output_dir,
         );
     if let Some(snapshot_ref) = disposed_snapshot_ref {
         coordinator.borrow_mut().set_completed_snapshot_ref(&request.id, snapshot_ref);

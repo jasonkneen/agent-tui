@@ -3586,6 +3586,105 @@ async fn shared_api_key_provider_disk_memo_follows_rewrites() {
     assert_eq!(provider.current_api_key_async().await, None);
 }
 
+#[tokio::test]
+#[serial_test::serial]
+async fn process_key_from_model_env_key() {
+    use crate::agent::config::{Config, resolve_model_list};
+    use xai_grok_test_support::EnvGuard;
+
+    const ENV: &str = "TEST_MODEL_ENV_KEY";
+    const TOKEN: &str = "model-env-token";
+
+    let _xai = EnvGuard::unset("XAI_API_KEY");
+    let _legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+    let _tok = EnvGuard::set(ENV, TOKEN);
+
+    let dm = crate::models::default_model();
+    let cfg = Config::new_from_toml_cfg(
+        &toml::from_str(&format!(
+            r#"
+            [model."{dm}"]
+            model = "{dm}"
+            env_key = "{ENV}"
+            "#
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let key = resolve_model_list(&cfg, None)
+        .get(dm)
+        .and_then(|m| m.own_credential())
+        .unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
+    assert!(mgr.current().is_none());
+    mgr.set_process_static_api_key(Some(key));
+    assert_eq!(
+        shared_api_key_provider(mgr)
+            .current_api_key_async()
+            .await
+            .as_deref(),
+        Some(TOKEN)
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn process_key_precedence() {
+    use xai_grok_test_support::EnvGuard;
+
+    let _xai = EnvGuard::unset("XAI_API_KEY");
+    let _legacy = EnvGuard::unset("GROK_CODE_XAI_API_KEY");
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
+    let provider = shared_api_key_provider(mgr.clone());
+
+    assert_eq!(provider.current_api_key_async().await, None);
+
+    crate::auth::store_api_key(dir.path(), "disk").unwrap();
+    assert_eq!(
+        provider.current_api_key_async().await.as_deref(),
+        Some("disk")
+    );
+
+    mgr.set_process_static_api_key(Some("  process  ".into()));
+    assert_eq!(
+        provider.current_api_key_async().await.as_deref(),
+        Some("process")
+    );
+
+    {
+        let _key = EnvGuard::set("XAI_API_KEY", "env");
+        assert_eq!(
+            provider.current_api_key_async().await.as_deref(),
+            Some("env")
+        );
+    }
+
+    mgr.set_process_static_api_key(None);
+    assert_eq!(
+        provider.current_api_key_async().await.as_deref(),
+        Some("disk")
+    );
+
+    let dir_blocked = tempfile::tempdir().unwrap();
+    let blocked = Arc::new(AuthManager::new(
+        dir_blocked.path(),
+        GrokComConfig {
+            disable_api_key_auth: Some(true),
+            ..GrokComConfig::default()
+        },
+    ));
+    blocked.set_process_static_api_key(Some("ignored".into()));
+    assert_eq!(
+        shared_api_key_provider(blocked)
+            .current_api_key_async()
+            .await,
+        None
+    );
+}
+
 fn expired_oidc() -> GrokAuth {
     GrokAuth {
         key: "expired-key".into(),

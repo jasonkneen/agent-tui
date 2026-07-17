@@ -15,7 +15,7 @@
 
 pub mod campaigns;
 pub mod config_override;
-mod fs_atomic;
+pub mod fs_atomic;
 mod loader;
 mod macos_managed;
 mod managed_cache;
@@ -40,8 +40,9 @@ pub use loader::{
 };
 pub use macos_managed::MDM_REQUIREMENTS_SOURCE;
 pub use managed_cache::{
-    MANAGED_CONFIG_CACHE_FILE, ServingIdentity, SyncMarker, confirmed_team_switch,
-    confirmed_team_switch_at, is_managed_config_hard_stale_for, is_managed_config_stale_for,
+    MANAGED_CONFIG_CACHE_FILE, ServingIdentity, SyncMarker, bump_rollback_floor,
+    bump_rollback_floor_with_now, confirmed_team_switch, confirmed_team_switch_at,
+    is_managed_config_hard_stale_for, is_managed_config_stale_for,
     managed_config_identity_changed_at, managed_deployment_id, managed_policy_compromised_for,
     mark_managed_config_synced, mark_managed_config_synced_at, normalize_identity,
 };
@@ -51,8 +52,8 @@ pub use paths::{
     grok_application_in, grok_home, sessions_cwd_dir, system_config_dir, user_grok_home,
 };
 pub use validation::{
-    RequirementsError, RequirementsLayer, RequirementsSource, fail_closed_flag_from_str,
-    load_merged_requirements, requirements_layers, validate_requirements,
+    RequirementsError, RequirementsLayer, RequirementsSource, load_merged_requirements,
+    requirements_layers, validate_requirements,
 };
 pub use version_overrides::{VersionOverrideError, apply_version_overrides};
 

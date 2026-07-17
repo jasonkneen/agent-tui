@@ -513,6 +513,7 @@ const CONTEXTUAL_HINTS_CHILDREN: &[&str] = &[
     "contextual_hints.send_now",
     "contextual_hints.small_screen",
     "contextual_hints.word_select",
+    "contextual_hints.ssh_wrap",
 ];
 
 /// Build the catalog. Called once at process start via
@@ -1268,6 +1269,9 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "small",
                 "screen",
                 "compact",
+                "ssh",
+                "wrap",
+                "remote",
             ],
             kind: SettingKind::Group {
                 children: CONTEXTUAL_HINTS_CHILDREN,
@@ -1464,6 +1468,28 @@ pub fn default_settings() -> Vec<SettingMeta> {
             ],
             kind: SettingKind::Bool {
                 default: ui_default.contextual_hints.word_select.unwrap_or(true),
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+        },
+        SettingMeta {
+            key: "contextual_hints.ssh_wrap",
+            category: SettingCategory::Advanced,
+            owner: SettingOwner::Shell,
+            label: "SSH wrap",
+            description: "At session load over SSH, recommend `grok wrap ssh` for \
+                          clipboard forwarding and terminal restore.",
+            keywords: &[
+                "ssh",
+                "wrap",
+                "remote",
+                "clipboard",
+                "restore",
+                "startup",
+                "hint",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.contextual_hints.ssh_wrap.unwrap_or(true),
             },
             restart_required: false,
             hidden_in_minimal: false,

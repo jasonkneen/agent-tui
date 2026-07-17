@@ -276,7 +276,8 @@ async fn run(args: Args, cwd: PathBuf) -> anyhow::Result<()> {
                 "Workspace server sandbox NOT active"
             };
             tracing::info!(
-                profile = % profile_name, active, restrict_network =
+                profile = % profile_name, active,
+                restrict_network_at_known_linux_launches =
                 xai_grok_sandbox::should_restrict_child_network(), "{status_msg}"
             );
         }
