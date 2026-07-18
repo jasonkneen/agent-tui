@@ -1479,6 +1479,8 @@ pub(in crate::app::dispatch) fn set_default_model(
         external,
         crate::runtime_backend::RuntimeBackend::Codex
             | crate::runtime_backend::RuntimeBackend::Claude
+            | crate::runtime_backend::RuntimeBackend::Lazar
+            | crate::runtime_backend::RuntimeBackend::Hermes
     ) {
         let label = external.as_str();
         let ActiveView::Agent(aid) = app.active_view else {
@@ -1515,6 +1517,12 @@ pub(in crate::app::dispatch) fn set_default_model(
             }
             crate::runtime_backend::RuntimeBackend::Claude => {
                 crate::runtime_backend::set_claude_model(new_id.0.as_ref())
+            }
+            crate::runtime_backend::RuntimeBackend::Lazar => {
+                crate::runtime_backend::set_lazar_model(new_id.0.as_ref())
+            }
+            crate::runtime_backend::RuntimeBackend::Hermes => {
+                crate::runtime_backend::set_hermes_model(new_id.0.as_ref())
             }
             crate::runtime_backend::RuntimeBackend::Grok => Ok(()),
         };

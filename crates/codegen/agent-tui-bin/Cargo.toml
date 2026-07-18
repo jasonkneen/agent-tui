@@ -6,22 +6,24 @@ license = "Apache-2.0"
 authors = ["Agent TUI contributors"]
 default-run = "agent-tui"
 
-# Composition-root binary for the Agent TUI. The artifact is named `agent-tui`.
-# This package exists so the binary can link both the pager library and the
-# optional `agent-tui-pager-minimal` render mode: `minimal` depends on
-# `agent-tui-pager`, so the pager library cannot depend back on it (cargo cycle).
-# The binary installs the minimal-mode IoC hooks at startup.
+# ONE CORE + ADDONS — one linked binary. Product skins are symlinks to `agent-tui`
+# (see scripts/link-product-bins.sh). Identity from argv[0] / AGENT_TUI_PRODUCT.
+#
+# This package links the pager library + optional pager-minimal (minimal depends
+# on pager, so the pager cannot depend back — no cargo cycle).
+
+[lib]
+name = "agent_tui_bin"
+path = "src/lib.rs"
+
 [[bin]]
 name = "agent-tui"
 path = "src/main.rs"
 
 [dependencies]
-# The pager library (all application logic + the public API main.rs drives).
 agent-tui-pager = { path = "../agent-tui-pager" }
-# Optional scrollback-native render mode, wired in via the fn-pointer seam.
 agent-tui-pager-minimal = { path = "../agent-tui-pager-minimal" }
 
-# Agent runtime + leader/stdio/headless entry points.
 agent-tui-shell = { workspace = true }
 agent-tui-update = { path = "../agent-tui-update" }
 agent-tui-version = { workspace = true }
@@ -30,7 +32,6 @@ agent-tui-workspace = { workspace = true }
 agent-tui-crash-handler = { path = "../agent-tui-crash-handler" }
 agent-tui-acp-lib = { workspace = true }
 
-# Async runtime + misc.
 tokio = { workspace = true, features = [
     "sync",
     "rt",
@@ -57,29 +58,17 @@ rustls = { version = "0.23", default-features = false, features = [
     "tls12",
 ] }
 
-# Binary hardening: compile-time string + control-flow obfuscation.
 obfstr = { workspace = true }
 cryptify = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
-# Default allocator on Unix; gated by the `jemalloc` feature (see main.rs
-# `#[global_allocator]`, cfg(all(feature = "jemalloc", unix))).
-# `stats` is binary-scoped only (not workspace-wide) so this CLI jemalloc
-# link gets --enable-stats for stats.allocated / stats.resident mallctl.
 tikv-jemallocator = { workspace = true, optional = true, features = ["stats"] }
-# Raw mallctl for the memory-cliff arena purge hook (see
-# `purge_jemalloc_retained_pages` + the `install_release_hook` call in
-# main.rs). Same version family as the
-# allocator; adds no new build units beyond what tikv-jemallocator pulls in.
 tikv-jemalloc-sys = { workspace = true, optional = true }
-# Heap-profile / stats mallctl helpers (prof.active, prof.dump, epoch, stats.*).
 tikv-jemalloc-ctl = { workspace = true, optional = true, features = ["stats", "use_std"] }
 
 [dev-dependencies]
 serial_test = { workspace = true }
-# `PagerArgs::try_parse_from` in the CLI-parsing unit tests (needs the
-# `clap::Parser` trait in scope).
 clap = { workspace = true, features = ["derive"] }
 
 [features]
@@ -92,6 +81,5 @@ default-bazel = [
     "sandbox-enforce",
     ]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]
-# Forward the sandbox-enforcement feature to the library.
 sandbox-enforce = ["agent-tui-pager/sandbox-enforce"]
 release-dist = ["agent-tui-pager/release-dist"]

@@ -503,6 +503,12 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         TaskResult::ClaudeModelsLoaded { result } => {
             handle_vendor_models_loaded(app, "Claude", result)
         }
+        TaskResult::LazarModelsLoaded { result } => {
+            handle_vendor_models_loaded(app, "Lazar", result)
+        }
+        TaskResult::HermesModelsLoaded { result } => {
+            handle_vendor_models_loaded(app, "Hermes", result)
+        }
         TaskResult::SendPromptNowFailed {
             agent_id,
             session_id,

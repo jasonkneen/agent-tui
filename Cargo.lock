@@ -511,6 +511,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-tui-hermes-runtime"
+version = "0.1.210"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "agent-tui-hooks"
 version = "0.1.0"
 dependencies = [
@@ -578,6 +585,14 @@ name = "agent-tui-interjection-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "agent-tui-lazar-runtime"
+version = "0.1.210"
+dependencies = [
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -736,7 +751,9 @@ dependencies = [
  "agent-tui-crash-handler",
  "agent-tui-fast-worktree",
  "agent-tui-file-utils",
+ "agent-tui-hermes-runtime",
  "agent-tui-hooks-plugins-types",
+ "agent-tui-lazar-runtime",
  "agent-tui-markdown",
  "agent-tui-mermaid",
  "agent-tui-pager-pty-harness",

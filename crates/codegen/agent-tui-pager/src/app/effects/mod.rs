@@ -86,6 +86,19 @@ pub(crate) fn execute(
                 TaskResult::ClaudeModelsLoaded { result }
             });
         }
+        Effect::RefreshLazarModels => {
+            tasks.spawn(async {
+                // Sync catalog build (no network) — kernel-reported model.
+                let result = crate::runtime_backend::refresh_lazar_models();
+                TaskResult::LazarModelsLoaded { result }
+            });
+        }
+        Effect::RefreshHermesModels => {
+            tasks.spawn(async {
+                let result = crate::runtime_backend::refresh_hermes_models();
+                TaskResult::HermesModelsLoaded { result }
+            });
+        }
         Effect::Logout => {
             let tx = acp_tx.clone();
             tasks

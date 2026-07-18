@@ -1,8 +1,13 @@
-//! `/runtime` (aliases `/provider`, `/rt`) — switch agent harness.
+//! `/runtime` (aliases `/provider`, `/rt`) — switch **runtime addon**.
 //!
-//! - `grok` — built-in xAI agent (default)
+//! ONE CORE + ADDONS: the TUI is fixed; this command only picks which addon
+//! serves turns (`docs/CORE_AND_ADDONS.md`). Product profiles may lock or
+//! filter the list.
+//!
+//! - `grok` — built-in xAI agent (default platform addon)
 //! - `codex` — local Codex app-server (warm JSON-RPC; uses `codex login`)
-//! - `claude` — Claude Code Agent SDK harness (`claude -p`; uses Claude Code login)
+//! - `claude` — Claude Code CLI harness (`claude -p`; uses Claude Code login)
+//! - `lazar` — local lazar kernel (`lazar -p` stream-json; kernel owns providers/models)
 
 use crate::app::actions::Action;
 use crate::runtime_backend::{self, RuntimeBackend};
@@ -20,11 +25,19 @@ impl SlashCommand for RuntimeCommand {
     }
 
     fn description(&self) -> &str {
-        "Switch agent runtime (Grok / Codex / Claude)"
+        if crate::product_profile::lock_runtime() {
+            "Show runtime addon (locked by product profile)"
+        } else {
+            "Switch runtime addon (Grok / Codex / Claude / Lazar / Hermes)"
+        }
     }
 
     fn usage(&self) -> &str {
-        "/runtime [grok|codex|claude]"
+        if crate::product_profile::lock_runtime() {
+            "/runtime"
+        } else {
+            "/runtime [grok|codex|claude|lazar|hermes]"
+        }
     }
 
     fn takes_args(&self) -> bool {
@@ -36,10 +49,17 @@ impl SlashCommand for RuntimeCommand {
     }
 
     fn arg_placeholder(&self) -> Option<&str> {
-        Some("[grok|codex|claude]")
+        if crate::product_profile::lock_runtime() {
+            None
+        } else {
+            Some("[grok|codex|claude|lazar|hermes]")
+        }
     }
 
     fn suggest_args(&self, _ctx: &AppCtx, _args_query: &str) -> Option<Vec<ArgItem>> {
+        if crate::product_profile::lock_runtime() {
+            return None;
+        }
         Some(
             runtime_backend::status_list()
                 .into_iter()
@@ -66,9 +86,29 @@ impl SlashCommand for RuntimeCommand {
         if trimmed.is_empty() {
             return CommandResult::Message(format_status());
         }
-        let Some(backend) = RuntimeBackend::parse(trimmed) else {
+        if crate::product_profile::lock_runtime() {
+            let p = crate::product_profile::get();
             return CommandResult::Error(format!(
-                "Unknown runtime `{trimmed}`. Use: grok | codex | claude"
+                "Product `{}` is locked to runtime `{}`. Edit product.toml or unset AGENT_TUI_PRODUCT to switch.",
+                p.name,
+                p.default_runtime.as_str()
+            ));
+        }
+        let Some(backend) = RuntimeBackend::parse(trimmed) else {
+            let allowed: Vec<&str> = crate::product_profile::enabled_runtimes()
+                .iter()
+                .map(|b| b.as_str())
+                .collect();
+            return CommandResult::Error(format!(
+                "Unknown runtime `{trimmed}`. Use: {}",
+                allowed.join(" | ")
+            ));
+        };
+        if !crate::product_profile::runtime_allowed(backend) {
+            return CommandResult::Error(format!(
+                "Runtime `{}` is not enabled for product `{}`",
+                backend.as_str(),
+                crate::product_profile::display_name()
             ));
         };
 
@@ -102,6 +142,34 @@ impl SlashCommand for RuntimeCommand {
                     ));
                 }
             }
+            RuntimeBackend::Lazar => {
+                let (ready, detail) = {
+                    let list = runtime_backend::status_list();
+                    list.into_iter()
+                        .find(|s| s.backend == RuntimeBackend::Lazar)
+                        .map(|s| (s.ready, s.detail))
+                        .unwrap_or((false, "unknown".into()))
+                };
+                if !ready {
+                    return CommandResult::Error(format!(
+                        "Lazar not ready ({detail}). Install lazar (on PATH or $LAZAR_HOME/bin/lazar)."
+                    ));
+                }
+            }
+            RuntimeBackend::Hermes => {
+                let (ready, detail) = {
+                    let list = runtime_backend::status_list();
+                    list.into_iter()
+                        .find(|s| s.backend == RuntimeBackend::Hermes)
+                        .map(|s| (s.ready, s.detail))
+                        .unwrap_or((false, "unknown".into()))
+                };
+                if !ready {
+                    return CommandResult::Error(format!(
+                        "Hermes not ready ({detail}). Install Hermes Agent (`hermes` on PATH)."
+                    ));
+                }
+            }
             RuntimeBackend::Grok => {}
         }
 
@@ -110,23 +178,53 @@ impl SlashCommand for RuntimeCommand {
 }
 
 fn format_status() -> String {
+    let product = crate::product_profile::get();
     let mut lines = vec![
-        "Agent runtimes (local CLIs — no extra OAuth in Agent TUI):".to_string(),
+        format!(
+            "Product: {} ({})",
+            product.name, product.id
+        ),
+        "Runtime addons (ONE CORE + ADDONS — local harnesses, no extra OAuth):".to_string(),
         String::new(),
     ];
     for s in runtime_backend::status_list() {
         let star = if s.active { "← active" } else { "" };
         let ready = if s.ready { "ready" } else { "not ready" };
+        let shape = crate::runtime_addon::get(s.backend)
+            .map(|a| a.turn_shape)
+            .unwrap_or("");
         lines.push(format!(
-            "  {}  {} ({ready}) — {} {star}",
+            "  {}  {} ({ready}) — {} · {shape} {star}",
             s.backend.as_str(),
             s.backend.display_name(),
             s.detail
         ));
     }
     lines.push(String::new());
-    lines.push("Switch: /runtime grok | /runtime codex | /runtime claude".into());
-    lines.push("Codex turns use `codex app-server` (warm). Claude uses `claude -p` + resume.".into());
-    lines.push("After switch, /model lists that runtime's models.".into());
+    if product.lock_runtime {
+        lines.push(format!(
+            "Runtime locked to `{}` by product profile (product.toml / AGENT_TUI_PRODUCT).",
+            product.default_runtime.as_str()
+        ));
+    } else {
+        let switches: Vec<&str> = crate::product_profile::enabled_runtimes()
+            .iter()
+            .map(|b| b.as_str())
+            .collect();
+        lines.push(format!(
+            "Switch: {}",
+            switches
+                .iter()
+                .map(|s| format!("/runtime {s}"))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ));
+        lines.push("After switch, /model lists that runtime's models.".into());
+    }
+    if product.default_runtime == RuntimeBackend::Lazar
+        || lines.iter().any(|l| l.contains("lazar"))
+    {
+        lines.push("Lazar spawns `lazar -p` per turn; the kernel owns providers and models.".into());
+    }
     lines.join("\n")
 }

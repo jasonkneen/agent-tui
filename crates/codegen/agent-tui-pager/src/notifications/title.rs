@@ -89,7 +89,8 @@ impl TitleManager {
 
         if !has_parts {
             self.composed.clear();
-            self.composed.push_str(agent_tui_version::PRODUCT_TITLE_TOKEN);
+            self.composed
+                .push_str(crate::product_profile::title_token());
         }
 
         let result = if self.composed != self.last_title {
@@ -113,9 +114,10 @@ impl TitleManager {
     }
 
     pub fn reset(&mut self) -> String {
-        let esc = build_title_escape(agent_tui_version::PRODUCT_TITLE_TOKEN);
+        let token = crate::product_profile::title_token();
+        let esc = build_title_escape(token);
         self.last_title.clear();
-        self.last_title.push_str(agent_tui_version::PRODUCT_TITLE_TOKEN);
+        self.last_title.push_str(token);
         self.spinner_frame = 0;
         self.tick_count = 0;
         esc
@@ -134,7 +136,7 @@ fn write_item(
     match item {
         TitleItem::Grok => {
             push_separator(buf, has_parts);
-            buf.push_str(agent_tui_version::PRODUCT_TITLE_TOKEN);
+            buf.push_str(crate::product_profile::title_token());
         }
         TitleItem::Spinner => {
             if !state.is_busy && state.activity.is_none() {

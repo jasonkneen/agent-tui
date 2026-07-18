@@ -1,0 +1,12 @@
+# Example product profile — Grok alone
+# Or use the product binary: cargo run -p agent-tui-bin --bin grok
+#
+# Quick preset:
+#   AGENT_TUI_PRODUCT=grok agent-tui
+
+id = "grok"
+name = "Grok"
+title_token = "grok"
+default_runtime = "grok"
+lock_runtime = true
+addons = ["grok"]

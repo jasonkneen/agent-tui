@@ -1,0 +1,9 @@
+# Hermes alone — or: cargo run -p agent-tui-bin --bin hermes
+# Requires: hermes CLI (e.g. ~/.local/bin/hermes) + configured provider
+
+id = "hermes"
+name = "Hermes"
+title_token = "hermes"
+default_runtime = "hermes"
+lock_runtime = true
+addons = ["hermes"]

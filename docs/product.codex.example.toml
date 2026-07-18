@@ -1,0 +1,9 @@
+# Codex alone — or: cargo run -p agent-tui-bin --bin codex
+# Requires: codex CLI + `codex login`
+
+id = "codex"
+name = "Codex"
+title_token = "codex"
+default_runtime = "codex"
+lock_runtime = true
+addons = ["codex"]

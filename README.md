@@ -8,8 +8,11 @@ files, executes shell commands, searches the web, and manages long-running tasks
 — interactively, headlessly for scripting/CI, or embedded in editors via the
 Agent Client Protocol (ACP).
 
-Grok / xAI remain fully supported as **providers** (login via Grok.com or
-`XAI_API_KEY`). See [FORK.md](FORK.md) for fork details and what was renamed.
+**ONE CORE + ADDONS:** one TUI shell; Grok / Codex / Claude / Lazar plug in as
+runtime addons (`/runtime`). A product profile can skin the core as **Lazar**
+(or keep multi-vendor Agent TUI) — see [docs/CORE_AND_ADDONS.md](docs/CORE_AND_ADDONS.md).
+Grok / xAI stay fully supported; vendor harness design is in
+[docs/LOCAL_CLI_AUTH.md](docs/LOCAL_CLI_AUTH.md). Fork: [FORK.md](FORK.md).
 
 [Install](#install-a-prebuilt-release) ·
 [Building from source](#building-from-source) ·
@@ -35,9 +38,19 @@ Requirements:
   and not currently tested from this tree.
 
 ```sh
-cargo run -p agent-tui-bin              # build + launch the TUI
-cargo build -p agent-tui-bin --release  # release binary: target/release/agent-tui
-cargo check -p agent-tui-bin            # fast validation
+cargo build -p agent-tui-bin
+./scripts/link-product-bins.sh     # symlink product skins → one core binary
+
+# ALL providers (switch with /runtime)
+./target/debug/agent-tui
+./target/debug/agent-multi         # same file, product=all
+
+# Single-addon skins (same inode — zero core duplication)
+./target/debug/grok
+./target/debug/codex
+./target/debug/claude
+./target/debug/hermes
+source ~/lazar/workspace/lazar-env.sh && ./target/debug/lazartui
 ```
 
 ### Install a prebuilt release
@@ -75,6 +88,8 @@ Config defaults to `~/.agent-tui` (override with `$AGENT_TUI_HOME`; legacy
 | [RELEASING.md](RELEASING.md) | Maintainers — cut tags, CI release, npm, troubleshooting |
 | [FORK.md](FORK.md) | What differs from upstream Grok Build |
 | [AGENTS.md](AGENTS.md) | Automation / coding-agent constraints |
+| [docs/CORE_AND_ADDONS.md](docs/CORE_AND_ADDONS.md) | ONE CORE + ADDONS; zero-dup product skins (symlinks) |
+| [docs/LOCAL_CLI_AUTH.md](docs/LOCAL_CLI_AUTH.md) | Addon harness detail: Grok · Codex · Claude · Lazar · Hermes |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Upstream vs fork contribution notes |
 | [User guide](crates/codegen/agent-tui-pager/docs/user-guide/) | End users — auth, shortcuts, config, MCP, skills, … |
 
@@ -87,6 +102,9 @@ Upstream product docs (Grok Build): [docs.x.ai/build/overview](https://docs.x.ai
 | `crates/codegen/agent-tui-bin` | Composition-root package; builds the `agent-tui` binary |
 | `crates/codegen/agent-tui-pager` | The TUI: scrollback, prompt, modals, rendering |
 | `crates/codegen/agent-tui-shell` | Agent runtime + leader/stdio/headless entry points |
+| `crates/codegen/agent-tui-codex-runtime` | Codex app-server warm pool |
+| `crates/codegen/agent-tui-claude-runtime` | Claude Code CLI harness |
+| `crates/codegen/agent-tui-lazar-runtime` | Lazar kernel spawn-per-turn client |
 | `crates/codegen/agent-tui-tools` | Tool implementations (terminal, file edit, search, ...) |
 | `crates/codegen/agent-tui-workspace` | Host filesystem, VCS, execution, checkpoints |
 | `crates/codegen/...` | The rest of the CLI crate closure (config, MCP, markdown, sandbox, ...) |

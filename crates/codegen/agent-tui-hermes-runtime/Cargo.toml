@@ -1,0 +1,21 @@
+[package]
+name = "agent-tui-hermes-runtime"
+version = "0.1.210"
+edition = "2024"
+description = "Hermes Agent runtime client (hermes chat -q quiet mode)"
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = [
+  "io-util",
+  "process",
+  "rt",
+  "sync",
+  "time",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
