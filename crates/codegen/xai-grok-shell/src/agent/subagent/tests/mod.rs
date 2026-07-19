@@ -924,6 +924,7 @@ fn completed_with_output(
         effective_model_id: String::new(),
         block_waited: false,
         explicitly_killed: false,
+        completion_output_cap: None,
         persisted_output_dir,
     }
 }
@@ -1309,6 +1310,7 @@ fn dummy_tracker(
         effective_model_id: String::new(),
         run_in_background: false,
         surface_completion: true,
+        completion_output_cap: None,
         color: None,
         block_waited: false,
         explicitly_killed: false,
@@ -1340,6 +1342,26 @@ async fn active_summaries_returns_all_regardless_of_parent() {
     coordinator.insert(dummy_tracker("sub-2", "session-B", "plan", "task 2"));
     let all = coordinator.active_summaries();
     assert_eq!(all.len(), 2);
+}
+/// Spawns issued from inside a child session (loop iterations) re-parent
+/// to the root session via the running tracker's child→parent mapping.
+#[tokio::test]
+async fn parent_of_child_session_maps_to_root() {
+    let mut coordinator = SubagentCoordinator::new();
+    coordinator
+        .insert(
+            dummy_tracker(
+                "iter-child-sess",
+                "root-session",
+                "general-purpose",
+                "loop iteration",
+            ),
+        );
+    assert_eq!(
+        coordinator.parent_of_child_session("iter-child-sess").as_deref(),
+        Some("root-session")
+    );
+    assert_eq!(coordinator.parent_of_child_session("unknown-sess"), None);
 }
 #[tokio::test]
 async fn resolve_running_list_returns_empty_for_empty_seeds() {

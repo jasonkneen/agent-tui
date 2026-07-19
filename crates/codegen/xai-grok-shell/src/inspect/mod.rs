@@ -694,7 +694,7 @@ fn list_hooks(
             let vendor = derive_vendor(&h.source_dir.display().to_string()).map(String::from);
             HookEntry {
                 event: format!("{:?}", h.event),
-                hook_type: h.handler_type.clone(),
+                hook_type: h.handler_type.as_str().to_string(),
                 target: h
                     .command
                     .as_ref()

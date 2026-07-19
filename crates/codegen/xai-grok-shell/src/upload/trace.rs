@@ -194,8 +194,7 @@ fn upload_failure_log_level(method: &UploadMethod, prior_failures: u64) -> Uploa
         UploadFailureLogLevel::Error
     }
 }
-/// Wire label for the upload backend; reuses the `upload_reason` span-field
-/// vocabulary so dashboards join on one set of values.
+/// Wire label for the upload backend used by structured session events.
 fn upload_method_label(method: &UploadMethod) -> &'static str {
     use super::turn::TraceUploadReason;
     match method {
@@ -2539,7 +2538,7 @@ mod tests {
     }
     /// Customer-managed S3 failures stay below the ERROR alerting threshold,
     /// repeats within an episode drop to debug, and the `method` log field
-    /// keeps the `upload_reason` span-field vocabulary.
+    /// keeps the structured upload-method vocabulary.
     #[test]
     fn upload_failure_log_level_splits_on_backend_and_repeats() {
         use crate::session::repo_changes::UploadMethod;

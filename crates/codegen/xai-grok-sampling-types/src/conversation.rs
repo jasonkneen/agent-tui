@@ -114,6 +114,9 @@ pub enum SyntheticReason {
     /// Scheduled task (`/loop`) prompt fired by the scheduler.  Wakes the
     /// agent.
     SchedulerFired,
+    /// Feedback from a `Stop`/`SubagentStop` hook that blocked the agent from
+    /// stopping. Injected in-turn so the model keeps working within the same turn.
+    StopHookFeedback,
     /// Catch-all for unknown/future variants.  Preserves forward compatibility
     /// so older clients can deserialize sessions written by newer versions.
     #[serde(other)]
@@ -148,6 +151,7 @@ impl SyntheticReason {
             | Self::AutoRecovery
             | Self::Interjection
             | Self::GoalSummary
+            | Self::StopHookFeedback
             | Self::Unknown => false,
         }
     }
@@ -1046,6 +1050,18 @@ impl ConversationItem {
                 text: Arc::<str>::from(content.into()),
             }],
             synthetic_reason: Some(SyntheticReason::SchedulerFired),
+            prior_turn_interrupt: None,
+            prompt_index: None,
+        })
+    }
+
+    /// See [`SyntheticReason::StopHookFeedback`].
+    pub fn stop_hook_feedback(content: impl Into<String>) -> Self {
+        Self::User(UserItem {
+            content: vec![ContentPart::Text {
+                text: Arc::<str>::from(content.into()),
+            }],
+            synthetic_reason: Some(SyntheticReason::StopHookFeedback),
             prior_turn_interrupt: None,
             prompt_index: None,
         })

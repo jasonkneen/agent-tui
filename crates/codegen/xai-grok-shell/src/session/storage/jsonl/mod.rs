@@ -69,7 +69,7 @@ impl JsonlStorageAdapter {
         &self,
         dir: &std::path::Path,
     ) -> std::io::Result<Vec<ConversationItem>> {
-        let chat_file = dir.join("chat_history.jsonl");
+        let chat_file = dir.join(super::CHAT_HISTORY_FILE);
         self.read_chat_history_sync(chat_file, CHAT_FORMAT_VERSION)
     }
     fn session_dir(&self, info: &Info) -> PathBuf {
@@ -82,31 +82,42 @@ impl JsonlStorageAdapter {
         }
     }
     pub(super) fn updates_file(&self, info: &Info) -> PathBuf {
-        self.session_dir(info).join("updates.jsonl")
+        self.session_dir(info).join(super::UPDATES_FILE)
     }
     fn chat_file(&self, info: &Info) -> PathBuf {
-        self.session_dir(info).join("chat_history.jsonl")
+        self.session_dir(info).join(super::CHAT_HISTORY_FILE)
+    }
+    fn ensure_chat_history(&self, info: &Info, chat_format_version: u8) -> io::Result<()> {
+        if chat_format_version != crate::session::persistence::CHAT_FORMAT_VERSION {
+            return Ok(());
+        }
+        let chat_file = self.chat_file(info);
+        if std::fs::metadata(&chat_file).map(|m| m.len()).unwrap_or(0) == 0 {
+            super::chat_rebuild::rebuild_chat_history(&self.session_dir(info))?;
+        }
+        Ok(())
     }
     fn summary_file(&self, info: &Info) -> PathBuf {
-        self.session_dir(info).join("summary.json")
+        self.session_dir(info).join(super::SUMMARY_FILE)
     }
     fn summary_lock_file(&self, info: &Info) -> PathBuf {
-        self.session_dir(info).join("summary.json.lock")
+        self.session_dir(info)
+            .join(format!("{}.lock", super::SUMMARY_FILE))
     }
     fn plan_file(&self, info: &Info) -> PathBuf {
-        self.session_dir(info).join("plan.json")
+        self.session_dir(info).join(super::PLAN_FILE)
     }
     fn plan_mode_state_file(&self, info: &Info) -> PathBuf {
-        self.session_dir(info).join("plan_mode.json")
+        self.session_dir(info).join(super::PLAN_MODE_FILE)
     }
     fn signals_file(&self, info: &Info) -> PathBuf {
-        self.session_dir(info).join("signals.json")
+        self.session_dir(info).join(super::SIGNALS_FILE)
     }
     fn announcement_state_file(&self, info: &Info) -> PathBuf {
-        self.session_dir(info).join("announcement_state.json")
+        self.session_dir(info).join(super::ANNOUNCEMENT_STATE_FILE)
     }
     fn goal_mode_state_file(&self, info: &Info) -> PathBuf {
-        self.session_dir(info).join("goal").join("state.json")
+        self.session_dir(info).join(super::GOAL_STATE_FILE)
     }
     fn rewind_points_file(&self, info: &Info) -> PathBuf {
         self.session_dir(info).join("rewind_points.jsonl")
@@ -167,7 +178,7 @@ impl JsonlStorageAdapter {
         let session_dirs = self.scan_session_dirs(cwd);
         let mut summaries = Vec::new();
         for session_dir in session_dirs {
-            let summary_path = session_dir.join("summary.json");
+            let summary_path = session_dir.join(super::SUMMARY_FILE);
             match std::fs::read(&summary_path) {
                 Ok(bytes) => {
                     if let Ok(summary) = serde_json::from_slice::<Summary>(&bytes)
@@ -200,7 +211,7 @@ impl JsonlStorageAdapter {
         let mut candidates: Vec<(PathBuf, std::time::SystemTime)> =
             Vec::with_capacity(session_dirs.len());
         for session_dir in session_dirs {
-            let summary_path = session_dir.join("summary.json");
+            let summary_path = session_dir.join(super::SUMMARY_FILE);
             if let Ok(meta) = std::fs::metadata(&summary_path)
                 && let Ok(mtime) = meta.modified()
             {
@@ -375,16 +386,7 @@ impl JsonlStorageAdapter {
     /// to a temp file then rename over the target, so a crash / `ENOSPC` mid-write
     /// can't truncate the existing file (e.g. lose `rewind_points.jsonl` history).
     async fn write_jsonl<T: serde::Serialize>(&self, path: PathBuf, items: &[T]) -> io::Result<()> {
-        let mut content = Vec::new();
-        for item in items {
-            let mut line = serde_json::to_vec(item)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            line.push(b'\n');
-            content.extend(line);
-        }
-        let tmp = path.with_extension("jsonl.tmp");
-        tokio::fs::write(&tmp, &content).await?;
-        tokio::fs::rename(&tmp, &path).await
+        super::write_jsonl_atomic_async(&path, items).await
     }
     fn read_jsonl<T: serde::de::DeserializeOwned>(&self, path: PathBuf) -> io::Result<Vec<T>> {
         if !path.exists() {
@@ -488,9 +490,7 @@ impl JsonlStorageAdapter {
         let summary_path = self.summary_file(info);
         let bytes = serde_json::to_vec_pretty(summary)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let tmp = summary_path.with_extension("json.tmp");
-        std::fs::write(&tmp, &bytes)?;
-        std::fs::rename(&tmp, &summary_path)
+        super::write_bytes_atomic(&summary_path, &bytes)
     }
     fn read_summary_sync(&self, info: &Info) -> io::Result<Summary> {
         let path = self.summary_file(info);
@@ -1194,10 +1194,7 @@ impl StorageAdapter for JsonlStorageAdapter {
     ) -> io::Result<()> {
         let json = serde_json::to_vec_pretty(state)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let target = self.plan_mode_state_file(info);
-        let tmp = target.with_extension("json.tmp");
-        tokio::fs::write(&tmp, json).await?;
-        tokio::fs::rename(&tmp, &target).await
+        super::write_bytes_atomic_async(&self.plan_mode_state_file(info), json).await
     }
     async fn write_signals(
         &self,
@@ -1206,10 +1203,7 @@ impl StorageAdapter for JsonlStorageAdapter {
     ) -> io::Result<()> {
         let signals_json = serde_json::to_vec(signals)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let target = self.signals_file(info);
-        let tmp = target.with_extension("json.tmp");
-        tokio::fs::write(&tmp, signals_json).await?;
-        tokio::fs::rename(&tmp, &target).await
+        super::write_bytes_atomic_async(&self.signals_file(info), signals_json).await
     }
     async fn write_announcement_state(
         &self,
@@ -1218,10 +1212,7 @@ impl StorageAdapter for JsonlStorageAdapter {
     ) -> io::Result<()> {
         let json =
             serde_json::to_vec(state).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let target = self.announcement_state_file(info);
-        let tmp = target.with_extension("json.tmp");
-        tokio::fs::write(&tmp, json).await?;
-        tokio::fs::rename(&tmp, &target).await
+        super::write_bytes_atomic_async(&self.announcement_state_file(info), json).await
     }
     async fn write_goal_mode_state(
         &self,
@@ -1234,14 +1225,13 @@ impl StorageAdapter for JsonlStorageAdapter {
         if let Some(parent) = target.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let tmp = target.with_extension("json.tmp");
-        tokio::fs::write(&tmp, json).await?;
-        tokio::fs::rename(&tmp, &target).await
+        super::write_bytes_atomic_async(&target, json).await
     }
     async fn load_session(&self, info: &Info) -> io::Result<PersistedData> {
         let summary = self.read_summary_sync(info)?;
-        let chat_history =
-            self.read_chat_history_sync(self.chat_file(info), summary.chat_format_version)?;
+        let chat_file = self.chat_file(info);
+        self.ensure_chat_history(info, summary.chat_format_version)?;
+        let chat_history = self.read_chat_history_sync(chat_file, summary.chat_format_version)?;
         let updates = self.read_updates_jsonl(self.updates_file(info))?;
         let plan_state = self.read_optional_json_sync::<TodoState>(&self.plan_file(info))?;
         let plan_mode_state = self
@@ -1289,8 +1279,9 @@ impl StorageAdapter for JsonlStorageAdapter {
     ) -> io::Result<super::PersistedDataLight> {
         tracing::info!("Loading session data (without updates) from JSONL");
         let summary = self.read_summary_sync(info)?;
-        let chat_history =
-            self.read_chat_history_sync(self.chat_file(info), summary.chat_format_version)?;
+        let chat_file = self.chat_file(info);
+        self.ensure_chat_history(info, summary.chat_format_version)?;
+        let chat_history = self.read_chat_history_sync(chat_file, summary.chat_format_version)?;
         let plan_state = self.read_optional_json_sync::<TodoState>(&self.plan_file(info))?;
         let plan_mode_state = self
             .read_optional_json_sync::<crate::session::plan_mode::PlanModeSnapshot>(

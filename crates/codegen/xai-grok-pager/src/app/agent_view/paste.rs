@@ -1617,6 +1617,7 @@ pub(super) mod paste_key_tests {
         assert!(
             toast.starts_with("Copied")
                 || toast.starts_with("Copy sent")
+                || toast.starts_with("Clipboard unreachable")
                 || toast.starts_with("Copy failed"),
             "copy-source emits a clipboard toast, got {toast:?}",
         );

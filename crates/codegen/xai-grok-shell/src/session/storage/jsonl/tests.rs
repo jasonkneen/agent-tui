@@ -130,6 +130,43 @@ async fn test_jsonl_round_trip() {
     assert_eq!(loaded.updates.len(), 1);
     assert!(loaded.plan_state.is_some());
 }
+/// Resume from updates.jsonl alone: when chat_history.jsonl is missing, load
+/// rebuilds it from the ACP update stream (the durable source of truth).
+#[tokio::test]
+async fn load_rebuilds_chat_history_from_updates() {
+    use agent_client_protocol::{
+        ContentBlock, ContentChunk, SessionUpdate as Acp, TextContent,
+    };
+    let temp_dir = TempDir::new().unwrap();
+    let info = create_test_info();
+    let adapter = JsonlStorageAdapter::with_root(temp_dir.path().to_path_buf());
+    adapter.init_session(&info, default_model_id()).await.unwrap();
+    let text = |s: &str| ContentChunk::new(
+        ContentBlock::Text(TextContent::new(s.to_string())),
+    );
+    let notify = |u| SessionUpdate::Acp(
+        Box::new(acp::SessionNotification::new(info.id.clone(), u)),
+    );
+    adapter
+        .append_update(&info, &notify(Acp::UserMessageChunk(text("ping"))))
+        .await
+        .unwrap();
+    adapter
+        .append_update(&info, &notify(Acp::AgentMessageChunk(text("pong"))))
+        .await
+        .unwrap();
+    let chat_path = adapter.session_dir(&info).join("chat_history.jsonl");
+    assert_eq!(std::fs::metadata(& chat_path).map(| m | m.len()).unwrap_or(0), 0);
+    let loaded = adapter.load_session(&info).await.unwrap();
+    assert_eq!(loaded.chat_history.len(), 2, "one user + one agent conversation item");
+    assert!(matches!(loaded.chat_history[0], ConversationItem::User(_)));
+    assert!(matches!(loaded.chat_history[1], ConversationItem::Assistant(_)));
+    let persisted = std::fs::read_to_string(&chat_path).unwrap();
+    assert!(
+        persisted.contains("ping") && persisted.contains("pong"),
+        "rebuilt cache carries the transcript text"
+    );
+}
 /// `load_session_without_updates` always defers rewind points while the full
 /// `load_session` / `load_rewind_points` still return them.
 #[tokio::test]

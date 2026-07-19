@@ -161,6 +161,9 @@ pub(crate) use goal_support::*;
 #[path = "acp_session_impl/hook_dispatch.rs"]
 mod hook_dispatch;
 use hook_dispatch::*;
+#[path = "acp_session_impl/stop_gate.rs"]
+mod stop_gate;
+pub use stop_gate::MAX_STOP_HOOK_CONTINUATIONS_PER_TURN;
 #[path = "acp_session_impl/recap.rs"]
 mod recap;
 #[path = "acp_session_impl/rewind.rs"]
@@ -557,13 +560,6 @@ impl PreparedToolCall {
 #[cfg(test)]
 pub(crate) use crate::session::streaming_capture::STREAMING_CAPTURE_MAX_BYTES;
 pub(crate) use crate::session::streaming_capture::StreamingTurnCapture;
-/// Spawn-time metadata for a subagent, kept by `subagent_id` so the `SubagentStop` event
-/// (whose notification carries neither) can report the subagent's type and description.
-#[derive(Clone)]
-pub(crate) struct SubagentSpawnInfo {
-    pub description: String,
-    pub subagent_type: String,
-}
 /// Phase 3: Post-flight handling after dispatch (inline in execute_tool_calls for now).
 pub(crate) struct SessionActor {
     pub(crate) session_info: SessionInfo,
@@ -1033,9 +1029,6 @@ pub(crate) struct SessionActor {
     pub(crate) image_description_model: String,
     /// Cache auxiliary image outputs by content and prompt fingerprint.
     pub(crate) image_describe_cache: Arc<crate::session::image_describe::ImageDescribeCache>,
-    /// [`SubagentSpawnInfo`] by `subagent_id`: inserted on `SubagentSpawned`, removed on
-    /// `SubagentFinished`.
-    pub(crate) subagent_spawn_info: parking_lot::Mutex<HashMap<String, SubagentSpawnInfo>>,
     /// Per-subagent token state keyed by `subagent_id`; sums into
     /// goal totals via [`Self::goal_tokens`].
     pub(crate) subagent_token_records: parking_lot::Mutex<HashMap<String, SubagentTokenRecord>>,

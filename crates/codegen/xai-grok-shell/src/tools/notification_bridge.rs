@@ -662,23 +662,26 @@ async fn handle_notification(
             tracing::info!(
                 task_id = %fired.task_id,
                 schedule = %fired.human_schedule,
-                "Scheduled task fired, injecting prompt into session"
+                subagent_id = fired.subagent_id.as_deref().unwrap_or(""),
+                "Scheduled task fired"
             );
 
-            let inject_payload = serde_json::json!({
-                "sessionId": config.session_id,
-                "taskId": &fired.task_id,
-                "prompt": &fired.prompt,
-                "humanSchedule": &fired.human_schedule,
-                "nextFireAt": &fired.next_fire_at,
-            });
-            if let Ok(params) = serde_json::value::to_raw_value(&inject_payload) {
-                config
-                    .gateway
-                    .forward_fire_and_forget(acp::ExtNotification::new(
-                        "x.ai/scheduled_task_inject_prompt",
-                        params.into(),
-                    ));
+            if fired.subagent_id.is_none() {
+                let inject_payload = serde_json::json!({
+                    "sessionId": config.session_id,
+                    "taskId": &fired.task_id,
+                    "prompt": &fired.prompt,
+                    "humanSchedule": &fired.human_schedule,
+                    "nextFireAt": &fired.next_fire_at,
+                });
+                if let Ok(params) = serde_json::value::to_raw_value(&inject_payload) {
+                    config
+                        .gateway
+                        .forward_fire_and_forget(acp::ExtNotification::new(
+                            "x.ai/scheduled_task_inject_prompt",
+                            params.into(),
+                        ));
+                }
             }
 
             let fired_notif = crate::extensions::notification::SessionNotification {
@@ -688,6 +691,7 @@ async fn handle_notification(
                     prompt: fired.prompt,
                     human_schedule: fired.human_schedule,
                     next_fire_at: fired.next_fire_at,
+                    subagent_id: fired.subagent_id,
                 },
                 meta: None,
             };
@@ -1852,6 +1856,7 @@ mod tests {
                 prompt: "check deploy".into(),
                 human_schedule: "every 5 minutes".into(),
                 next_fire_at: Some("2026-01-01T00:00:00Z".into()),
+                subagent_id: None,
             },
         );
         let mut offsets = HashMap::new();
