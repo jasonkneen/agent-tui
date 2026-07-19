@@ -30,6 +30,50 @@ fn find_protoc_include_dir(protoc: Option<&Path>) -> Option<PathBuf> {
     }
 }
 
+/// Parse protoc's `--dependency_out` file into the list of dependency paths.
+///
+/// The file is a makefile rule: `<target>: dep1 \`, then one continued
+/// dependency per line, `\` marking continuation.
+///
+/// `target` is stripped by exact match rather than by splitting on the first
+/// `:` — on Windows the target is an absolute path like
+/// `C:\Temp\xyz\descriptor.pbbin`, so splitting on `:` would truncate it at the
+/// drive letter.
+///
+/// protoc's own well-known types (`.../include/google/protobuf/*.proto`) are
+/// skipped: they live at host-specific absolute paths (Homebrew, apt, the
+/// dotslash cache), and emitting them would make build output non-deterministic
+/// across machines. Separators are normalized so this matches on Windows too.
+fn parse_dependency_file<'a>(target: &str, contents: &'a str) -> anyhow::Result<Vec<&'a str>> {
+    let mut lines = contents.lines();
+    let first_line = lines.next().context("protoc dependency output is empty")?;
+    let rem = first_line
+        .strip_prefix(target)
+        .and_then(|rem| rem.strip_prefix(':'))
+        .with_context(|| {
+            format!("protoc dependency output must start with {target:?}: {contents:?}")
+        })?;
+
+    let mut deps = Vec::new();
+    for line in iter::once(rem).chain(lines) {
+        let line = line.trim();
+        // Drop the trailing line-continuation marker, then re-trim the space
+        // that separated it from the path.
+        let line = line.strip_suffix('\\').unwrap_or(line).trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line
+            .replace('\\', "/")
+            .contains("/include/google/protobuf/")
+        {
+            continue;
+        }
+        deps.push(line);
+    }
+    Ok(deps)
+}
+
 pub struct XaiProtoBuilder {
     builder: tonic_prost_build::Builder,
     file_descriptor_set_path: Option<PathBuf>,
@@ -114,10 +158,26 @@ impl XaiProtoBuilder {
 
         // Can only process one input file when using --dependency_out=FILE.
         for proto in protos {
+            // protoc writes these two outputs through its own file I/O, so both
+            // destinations must be real paths: the Unix device files
+            // `/dev/stdout` and `/dev/null` do not exist on Windows. A temp dir
+            // behaves identically on every host, so this needs no cfg branching.
+            let tempdir = tempfile::TempDir::new()?;
+            let dependency_out = tempdir.path().join("deps.d");
+            let descriptor_set_out = tempdir.path().join("descriptor.pbbin");
+            let descriptor_set_out_str = descriptor_set_out
+                .to_str()
+                .context("descriptor_set_out path not UTF-8")?;
+
             let mut command = Command::new(protoc.unwrap_or(Path::new("protoc")));
             command
-                .arg("--dependency_out=/dev/stdout")
-                .arg("--descriptor_set_out=/dev/null");
+                .arg(format!(
+                    "--dependency_out={}",
+                    dependency_out
+                        .to_str()
+                        .context("dependency_out path not UTF-8")?
+                ))
+                .arg(format!("--descriptor_set_out={descriptor_set_out_str}"));
 
             // Add protoc's well-known types include directory first (if found).
             // This is needed for Bazel sandboxed builds where protoc and its
@@ -143,30 +203,15 @@ impl XaiProtoBuilder {
                 return Err(anyhow::anyhow!("protoc command failed"));
             }
 
-            let output =
-                String::from_utf8(output.stdout).context("protoc command output not UTF-8")?;
+            let output = fs::read_to_string(&dependency_out)
+                .context("failed to read protoc --dependency_out file")?;
 
-            let mut lines = output.lines();
-            let first_line = lines.next().context("protoc command output is empty")?;
-            let prefix = "/dev/null:";
-            let rem = first_line.strip_prefix(prefix).with_context(|| {
-                format!("protoc command output must start with /dev/null: {output:?}")
-            })?;
-            for line in iter::once(rem).chain(lines) {
-                let line = line.trim();
-                let line = line.strip_suffix("\\").unwrap_or(line);
-                // Depending on absolute paths like
-                // /Users/user/homebrew/Cellar/protobuf/29.1/include/google/protobuf/timestamp.proto
-                // is valid, but we want to have output more deterministic.
-                if line.contains("/include/google/protobuf/") {
-                    continue;
+            for dep in parse_dependency_file(descriptor_set_out_str, &output)? {
+                if !fs::exists(dep)? {
+                    return Err(anyhow::anyhow!("dependency file not found: {dep}"));
                 }
 
-                if !fs::exists(line)? {
-                    return Err(anyhow::anyhow!("dependency file not found: {line}"));
-                }
-
-                println!("cargo:rerun-if-changed={line}");
+                println!("cargo:rerun-if-changed={dep}");
             }
         }
 
@@ -286,5 +331,96 @@ pub fn configure() -> XaiProtoBuilder {
         pbjson_ignore_unknown_fields: false,
         pbjson_preserve_proto_field_names: false,
         file_descriptor_set_path: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_dependency_file;
+
+    /// Windows: the target and the deps are absolute paths containing a drive
+    /// letter. This is the case that a `split(':')` implementation gets wrong —
+    /// it would truncate the target to `C` and fail the prefix check.
+    #[test]
+    fn parses_windows_depfile_with_drive_letters() {
+        let target = r"C:\Temp\build\descriptor.pbbin";
+        // Trailing `\` is the makefile line-continuation marker.
+        let contents = [
+            r"C:\Temp\build\descriptor.pbbin: \",
+            r" C:\src\proto\grok-tools.proto \",
+            r" C:\src\proto\common.proto",
+        ]
+        .join("\n");
+
+        let deps = parse_dependency_file(target, &contents).unwrap();
+
+        assert_eq!(
+            deps,
+            vec![
+                r"C:\src\proto\grok-tools.proto",
+                r"C:\src\proto\common.proto",
+            ],
+        );
+    }
+
+    /// Unix: the pre-existing shape, kept working.
+    #[test]
+    fn parses_unix_depfile() {
+        let target = "/tmp/build/descriptor.pbbin";
+        let contents = [
+            r"/tmp/build/descriptor.pbbin: \",
+            r" proto/grok-tools.proto \",
+            r" proto/common.proto",
+        ]
+        .join("\n");
+
+        let deps = parse_dependency_file(target, &contents).unwrap();
+
+        assert_eq!(deps, vec!["proto/grok-tools.proto", "proto/common.proto"]);
+    }
+
+    /// A dependency listed on the same line as the target is still captured —
+    /// protoc does this when there is exactly one dependency.
+    #[test]
+    fn parses_dependency_on_target_line() {
+        let deps =
+            parse_dependency_file("/tmp/d.pbbin", "/tmp/d.pbbin: proto/only.proto\n").unwrap();
+        assert_eq!(deps, vec!["proto/only.proto"]);
+    }
+
+    /// protoc's bundled well-known types are filtered on both separator styles,
+    /// since their absolute paths differ per host and would make the emitted
+    /// `rerun-if-changed` set non-deterministic.
+    #[test]
+    fn skips_well_known_types_on_both_separator_styles() {
+        let contents = [
+            r"/tmp/d.pbbin: \",
+            r" proto/grok-tools.proto \",
+            r" /opt/protobuf/include/google/protobuf/timestamp.proto \",
+            r" C:\dotslash\cache\include\google\protobuf\duration.proto",
+        ]
+        .join("\n");
+
+        let deps = parse_dependency_file("/tmp/d.pbbin", &contents).unwrap();
+
+        assert_eq!(deps, vec!["proto/grok-tools.proto"]);
+    }
+
+    /// A depfile whose target is not the descriptor we asked for means we are
+    /// misreading the output; that must be an error rather than a silent empty
+    /// dependency set (which would disable rebuild-on-change).
+    #[test]
+    fn rejects_mismatched_target() {
+        let err = parse_dependency_file("/tmp/expected.pbbin", "/tmp/other.pbbin: a.proto\n")
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("must start with"),
+            "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn rejects_empty_output() {
+        assert!(parse_dependency_file("/tmp/d.pbbin", "").is_err());
     }
 }
