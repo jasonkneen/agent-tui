@@ -1,9 +1,9 @@
 pub mod find_protoc;
 
 use anyhow::Context;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::{fs, iter};
 
 /// Find the protoc well-known types include directory.
 ///
@@ -32,11 +32,13 @@ fn find_protoc_include_dir(protoc: Option<&Path>) -> Option<PathBuf> {
 
 /// Parse protoc's `--dependency_out` file into the list of dependency paths.
 ///
-/// The file is a makefile rule: `<target>: dep1 \`, then one continued
-/// dependency per line, `\` marking continuation.
+/// Current protoc writes a makefile rule — `<target>: dep1 \`, then one
+/// continued dependency per line, `\` marking continuation. Older releases
+/// (3.12, still shipped by ubuntu-22.04) omit the `<target>:` and write only
+/// the dependency list, so the target is treated as optional.
 ///
-/// `target` is stripped by exact match rather than by splitting on the first
-/// `:` — on Windows the target is an absolute path like
+/// When present, `target` is stripped by exact match rather than by splitting
+/// on the first `:` — on Windows the target is an absolute path like
 /// `C:\Temp\xyz\descriptor.pbbin`, so splitting on `:` would truncate it at the
 /// drive letter.
 ///
@@ -45,18 +47,34 @@ fn find_protoc_include_dir(protoc: Option<&Path>) -> Option<PathBuf> {
 /// dotslash cache), and emitting them would make build output non-deterministic
 /// across machines. Separators are normalized so this matches on Windows too.
 fn parse_dependency_file<'a>(target: &str, contents: &'a str) -> anyhow::Result<Vec<&'a str>> {
-    let mut lines = contents.lines();
-    let first_line = lines.next().context("protoc dependency output is empty")?;
-    let rem = first_line
+    if contents.trim().is_empty() {
+        anyhow::bail!("protoc dependency output is empty");
+    }
+
+    // The leading `<target>:` is optional. protoc emits the full makefile rule
+    // in current releases, but older ones (3.12, still shipped by
+    // ubuntu-22.04) write only the dependency list. Accept both rather than
+    // hard-failing the build on the older shape.
+    let body = contents
         .strip_prefix(target)
         .and_then(|rem| rem.strip_prefix(':'))
-        .with_context(|| {
-            format!("protoc dependency output must start with {target:?}: {contents:?}")
-        })?;
+        .unwrap_or(contents);
 
     let mut deps = Vec::new();
-    for line in iter::once(rem).chain(lines) {
+    for line in body.lines() {
         let line = line.trim();
+        // Never emit the descriptor we asked protoc to write: it lives in a
+        // temp dir, so a `rerun-if-changed` on it would be both meaningless and
+        // non-deterministic. Reachable when the target is present but did not
+        // match the prefix strip above.
+        if line
+            .trim_end_matches(['\\', ' '])
+            .trim()
+            .trim_end_matches(':')
+            == target
+        {
+            continue;
+        }
         // Drop the trailing line-continuation marker, then re-trim the space
         // that separated it from the path.
         let line = line.strip_suffix('\\').unwrap_or(line).trim();
@@ -413,17 +431,26 @@ mod tests {
         assert_eq!(deps, vec!["proto/grok-tools.proto"]);
     }
 
-    /// A depfile whose target is not the descriptor we asked for means we are
-    /// misreading the output; that must be an error rather than a silent empty
-    /// dependency set (which would disable rebuild-on-change).
+    /// protoc 3.12 (ubuntu-22.04's protobuf-compiler) omits the `<target>:`
+    /// entirely and writes only the dependency list. Regression test: requiring
+    /// the target broke the Linux build while Windows passed, because the
+    /// bundled dotslash protoc is 29.3 and does write it.
     #[test]
-    fn rejects_mismatched_target() {
-        let err = parse_dependency_file("/tmp/expected.pbbin", "/tmp/other.pbbin: a.proto\n")
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("must start with"),
-            "unexpected error: {err}",
-        );
+    fn parses_depfile_without_a_target_line() {
+        let deps = parse_dependency_file("/tmp/d.pbbin", " proto//grok-tools.proto").unwrap();
+        assert_eq!(deps, vec!["proto//grok-tools.proto"]);
+    }
+
+    /// The descriptor protoc was told to write lives in a temp dir, so it must
+    /// never be emitted as a dependency — a `rerun-if-changed` on it would be
+    /// meaningless and non-deterministic.
+    #[test]
+    fn never_emits_the_target_as_a_dependency() {
+        // Target and deps on separate lines, so the leading-prefix strip leaves
+        // the bare `<target>:` behind for the loop to drop.
+        let contents = [r"/tmp/d.pbbin:", r" proto/only.proto"].join("\n");
+        let deps = parse_dependency_file("/tmp/d.pbbin", &contents).unwrap();
+        assert_eq!(deps, vec!["proto/only.proto"]);
     }
 
     #[test]
