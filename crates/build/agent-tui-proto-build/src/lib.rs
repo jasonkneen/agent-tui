@@ -177,7 +177,14 @@ impl XaiProtoBuilder {
                         .to_str()
                         .context("dependency_out path not UTF-8")?
                 ))
-                .arg(format!("--descriptor_set_out={descriptor_set_out_str}"));
+                .arg(format!("--descriptor_set_out={descriptor_set_out_str}"))
+                // Mirror the codegen invocation below, which already sets this.
+                // Without it, protoc releases before 3.15 reject the .proto
+                // outright ("This file contains proto3 optional fields, but
+                // --experimental_allow_proto3_optional was not set"), so the
+                // dependency scan fails on any host whose distro protoc predates
+                // that — including ubuntu-22.04's protobuf-compiler 3.12.
+                .arg("--experimental_allow_proto3_optional");
 
             // Add protoc's well-known types include directory first (if found).
             // This is needed for Bazel sandboxed builds where protoc and its
