@@ -75,9 +75,22 @@ pub(crate) fn run_external_auth_sync(command: &str, is_refresh: bool) -> Option<
 
     tracing::info!(cmd = %command, is_refresh, timeout_secs, "auth: running external auth provider (sync)");
 
-    let mut cmd = Command::new("sh");
-    cmd.args(["-c", command])
-        .stdin(Stdio::null())
+    // Windows has no `sh`; route through the configured shell instead.
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = Command::new("sh");
+        c.args(["-c", command]);
+        c
+    };
+    #[cfg(not(unix))]
+    let mut cmd = {
+        let inv = agent_tui_config::shell::shell_command_argv(command);
+        let mut c = Command::new(&inv.program);
+        c.args(&inv.args).envs(inv.env);
+        c
+    };
+
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         // Pipe stderr — inherit would corrupt the TUI alternate screen.
         .stderr(Stdio::piped());

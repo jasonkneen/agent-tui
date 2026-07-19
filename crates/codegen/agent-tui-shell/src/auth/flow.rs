@@ -225,9 +225,22 @@ async fn run_external_auth_provider(
         "auth: running external auth provider"
     );
 
-    let mut cmd = tokio::process::Command::new("sh");
-    cmd.args(["-c", command])
-        .stdin(std::process::Stdio::null())
+    // Windows has no `sh`; route through the configured shell instead.
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = tokio::process::Command::new("sh");
+        c.args(["-c", command]);
+        c
+    };
+    #[cfg(not(unix))]
+    let mut cmd = {
+        let inv = agent_tui_config::shell::shell_command_argv(command);
+        let mut c = tokio::process::Command::new(&inv.program);
+        c.args(&inv.args).envs(inv.env);
+        c
+    };
+
+    cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true);
 

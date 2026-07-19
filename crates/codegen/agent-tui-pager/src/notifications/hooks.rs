@@ -11,10 +11,23 @@ fn execute_hook(
     session_id: Option<&str>,
     timeout: Duration,
 ) {
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c")
-        .arg(command)
-        .env("GROK_EVENT", event_str)
+    // Windows has no `sh`; route through the configured shell the same way
+    // `agent_tui_hooks::runner` does.
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(command);
+        c
+    };
+    #[cfg(not(unix))]
+    let mut cmd = {
+        let inv = agent_tui_config::shell::shell_command_argv(command);
+        let mut c = Command::new(&inv.program);
+        c.args(&inv.args).envs(inv.env);
+        c
+    };
+
+    cmd.env("GROK_EVENT", event_str)
         .env("GROK_MESSAGE", message)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
