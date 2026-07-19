@@ -24,6 +24,38 @@ fn is_github_actions() -> bool {
     env::var_os("GITHUB_ACTIONS").is_some()
 }
 
+/// Resolve a DotSlash launcher file to the concrete executable it points at.
+///
+/// A DotSlash file is a JSON text file with no extension, relying on a shebang
+/// to run. Windows has no shebang support, so executing `bin/protoc` directly
+/// fails with `%1 is not a valid Win32 application` (os error 193).
+/// `dotslash -- fetch` downloads the platform entry if it is not cached yet and
+/// prints the path of the real binary, which is what prost-build needs since it
+/// takes a single executable path and cannot invoke `dotslash <manifest>`.
+fn resolve_with_dotslash(manifest: &Path) -> anyhow::Result<PathBuf> {
+    let output = Command::new("dotslash")
+        .arg("--")
+        .arg("fetch")
+        .arg(manifest)
+        .output()
+        .context("Failed to execute dotslash")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("`dotslash -- fetch` failed: {stderr}");
+    }
+
+    let stdout = String::from_utf8(output.stdout).context("dotslash output not UTF-8")?;
+    let resolved = PathBuf::from(stdout.trim());
+    if !resolved.try_exists()? {
+        bail!(
+            "`dotslash -- fetch` returned a nonexistent path: {}",
+            resolved.display()
+        );
+    }
+    Ok(resolved)
+}
+
 /// Find `protoc` command.
 ///
 /// Search order:
@@ -59,15 +91,24 @@ pub fn find_protoc() -> anyhow::Result<Option<PathBuf>> {
             match check_protoc_good(&protoc) {
                 Ok(()) => return Ok(Some(protoc)),
                 Err(e) => {
-                    // bin/protoc exists but can't execute — likely the dotslash wrapper
-                    // in an environment without dotslash (e.g. Bazel remote execution).
-                    // Fall through to PATH-based lookup below.
-                    eprintln!(
-                        "bin/protoc found at `{}` but failed to execute: {e:#}; \
-                         trying protoc from PATH as fallback",
-                        protoc.display()
-                    );
-                    break;
+                    // bin/protoc exists but can't be executed directly. Always
+                    // true on Windows (no shebang support); elsewhere this
+                    // usually means dotslash is missing (e.g. Bazel remote
+                    // execution). Ask dotslash to resolve it to a real binary,
+                    // then fall through to PATH-based lookup if that fails too.
+                    match resolve_with_dotslash(&protoc) {
+                        Ok(resolved) if check_protoc_good(&resolved).is_ok() => {
+                            return Ok(Some(resolved));
+                        }
+                        _ => {
+                            eprintln!(
+                                "bin/protoc found at `{}` but failed to execute: {e:#}; \
+                                 trying protoc from PATH as fallback",
+                                protoc.display()
+                            );
+                            break;
+                        }
+                    }
                 }
             }
         }
