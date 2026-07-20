@@ -44,12 +44,13 @@ choco install protoc            # any protoc on PATH also works
 
 A DotSlash launcher is a JSON file that relies on a `#!` line, which Windows
 cannot execute directly, so `bin/protoc` is resolved via `dotslash -- fetch`
-rather than run in place. Everything else is automatic: the MSVC linker
-settings the build needs (an 8 MiB main-thread stack, and PDB symbol
-truncation) are applied by `crates/codegen/agent-tui-bin/build.rs`.
+rather than run in place. Everything else is automatic: the 8 MiB main-thread
+stack comes from `crates/codegen/agent-tui-bin/build.rs`, and v0 symbol
+mangling — which keeps generic symbol names under the PDB limit — from
+`.cargo/config.toml`.
 
-Build hosts other than `x86_64`/`aarch64` MSVC are untested. The interactive
-TUI has had less exercise on Windows than the CLI subcommands.
+Verified on both `x86_64` and `aarch64` MSVC hosts, including the interactive
+TUI. Other Windows host architectures are untested.
 
 ```sh
 cargo run -p agent-tui-bin              # build + launch the TUI
