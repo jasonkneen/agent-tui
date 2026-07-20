@@ -23,7 +23,12 @@ jobs:
       matrix:
         os: [ubuntu-22.04, windows-2022]
     steps:
+      # persist-credentials: false keeps the job's token out of the local git
+      # config. Nothing here performs an authenticated git operation: the only
+      # git dependency (nucleo) is a public repo, and there are no submodules.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@1.92.0
 
