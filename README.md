@@ -33,7 +33,7 @@ Requirements:
   `PATH` / `$PROTOC`.
 - macOS, Linux, and Windows are supported build hosts.
 
-#### Windows
+### Windows
 
 Install one of the following so proto codegen can find `protoc`:
 
