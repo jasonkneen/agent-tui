@@ -219,8 +219,7 @@ impl SamplingError {
                 status: StatusCode::BAD_REQUEST,
                 message,
                 ..
-            }
-if message.contains("encrypted_content")
+            } if message.contains("encrypted_content")
         )
     }
 
@@ -234,8 +233,7 @@ if message.contains("encrypted_content")
                 status,
                 message,
                 ..
-            }
-if matches!(status.as_u16(), 400 | 500) && message.contains("Could not process image")
+            } if matches!(status.as_u16(), 400 | 500) && message.contains("Could not process image")
         )
     }
 
