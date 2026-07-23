@@ -63,6 +63,7 @@ pub mod timeline;
 pub mod timestamps;
 pub mod toggle_mouse_reporting;
 pub mod transcript;
+pub mod tutorial;
 pub mod usage;
 pub mod view_plan;
 pub mod vim_mode;
@@ -140,6 +141,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(queue::QueueCommand),
         Arc::new(tasks::TasksCommand),
         Arc::new(release_notes::ReleaseNotesCommand),
+        Arc::new(tutorial::TutorialCommand),
         Arc::new(config_agents::ConfigAgentsCommand),
         Arc::new(personas::PersonasCommand),
         // Hidden easter egg: never listed, runs on bare `/gboom`.
@@ -296,6 +298,7 @@ mod tests {
             "model",
             "multiline",
             "new",
+            "onboarding",
             "personas",
             "plan",
             "plan-view",
@@ -328,7 +331,9 @@ mod tests {
             "timestamps",
             "title",
             "toggle-mouse-reporting",
+            "tour",
             "transcript",
+            "tutorial",
             "t",
             "usage",
             "view-plan",
@@ -361,7 +366,7 @@ mod tests {
         let quit_cmd = reg.get("quit").unwrap();
         assert_eq!(exit_cmd.name(), quit_cmd.name());
         let doctor = reg.get("doctor").unwrap();
-        assert_eq!(doctor.usage(), "/doctor [fix [ssh-wrap]]");
+        assert_eq!(doctor.usage(), "/doctor [fix [FIX]]");
         for alias in ["terminal-setup", "terminal-check", "terminal-info"] {
             assert_eq!(reg.get(alias).unwrap().name(), doctor.name());
             assert_eq!(reg.get(alias).unwrap().usage(), doctor.usage());
