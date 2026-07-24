@@ -657,23 +657,25 @@ impl SamplingClient {
         self.defaults.api_backend.clone()
     }
 
-    /// POST with default headers. Overrides auth from resolver if wired.
+    /// POST with default headers. When a bearer_resolver is wired it is the
+    /// sole auth source: a missing live bearer strips default Authorization /
+    /// x-api-key so a hard-expired seed key cannot ride on the wire.
     fn post(&self, url: impl reqwest::IntoUrl) -> reqwest::RequestBuilder {
         let mut headers = self.default_headers.clone();
-        if let Some(resolver) = &self.bearer_resolver
-            && let Some(fresh) = resolver.current_bearer()
-        {
-            match self.defaults.auth_scheme {
-                AuthScheme::XApiKey => {
-                    headers.remove(AUTHORIZATION);
-                    if let Ok(v) = HeaderValue::from_str(&fresh) {
-                        headers.insert(HeaderName::from_static("x-api-key"), v);
+        if let Some(resolver) = &self.bearer_resolver {
+            headers.remove(AUTHORIZATION);
+            headers.remove(HeaderName::from_static("x-api-key"));
+            if let Some(fresh) = resolver.current_bearer() {
+                match self.defaults.auth_scheme {
+                    AuthScheme::XApiKey => {
+                        if let Ok(v) = HeaderValue::from_str(&fresh) {
+                            headers.insert(HeaderName::from_static("x-api-key"), v);
+                        }
                     }
-                }
-                AuthScheme::Bearer => {
-                    headers.remove(HeaderName::from_static("x-api-key"));
-                    if let Ok(v) = HeaderValue::from_str(&format!("Bearer {fresh}")) {
-                        headers.insert(AUTHORIZATION, v);
+                    AuthScheme::Bearer => {
+                        if let Ok(v) = HeaderValue::from_str(&format!("Bearer {fresh}")) {
+                            headers.insert(AUTHORIZATION, v);
+                        }
                     }
                 }
             }
@@ -707,16 +709,21 @@ impl SamplingClient {
         self.http.post(url).headers(headers)
     }
 
-    /// Bearer prefix for 401 attribution. Prefers live resolver, falls back to default_headers.
+    /// Bearer prefix for 401 attribution. When a resolver is wired it is
+    /// authoritative (including `None` ⇒ nothing was sent). Without a resolver,
+    /// fall back to construction-time default headers.
     fn current_sent_bearer_prefix(&self) -> Option<String> {
-        self.bearer_resolver
-            .as_ref()
-            .and_then(|r| r.current_bearer())
-            .or_else(|| self.extract_sent_bearer())
-            .map(|mut s| {
-                s.truncate(crate::attribution::SENT_BEARER_PREFIX_LEN.min(s.len()));
-                s
-            })
+        if self.bearer_resolver.is_some() {
+            return self
+                .bearer_resolver
+                .as_ref()
+                .and_then(|r| r.current_bearer())
+                .map(|mut s| {
+                    s.truncate(crate::attribution::SENT_BEARER_PREFIX_LEN.min(s.len()));
+                    s
+                });
+        }
+        self.extract_sent_bearer()
     }
 
     /// Extract the bearer from `default_headers`, truncated to prefix length.
@@ -2546,6 +2553,63 @@ mod tests {
         assert_eq!(
             calls[0].1.as_deref().map(str::len),
             Some(crate::attribution::SENT_BEARER_PREFIX_LEN),
+        );
+    }
+
+    /// When a bearer_resolver is wired but returns `None`, attribution must
+    /// report no sent bearer (not the construction-time default header seed).
+    #[test]
+    fn bearer_resolver_none_attribution_ignores_default_headers() {
+        #[derive(Debug)]
+        struct EmptyResolver;
+        impl crate::config::BearerResolver for EmptyResolver {
+            fn current_bearer(&self) -> Option<String> {
+                None
+            }
+        }
+
+        let cfg = SamplerConfig {
+            api_key: Some("stale-seed-token".to_string()),
+            api_backend: ApiBackend::Responses,
+            bearer_resolver: Some(std::sync::Arc::new(EmptyResolver)),
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(cfg).expect("client should build");
+        assert_eq!(
+            client.current_sent_bearer_prefix(),
+            None,
+            "resolver None must not attribute a stripped default seed"
+        );
+    }
+
+    /// When a bearer_resolver is wired but returns `None` (hard-expired
+    /// session with no live AT), default Authorization / x-api-key must be
+    /// stripped so a stale seed key cannot ride the wire.
+    #[test]
+    fn bearer_resolver_none_strips_default_authorization() {
+        #[derive(Debug)]
+        struct EmptyResolver;
+        impl crate::config::BearerResolver for EmptyResolver {
+            fn current_bearer(&self) -> Option<String> {
+                None
+            }
+        }
+
+        let cfg = SamplerConfig {
+            api_key: Some("stale-token".to_string()),
+            api_backend: ApiBackend::Responses,
+            bearer_resolver: Some(std::sync::Arc::new(EmptyResolver)),
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(cfg).expect("client should build");
+        let request = client
+            .post("https://example.test/v1/responses")
+            .body("")
+            .build()
+            .expect("request should build");
+        assert!(
+            request.headers().get(AUTHORIZATION).is_none(),
+            "stale default Authorization must not be sent when resolver is empty"
         );
     }
 
