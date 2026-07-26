@@ -3453,6 +3453,17 @@ pub fn apply_external_otel_remote_policy(settings: Option<&crate::util::config::
     }
 }
 /// Seed free-function remote caches after writing `Config.remote_settings`.
+///
+/// Called from `init.rs` at boot and from the agent when backgrounded settings
+/// arrive later, so every side effect here must be idempotent and safe to
+/// re-apply. The emission-gate flip is owned by
+/// [`crate::agent::otel_gate::OtelGate`], not here.
+///
+/// The `force_disable` write here is `Relaxed`; the synchronizing publish is
+/// `OtelGate::apply_and_open`, which applies the same tighten-only policy and then
+/// opens the gate with a `Release` swap. Removing that second application to
+/// deduplicate would leave only the `Relaxed` store and reopen an ARM
+/// visibility hole.
 pub fn apply_remote_settings_side_effects(settings: Option<&crate::util::config::RemoteSettings>) {
     if let Some(s) = settings {
         let origin_trusted = crate::util::is_prod_cli_chat_proxy_url(
@@ -3477,6 +3488,11 @@ pub fn apply_remote_settings_side_effects(settings: Option<&crate::util::config:
         settings.and_then(|s| s.crash_handler_enabled),
     );
     apply_external_otel_remote_policy(settings);
+    let image_normalize_cache_enabled = settings
+        .and_then(|r| r.image_normalize_cache_enabled)
+        .unwrap_or(false);
+    crate::session::normalize_cache::NormalizeCache::global()
+        .set_enabled(image_normalize_cache_enabled);
 }
 /// Read `env.<key>` from Claude-compat `managed_settings.json`. `Some(true)`
 /// indicates a force-off signal from a Mac-MDM-style admin policy.
