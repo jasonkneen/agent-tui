@@ -1,0 +1,12 @@
+# Convention: a stale claim under a '(shipped)' marker is a top-priority doc defect — sweeps update marked sections first
+
+**Rule.** When any sweep, rename, rung-label change, or reconciliation touches documentation, sections carrying the **"(shipped)"** marker are updated **first**, before unmarked prose. A claim that has gone stale inside a marked section is the highest-severity form of doc staleness, and it admits exactly two repairs — fix the claim, or strip the marker — applied in the same change, attributed and dated. Leaving a known-false claim under a shipped marker is never acceptable, even temporarily.
+
+**Grounding.**
+- `suggested/skills/sweep-vendor-rung-label-surfaces.md`, on the `docs/LOCAL_CLI_AUTH.md` usage table: "this is a '(shipped)' section, so a stale claim here actively outranks correct newer prose elsewhere in drift adjudication."
+- `suggested/workflows/audit-shipped-markers-against-live-behavior.md`: when a marked claim fails on the wire, "the marker is manufacturing false evidence … either fix the claim or strip the marker in the reconciliation — never leave a false claim under a shipped marker."
+- `suggested/agent-updates/shipped-marker-doc-sections.md` establishes the mechanism that makes this severe: marked claims outrank unmarked and older statements in adjudication — the /model-scope drift was settled largely on that annotation's strength.
+
+**Why:** the shipped marker is the doc-side proxy for on-wire evidence, so its evidentiary weight cuts both ways. A stale sentence in ordinary prose is a passive error that a later reader can out-argue with newer sources; a stale sentence in a marked section is an *active* one — it wins drift adjudications against correct statements, blesses wrong reviewer objections, and seeds phantom-grounded convention docs. Ordering sweeps marked-sections-first bounds the window in which the workspace's strongest evidence class is wrong.
+
+**How to apply:** when running any label or rename sweep, enumerate the `(shipped)` sections in scope (grep from present reality) and update them before other surfaces. When an audit or probe shows a marked claim is false, repair it in that same change — fix or strip, with author and date — and if the correct value is genuinely undetermined, strip the marker and register the drift rather than leaving the false claim marked. When reviewing a sweep PR, a diff that updates unmarked prose while leaving a marked section stale is incomplete.

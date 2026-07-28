@@ -37,8 +37,8 @@ pub enum LazarRuntimeError {
     Turn(String),
     /// Turn exceeded the wall-clock timeout.
     Timeout(Duration),
-    /// Non-zero exit with no reply text.
-    Exit(Option<i32>),
+    /// Non-zero exit with no reply text (code, stderr diagnostics).
+    Exit(Option<i32>, String),
 }
 
 impl fmt::Display for LazarRuntimeError {
@@ -48,12 +48,15 @@ impl fmt::Display for LazarRuntimeError {
             Self::Io(e) => write!(f, "lazar stream I/O: {e}"),
             Self::Turn(msg) => write!(f, "{msg}"),
             Self::Timeout(d) => write!(f, "lazar turn timed out after {}s", d.as_secs()),
-            Self::Exit(code) => write!(
-                f,
-                "lazar exited with code {}",
-                code.map(|c| c.to_string())
-                    .unwrap_or_else(|| "unknown".into())
-            ),
+            Self::Exit(code, stderr) => {
+                let code_str = code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".into());
+                let trimmed = stderr.trim();
+                if trimmed.is_empty() {
+                    write!(f, "lazar exited with code {code_str}")
+                } else {
+                    write!(f, "lazar exited with code {code_str}: {trimmed}")
+                }
+            }
         }
     }
 }
@@ -141,7 +144,21 @@ impl LazarRuntimePool {
 
     /// Run one text turn; returns the concatenated assistant reply.
     pub async fn start_text_turn(&self, prompt: &str, model: Option<&str>) -> Result<LazarTurnResult> {
-        let session_id = {
+        self.start_text_turn_keyed(prompt, model, None).await
+    }
+
+    /// Run one text turn with an optional sticky key (e.g. Agent TUI session id).
+    pub async fn start_text_turn_keyed(
+        &self,
+        prompt: &str,
+        model: Option<&str>,
+        sticky_key: Option<&str>,
+    ) -> Result<LazarTurnResult> {
+        let session_id = if let Some(key) = sticky_key.filter(|k| !k.is_empty()) {
+            let sanitized = sanitize_session_id(key);
+            self.state.lock().await.session_id = Some(sanitized.clone());
+            sanitized
+        } else {
             let mut state = self.state.lock().await;
             state.session_id.get_or_insert_with(new_session_id).clone()
         };
@@ -161,16 +178,40 @@ impl LazarRuntimePool {
             cmd.current_dir(cwd);
         }
         cmd.stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .stdin(Stdio::null());
 
         let turn_timeout = self.config.turn_timeout;
         let work = async move {
             let mut child = cmd.spawn().map_err(LazarRuntimeError::Spawn)?;
             let stdout = child.stdout.take().expect("stdout piped");
+            let stderr = child.stderr.take().expect("stderr piped");
             let mut lines = BufReader::new(stdout).lines();
+            let mut stderr_reader = BufReader::new(stderr).lines();
+
             let mut reply = String::new();
             let mut turn_error: Option<String> = None;
+            let mut stderr_buf = String::new();
+
+            // Background task to capture last ~8KB of stderr diagnostics
+            let stderr_handle = tokio::spawn(async move {
+                let mut buf = String::new();
+                while let Ok(Some(line)) = stderr_reader.next_line().await {
+                    if !buf.is_empty() {
+                        buf.push('\n');
+                    }
+                    buf.push_str(&line);
+                    if buf.len() > 8192 {
+                        let mut offset = buf.len() - 8192;
+                        while !buf.is_char_boundary(offset) {
+                            offset += 1;
+                        }
+                        buf = buf[offset..].to_string();
+                    }
+                }
+                buf
+            });
+
             loop {
                 match lines.next_line().await {
                     Ok(Some(line)) => {
@@ -205,11 +246,15 @@ impl LazarRuntimePool {
                 }
             }
             let status = child.wait().await.map_err(LazarRuntimeError::Io)?;
+            if let Ok(err_text) = stderr_handle.await {
+                stderr_buf = err_text;
+            }
+
             if let Some(msg) = turn_error {
                 return Err(LazarRuntimeError::Turn(msg));
             }
             if !status.success() && reply.is_empty() {
-                return Err(LazarRuntimeError::Exit(status.code()));
+                return Err(LazarRuntimeError::Exit(status.code(), stderr_buf));
             }
             Ok(LazarTurnResult {
                 text: reply,
@@ -261,6 +306,26 @@ fn new_session_id() -> String {
     format!("agent-tui-{}-{nanos}", std::process::id())
 }
 
+/// Sanitize an arbitrary string so it satisfies Lazar kernel session ID rules:
+/// a-z A-Z 0-9 - _ . (max 64, no leading '.', no '..').
+pub fn sanitize_session_id(id: &str) -> String {
+    let mut safe: String = id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '_' })
+        .collect();
+    safe = safe.replace("..", "_");
+    while safe.starts_with('.') || safe.starts_with('_') {
+        safe.remove(0);
+    }
+    if safe.is_empty() {
+        return new_session_id();
+    }
+    if safe.len() > 64 {
+        safe.truncate(64);
+    }
+    safe
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,6 +353,17 @@ mod tests {
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
         );
         assert!(id.len() <= 64);
+    }
+
+    #[test]
+    fn sanitize_session_id_enforces_kernel_rules() {
+        assert_eq!(sanitize_session_id("../etc/passwd"), "etc_passwd");
+        assert_eq!(sanitize_session_id(".dotfile"), "dotfile");
+        assert_eq!(
+            sanitize_session_id("long-session-id-".repeat(10).as_str()).len(),
+            64
+        );
+        assert_eq!(sanitize_session_id("sess@123!#$"), "sess_123___");
     }
 
     /// Real-CLI integration: requires `lazar` on PATH (or `$LAZAR_HOME/bin`)

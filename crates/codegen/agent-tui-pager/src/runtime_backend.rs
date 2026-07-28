@@ -205,7 +205,10 @@ pub fn lazar_model() -> Option<String> {
 
 /// Selected Hermes model id (if any).
 pub fn hermes_model() -> Option<String> {
-    load_mem().hermes_model
+    load_mem().hermes_model.and_then(|m| {
+        let n = agent_tui_hermes_runtime::normalize_model_id(&m);
+        if n.is_empty() { None } else { Some(n) }
+    })
 }
 
 /// Persist and set the active runtime.
@@ -286,7 +289,11 @@ pub fn set_lazar_model(model_id: impl Into<String>) -> Result<(), String> {
 
 /// Persist Hermes model selection (and reset sticky session).
 pub fn set_hermes_model(model_id: impl Into<String>) -> Result<(), String> {
-    let model_id = model_id.into();
+    // UI may pass display labels ("Hermes — gpt-5.6-sol"); store the wire id.
+    let model_id = agent_tui_hermes_runtime::normalize_model_id(&model_id.into());
+    if model_id.is_empty() {
+        return Err("empty Hermes model id".into());
+    }
     let mut mem = load_mem();
     let changed = mem.hermes_model.as_deref() != Some(model_id.as_str());
     mem.hermes_model = Some(model_id.clone());
@@ -399,6 +406,11 @@ fn claude_status() -> (bool, String) {
 }
 
 fn lazar_bin_path() -> Option<PathBuf> {
+    if let Some(bin) = std::env::var_os("LAZAR_BIN").map(PathBuf::from) {
+        if bin.is_file() {
+            return Some(bin);
+        }
+    }
     if which_bin("lazar") {
         return Some(PathBuf::from("lazar"));
     }
@@ -690,9 +702,11 @@ pub fn model_state_from_hermes_active(
     preferred: Option<&str>,
 ) -> crate::acp::model_state::ModelState {
     let id = preferred
-        .map(str::to_string)
+        .map(|p| agent_tui_hermes_runtime::normalize_model_id(p))
+        .filter(|s| !s.is_empty())
         .or_else(agent_tui_hermes_runtime::discover_active_model)
         .unwrap_or_else(|| "hermes-default".to_string());
+    // Wire id must be the real Hermes/provider model slug — never the display label.
     let model_id = acp::ModelId::new(Arc::from(id.as_str()));
     let info = acp::ModelInfo::new(model_id.clone(), format!("Hermes — {id}"));
     let mut available = IndexMap::new();
@@ -758,9 +772,21 @@ pub fn model_state_from_claude_known(
 }
 
 /// Run one text turn on the active non-Grok runtime.
+///
+/// `sticky_key` isolates multi-agent continuity for spawn-per-turn runtimes
+/// that support sticky resume (Hermes). Pass the Agent TUI session id.
 pub async fn run_external_turn(
     runtime: RuntimeBackend,
     text: String,
+) -> Result<String, String> {
+    run_external_turn_keyed(runtime, text, None).await
+}
+
+/// Like [`run_external_turn`], with an optional sticky key (Agent TUI session id).
+pub async fn run_external_turn_keyed(
+    runtime: RuntimeBackend,
+    text: String,
+    sticky_key: Option<String>,
 ) -> Result<String, String> {
     match runtime {
         RuntimeBackend::Grok => Err(
@@ -797,16 +823,19 @@ pub async fn run_external_turn(
             let pool = lazar_pool();
             let model = lazar_model();
             let result = pool
-                .start_text_turn(&text, model.as_deref())
+                .start_text_turn_keyed(&text, model.as_deref(), sticky_key.as_deref())
                 .await
                 .map_err(|e| format!("Lazar turn failed: {e}"))?;
             Ok(result.text)
         }
         RuntimeBackend::Hermes => {
             let pool = hermes_pool();
-            let model = hermes_model();
+            let model = hermes_model().map(|m| {
+                agent_tui_hermes_runtime::normalize_model_id(&m)
+            });
+            let model_ref = model.as_deref().filter(|m| !m.is_empty());
             let result = pool
-                .start_text_turn(&text, model.as_deref())
+                .start_text_turn_keyed(&text, model_ref, sticky_key.as_deref())
                 .await
                 .map_err(|e| format!("Hermes turn failed: {e}"))?;
             Ok(result.text)

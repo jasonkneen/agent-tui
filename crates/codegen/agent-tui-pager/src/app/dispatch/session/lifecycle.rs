@@ -24,6 +24,43 @@ use crate::scrollback::state::ScrollbackState;
 use agent_client_protocol as acp;
 use std::time::Instant;
 use agent_tui_shell::sampling::types::ReasoningEffort;
+use crate::runtime_backend::RuntimeBackend;
+
+/// Effects that replace the prompt/session model chrome with the active
+/// **vendor addon** catalog (Codex / Claude / Lazar / Hermes).
+///
+/// Grok ACP still creates the session and may ship a Grok model list; without
+/// this, product skins (`./codex`, `./claude`, …) and a pre-set `runtime.toml`
+/// leave the chrome stuck on e.g. "Grok 4.5".
+pub(crate) fn vendor_catalog_refresh_effects() -> Vec<Effect> {
+    match crate::runtime_backend::active() {
+        RuntimeBackend::Grok => vec![],
+        RuntimeBackend::Codex => vec![Effect::RefreshCodexModels],
+        RuntimeBackend::Claude => vec![Effect::RefreshClaudeModels],
+        RuntimeBackend::Lazar => vec![Effect::RefreshLazarModels],
+        RuntimeBackend::Hermes => vec![Effect::RefreshHermesModels],
+    }
+}
+
+/// Resolve models from the Grok ACP session response into what the UI should
+/// show. Pure enough for use under an `app.agents.get_mut` borrow (no
+/// `&mut AppView`).
+///
+/// When a non-Grok runtime owns turns, stashes the Grok catalog (for
+/// `/runtime grok` restore) and returns a cached vendor catalog if any —
+/// never paints Grok as the active model chrome.
+pub(crate) fn session_models_after_acp(
+    new_models: Option<acp::SessionModelState>,
+) -> Option<ModelState> {
+    let m = new_models?;
+    let state: ModelState = Some(m).into();
+    if crate::runtime_backend::active() == RuntimeBackend::Grok {
+        return Some(state);
+    }
+    crate::runtime_backend::stash_grok_catalog(state);
+    crate::runtime_backend::codex_catalog()
+}
+
 /// A deferred model switch to apply once the session exists, plus any effort
 /// error to surface. `switch` is still populated when a `-m` model was stashed
 /// even if the effort token failed, so an invalid effort never drops the CLI
@@ -818,16 +855,13 @@ pub(in crate::app::dispatch) fn handle_session_created(
             )));
         }
         agent.bind_session_id(session_id);
-        if let Some(m) = new_models {
-            app.models = Some(m).into();
-            agent.session.models = app.models.clone();
+        if let Some(state) = session_models_after_acp(new_models) {
+            app.models = state.clone();
+            agent.session.models = state;
         }
         let deferred = apply_deferred_model_switch(agent, app.cli_effort_token.as_deref());
         let deferred_mode = agent.deferred_session_mode.take();
         let cwd = agent.session.cwd.clone();
-        if deferred.is_some() {
-            agent.session.model_switch_pending = true;
-        }
         let mut effects = if app.reconnect_pending {
             vec![]
         } else {
@@ -858,7 +892,14 @@ pub(in crate::app::dispatch) fn handle_session_created(
             agent_id,
             silent: true,
         });
-        if let Some((model_id, effort)) = deferred {
+        // Vendor product skins / pre-selected runtime: load that addon's catalog
+        // so the prompt model area is not stuck on Grok ACP defaults.
+        effects.extend(vendor_catalog_refresh_effects());
+        // Skip Grok ACP SwitchModel while a vendor runtime owns model selection.
+        if crate::runtime_backend::active() == RuntimeBackend::Grok
+            && let Some((model_id, effort)) = deferred
+        {
+            agent.session.model_switch_pending = true;
             effects.push(Effect::SwitchModel {
                 agent_id,
                 session_id: session_id_clone.clone(),
@@ -903,9 +944,9 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
         agent.bind_session_id(session_id);
         agent.session.cwd = session_cwd.clone();
         agent.session.is_worktree = true;
-        if let Some(m) = new_models {
-            app.models = Some(m).into();
-            agent.session.models = app.models.clone();
+        if let Some(state) = session_models_after_acp(new_models) {
+            app.models = state.clone();
+            agent.session.models = state;
         }
         agent.prompt.file_search.retarget(&session_cwd);
         agent.scrollback.push_block(RenderBlock::system(format!(
@@ -915,9 +956,6 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
         let deferred = apply_deferred_model_switch(agent, app.cli_effort_token.as_deref());
         let deferred_mode = agent.deferred_session_mode.take();
         let cwd = agent.session.cwd.clone();
-        if deferred.is_some() {
-            agent.session.model_switch_pending = true;
-        }
         let mut effects = if app.reconnect_pending {
             vec![]
         } else {
@@ -948,7 +986,11 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
             agent_id,
             silent: true,
         });
-        if let Some((model_id, effort)) = deferred {
+        effects.extend(vendor_catalog_refresh_effects());
+        if crate::runtime_backend::active() == RuntimeBackend::Grok
+            && let Some((model_id, effort)) = deferred
+        {
+            agent.session.model_switch_pending = true;
             effects.push(Effect::SwitchModel {
                 agent_id,
                 session_id: session_id_clone.clone(),

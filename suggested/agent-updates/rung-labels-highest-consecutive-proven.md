@@ -1,0 +1,12 @@
+# Convention: a vendor's rung label asserts only the highest consecutive probe-confirmed rung
+
+**Rule.** Every surface that labels a vendor's readiness rung — the `/runtime` help text, the `docs/LOCAL_CLI_AUTH.md` usage table, the `AGENTS.md` runtime table, and any skill or wiki page quoting them — states the highest **consecutive** rung confirmed by a readiness probe. Never an aspirational rung ("the bridge lands next week"), never a rung inferred from other labels, and never a rung read off a non-consecutive probe result. An out-of-order result (e.g. inference appears to work while a lower rung fails) is a probe or wiring defect to triage, not a labelable state.
+
+**Grounding.**
+- `suggested/skills/probe-vendor-readiness-rung.md`, "Recording the result": "State the rung as the highest **consecutive** rung passed — rungs complete in order, and an out-of-order result" is triaged, not recorded as a rung.
+- `suggested/skills/sweep-vendor-rung-label-surfaces.md`, Rules: "**Label the rung you can prove.** State the highest consecutive rung confirmed by the readiness probe."
+- `suggested/wiki/vendor-runtime-readiness-ladder.md`: "Stages complete **in order** — there is no supported state with inference but no detection."
+
+**Why:** the probe skill and the label-sweep skill restate this rule independently — per the convergence convention, two independent restatements promote a rule from per-doc instruction to general workspace law, and this doc is that promotion. The Claude readiness drift showed what a wrong label costs: a "detect-only" annotation coexisting with a shipped catalog harness put a stale claim inside a "(shipped)"-marked section, where it actively outranked correct newer prose in drift adjudication. Labels that assert unproven rungs manufacture exactly that class of false evidence.
+
+**How to apply:** after any readiness change, run the rung-label sweep and write only the probe-proven consecutive rung into every surface, then re-grep for the old label. When reviewing a label change, ask for the probe evidence behind it; a label justified by an upcoming bridge, a doc table, or a non-consecutive probe result is a defect. When a probe returns out-of-order results, stop and triage the probe environment before touching any label.

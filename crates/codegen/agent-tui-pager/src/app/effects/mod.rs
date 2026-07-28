@@ -1068,8 +1068,13 @@ pub(crate) fn execute(
                         })),
                     );
                     let send_start = std::time::Instant::now();
-                    let result =
-                        crate::runtime_backend::run_external_turn(runtime, text).await;
+                    let sticky_key = Some(session_id.0.to_string());
+                    let result = crate::runtime_backend::run_external_turn_keyed(
+                        runtime,
+                        text,
+                        sticky_key,
+                    )
+                    .await;
                     let send_elapsed_ms = send_start.elapsed().as_millis() as u64;
                     ulog::info(
                         "prompt.external_runtime.done",
@@ -1160,6 +1165,7 @@ pub(crate) fn execute(
                     !matches!(b, acp::ContentBlock::Text(_))
                 });
                 tasks.spawn(async move {
+                    let sticky_key = Some(session_id.0.to_string());
                     let result = if text.trim().is_empty() && has_non_text {
                         Err(format!(
                             "{} does not yet accept image/binary attachments from Agent TUI. Paste text only, or `/runtime grok`.",
@@ -1168,7 +1174,12 @@ pub(crate) fn execute(
                     } else if text.trim().is_empty() {
                         Err("Empty prompt".into())
                     } else {
-                        crate::runtime_backend::run_external_turn(runtime, text).await
+                        crate::runtime_backend::run_external_turn_keyed(
+                            runtime,
+                            text,
+                            sticky_key,
+                        )
+                        .await
                     };
                     TaskResult::ExternalRuntimeTurnDone {
                         agent_id,

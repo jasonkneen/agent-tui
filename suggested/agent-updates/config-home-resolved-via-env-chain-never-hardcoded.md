@@ -1,0 +1,12 @@
+# Convention: tooling resolves the Agent TUI config home through the env chain — never a hardcoded path
+
+**Rule.** Any code, script, skill, or probe that reads or writes files under the Agent TUI config home (`runtime.toml`, or any sibling) must resolve the home through the chain — `$AGENT_TUI_HOME`, then legacy `$GROK_HOME` as an accepted fallback, then the default `~/.agent-tui` — never by hardcoding a literal path. A literal `~/.agent-tui` (or `~/.grok`) in tooling is a defect even when it happens to work on the author's machine.
+
+**Grounding.**
+- `suggested/wiki/runtime-toml-reference.md`, Location: "Under the config home: `~/.agent-tui`, resolved via `$AGENT_TUI_HOME` with legacy `$GROK_HOME` still accepted as a fallback. Any tooling that reads this file must resolve the home through that chain, never a hardcoded path."
+- `suggested/workflows/reconcile-grok-model-pick-persistence-drift.md`, step 2: "Read `~/.agent-tui/runtime.toml` (resolving the home via `$AGENT_TUI_HOME`, legacy `$GROK_HOME` fallback)" — even a one-off adjudication probe is required to resolve the chain.
+- The chain itself is owned by the resolve-config-home skill and the renamed-config-surface convention ("a renamed config surface keeps its legacy env var as an accepted fallback") — this convention adds the enforcement half: no consumer may bypass the chain.
+
+**Why:** the config home is user- and environment-overridable, and the fork rename left a live legacy variable. A hardcoded path silently reads the wrong home on any machine using `$AGENT_TUI_HOME` or still on `$GROK_HOME` — and because the file usually *exists* at the default location too, the failure mode is not an error but a plausible-looking wrong answer: a probe reports "no key was written," a script edits a file the TUI never reads. In a workspace that adjudicates drifts from exactly these observations, a bypassed chain manufactures false wire evidence.
+
+**How to apply:** when writing anything that touches the config home, call the resolve-config-home procedure (the `$AGENT_TUI_HOME` → `$GROK_HOME` chain skill) rather than inlining a path. When reviewing, treat a literal config-home path in code, docs' copy-pasteable snippets, or skill instructions as a defect unless it is explicitly illustrating the *default* and says so. When a probe or audit records a runtime.toml observation, note which home it resolved to, so the evidence is auditable.
