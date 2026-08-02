@@ -55,6 +55,31 @@ download_file() {
     fi
 }
 
+verify_sha256() {
+    local file="$1" manifest="$2" expected actual
+    expected=$(awk 'NR == 1 { print $1 }' "$manifest" | tr '[:upper:]' '[:lower:]')
+    if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "Error: invalid SHA-256 manifest for $(basename "$file")" >&2
+        return 1
+    fi
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$file" | awk '{ print $1 }')
+    elif command -v shasum >/dev/null 2>&1; then
+        actual=$(shasum -a 256 "$file" | awk '{ print $1 }')
+    elif command -v openssl >/dev/null 2>&1; then
+        actual=$(openssl dgst -sha256 "$file" | awk '{ print $NF }')
+    else
+        echo "Error: SHA-256 verification requires sha256sum, shasum, or openssl" >&2
+        return 1
+    fi
+    actual=$(printf '%s' "$actual" | tr '[:upper:]' '[:lower:]')
+    if [ "$actual" != "$expected" ]; then
+        echo "Error: SHA-256 mismatch for $(basename "$file"); refusing to install" >&2
+        return 1
+    fi
+}
+
 # Parallel byte-range download. Falls back to single-connection download_file
 # whenever HEAD lacks Content-Length, the file is small (<16 MiB), curl is
 # unavailable, or any chunk fetch / concat fails.
@@ -213,11 +238,19 @@ fi
 artifact_url="${GH_DOWNLOAD}/v${version}/${asset_name}"
 
 binary_tmp="${binary_path}.tmp.$$"
-rm -f "$binary_tmp" 2>/dev/null || true
+checksum_tmp="${binary_path}.sha256.tmp.$$"
+rm -f "$binary_tmp" "$checksum_tmp" 2>/dev/null || true
+
+echo "  Downloading SHA-256 manifest..." >&2
+if ! download_file "${artifact_url}.sha256" "$checksum_tmp"; then
+    rm -f "$binary_tmp" "$checksum_tmp"
+    echo "Error: checksum download failed from ${artifact_url}.sha256" >&2
+    exit 1
+fi
 
 echo "  Downloading agent-tui ${version} from GitHub Releases..." >&2
 if ! download_file_parallel "$artifact_url" "$binary_tmp"; then
-    rm -f "$binary_tmp"
+    rm -f "$binary_tmp" "$checksum_tmp"
     if is_not_found "$artifact_url"; then
         echo "Error: Agent TUI is not yet available for your system ($platform)." >&2
         echo "  Expected asset: ${asset_name} on ${GITHUB_REPO} release v${version}" >&2
@@ -226,6 +259,13 @@ if ! download_file_parallel "$artifact_url" "$binary_tmp"; then
     fi
     exit 1
 fi
+
+if ! verify_sha256 "$binary_tmp" "$checksum_tmp"; then
+    rm -f "$binary_tmp" "$checksum_tmp"
+    exit 1
+fi
+rm -f "$checksum_tmp"
+echo "  SHA-256 verified." >&2
 
 if [ "$os" = "windows" ]; then
     mv -f "$binary_tmp" "$binary_path"

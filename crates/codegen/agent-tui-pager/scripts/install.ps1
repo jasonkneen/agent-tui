@@ -197,17 +197,36 @@ $storedName = "$AssetPrefix-$resolvedVersion-$platform"
 $binaryPath = Join-Path $DownloadDir "$storedName.exe"
 $assetName = "$storedName.exe"
 $artifactUrl = "https://github.com/$GithubRepo/releases/download/v$resolvedVersion/$assetName"
+$binaryTmp = "$binaryPath.tmp.$PID"
+$checksumTmp = "$binaryPath.sha256.tmp.$PID"
 
 $downloaded = $false
 try {
-    Download-File $artifactUrl $binaryPath
+    Download-File "$artifactUrl.sha256" $checksumTmp
+    Download-File $artifactUrl $binaryTmp
+
+    $manifest = [System.IO.File]::ReadAllText($checksumTmp)
+    $match = [regex]::Match($manifest, '^\s*([0-9A-Fa-f]{64})(?:\s|$)')
+    if (-not $match.Success) {
+        throw "Invalid SHA-256 manifest for $assetName"
+    }
+    $expectedHash = $match.Groups[1].Value.ToLowerInvariant()
+    $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $binaryTmp).Hash.ToLowerInvariant()
+    if ($actualHash -ne $expectedHash) {
+        throw "SHA-256 mismatch for $assetName; refusing to install"
+    }
+    Move-Item -LiteralPath $binaryTmp -Destination $binaryPath -Force
+    Write-Host '  SHA-256 verified.' -ForegroundColor DarkGray
     $downloaded = $true
 } catch {
     $downloaded = $false
+    Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
+} finally {
+    if (Test-Path $binaryTmp) { Remove-Item $binaryTmp -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $checksumTmp) { Remove-Item $checksumTmp -Force -ErrorAction SilentlyContinue }
 }
 
 if (-not $downloaded) {
-    if (Test-Path $binaryPath) { Remove-Item $binaryPath -Force }
     Write-Error "Binary download failed from $artifactUrl"
     exit 1
 }

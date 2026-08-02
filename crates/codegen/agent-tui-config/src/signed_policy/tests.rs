@@ -1,4 +1,5 @@
 use super::*;
+use prod_mc_cli_chat_proxy_types::MANAGED_POLICY_TYP;
 use ring::signature::KeyPair;
 
 fn test_keypair() -> (ring::signature::Ed25519KeyPair, Vec<u8>) {
@@ -25,6 +26,7 @@ fn sign(kp: &ring::signature::Ed25519KeyPair, payload: &SignedPayload) -> Signat
 
 fn payload() -> SignedPayload {
     SignedPayload {
+        typ: MANAGED_POLICY_TYP.into(),
         version: 1,
         deployment_id: None,
         team_id: Some("team-007".into()),
@@ -32,6 +34,7 @@ fn payload() -> SignedPayload {
         requirements: Some("[features]\nweb_fetch = false\n".into()),
         fail_closed: false,
         expires_at: 4_000_000_000,
+        nonce: String::new(),
         key_id: "v1".into(),
     }
 }
@@ -54,6 +57,7 @@ fn write_policy(home: &std::path::Path, p: &SignedPayload) {
 fn server_wire_format_is_client_verifiable() {
     let (kp, pubkey) = test_keypair();
     let signed_payload = serde_json::json!({
+        "typ": "grok.managed_policy.v1",
         "deployment_id": serde_json::Value::Null,
         "team_id": "team-007",
         "managed_config": "[cli]\n",

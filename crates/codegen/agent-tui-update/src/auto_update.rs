@@ -8,6 +8,7 @@ use std::os::unix::process::CommandExt;
 
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
+use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 use crate::version::{
@@ -1038,6 +1039,136 @@ pub async fn download_silent(url: &str, dest: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+const MAX_CHECKSUM_MANIFEST_BYTES: usize = 4096;
+
+fn parse_sha256_manifest(manifest: &str, expected_asset: &str) -> Result<String> {
+    let line = manifest
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("empty SHA-256 manifest for {expected_asset}"))?;
+    let mut fields = line.split_whitespace();
+    let hash = fields
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing SHA-256 for {expected_asset}"))?
+        .to_ascii_lowercase();
+    if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        anyhow::bail!("invalid SHA-256 manifest for {expected_asset}");
+    }
+
+    if let Some(name) = fields.next() {
+        let name = name.trim_start_matches('*');
+        let manifest_asset = std::path::Path::new(name)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(name);
+        if manifest_asset != expected_asset {
+            anyhow::bail!("SHA-256 manifest names {manifest_asset}, expected {expected_asset}");
+        }
+    }
+    Ok(hash)
+}
+
+async fn sha256_file(path: &std::path::Path) -> Result<String> {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || -> Result<String> {
+        use std::io::Read;
+
+        let mut file = std::fs::File::open(&path)
+            .with_context(|| format!("opening {} for SHA-256 verification", path.display()))?;
+        let mut hasher = Sha256::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        Ok(format!("{:x}", hasher.finalize()))
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("SHA-256 worker failed: {error}"))?
+}
+
+async fn fetch_release_sha256(url: &str, expected_asset: &str) -> Result<String> {
+    let client = reqwest::Client::builder()
+        .timeout(DOWNLOAD_REQUEST_TIMEOUT)
+        .build()?;
+    let response = client.get(url).send().await?;
+    if !response.status().is_success() {
+        anyhow::bail!("checksum download failed: HTTP {}", response.status());
+    }
+
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if bytes.len().saturating_add(chunk.len()) > MAX_CHECKSUM_MANIFEST_BYTES {
+            anyhow::bail!("SHA-256 manifest for {expected_asset} exceeds 4 KiB");
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let manifest = std::str::from_utf8(&bytes)
+        .with_context(|| format!("SHA-256 manifest for {expected_asset} is not UTF-8"))?;
+    parse_sha256_manifest(manifest, expected_asset)
+}
+
+async fn verify_sha256(path: &std::path::Path, expected: &str) -> Result<()> {
+    let actual = sha256_file(path).await?;
+    if actual != expected {
+        anyhow::bail!(
+            "SHA-256 mismatch for {}; refusing to install",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("downloaded asset")
+        );
+    }
+    Ok(())
+}
+
+async fn publish_verified_release_asset(
+    staging: &std::path::Path,
+    dest: &std::path::Path,
+) -> Result<()> {
+    #[cfg(windows)]
+    {
+        windows_replace_exe(staging, dest).await?;
+        tokio::fs::remove_file(staging).await?;
+    }
+    #[cfg(not(windows))]
+    tokio::fs::rename(staging, dest).await?;
+    Ok(())
+}
+
+async fn download_verified_release_asset(
+    url: &str,
+    asset_name: &str,
+    dest: &std::path::Path,
+    with_progress: bool,
+) -> Result<()> {
+    let checksum_url = format!("{url}.sha256");
+    let expected = fetch_release_sha256(&checksum_url, asset_name)
+        .await
+        .with_context(|| format!("verifying release metadata at {checksum_url}"))?;
+    let staging = unique_temp_sibling(dest, "verified");
+
+    let result = async {
+        if with_progress {
+            download_with_progress(url, &staging).await?;
+        } else {
+            download_silent(url, &staging).await?;
+        }
+        verify_sha256(&staging, &expected).await?;
+        publish_verified_release_asset(&staging, dest).await
+    }
+    .await;
+
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&staging).await;
+    }
+    result
+}
+
 /// Delete `~/.grok/models_cache.json` after a successful update.
 ///
 /// The cache embeds the binary version and will be treated as a miss by the
@@ -1145,9 +1276,7 @@ async fn install_from_github_http(
         "  Downloading {} v{version} ({platform}) from GitHub Releases...",
         crate::version::MANAGED_BIN_NAME
     );
-    // `asset_name` is only used for messaging; download uses the full URL.
-    let _ = asset_name;
-    download_with_progress(&url, &binary_path).await?;
+    download_verified_release_asset(&url, &asset_name, &binary_path, true).await?;
 
     #[cfg(unix)]
     {
@@ -2050,7 +2179,23 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
         crate::version::MANAGED_BIN_NAME
     );
 
-    gh_release_download(&tag, &asset_name, &binary_path).await?;
+    let binary_staging = unique_temp_sibling(&binary_path, "verified");
+    let checksum_staging = unique_temp_sibling(&binary_path, "sha256");
+    let checksum_asset = format!("{asset_name}.sha256");
+    let download_result: Result<()> = async {
+        gh_release_download(&tag, &checksum_asset, &checksum_staging).await?;
+        let manifest = tokio::fs::read_to_string(&checksum_staging).await?;
+        let expected = parse_sha256_manifest(&manifest, &asset_name)?;
+        gh_release_download(&tag, &asset_name, &binary_staging).await?;
+        verify_sha256(&binary_staging, &expected).await?;
+        publish_verified_release_asset(&binary_staging, &binary_path).await
+    }
+    .await;
+    let _ = tokio::fs::remove_file(&checksum_staging).await;
+    if download_result.is_err() {
+        let _ = tokio::fs::remove_file(&binary_staging).await;
+    }
+    download_result?;
 
     // chmod +x
     #[cfg(unix)]
@@ -2066,10 +2211,8 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
     // route through it resolve to the newly installed version.
     #[cfg(unix)]
     {
-        let latest_path = download_dir.join(format!(
-            "{}-latest",
-            crate::version::RELEASE_ASSET_PREFIX
-        ));
+        let latest_path =
+            download_dir.join(format!("{}-latest", crate::version::RELEASE_ASSET_PREFIX));
         let rel_target = relative_symlink_target(&binary_path, &latest_path);
         if let Err(e) = atomic_symlink_swap(&rel_target, &latest_path).await {
             tracing::warn!("Failed to update agent-tui-latest symlink: {e}");
@@ -2517,6 +2660,33 @@ async fn refresh_deployment_config() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sha256_manifest_requires_valid_hash_and_matching_asset() {
+        let hash = "a".repeat(64);
+        assert_eq!(
+            parse_sha256_manifest(
+                &format!("{hash}  agent-tui-1.2.3-linux-x86_64\n"),
+                "agent-tui-1.2.3-linux-x86_64"
+            )
+            .unwrap(),
+            hash
+        );
+        assert!(parse_sha256_manifest("not-a-hash  asset", "asset").is_err());
+        assert!(
+            parse_sha256_manifest(&format!("{}  wrong-asset", "b".repeat(64)), "asset").is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn sha256_verification_detects_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("asset");
+        tokio::fs::write(&path, b"abc").await.unwrap();
+        let expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        verify_sha256(&path, expected).await.unwrap();
+        assert!(verify_sha256(&path, &"0".repeat(64)).await.is_err());
+    }
 
     #[test]
     fn test_tmp_download_path_is_unique_per_version_and_per_attempt() {

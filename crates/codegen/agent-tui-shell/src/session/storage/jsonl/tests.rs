@@ -1102,6 +1102,8 @@ async fn test_append_feedback_creates_file_and_persists() {
         submission: Some(FeedbackSubmission {
             session_id: "test-session-123".into(),
             user_id: None,
+            author_name: None,
+            author_email: None,
             client_type: ClientType::Tui,
             feedback_type: FeedbackType::Rating,
             turn_number: Some(3),
