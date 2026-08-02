@@ -121,7 +121,6 @@ fn handle_external_runtime_turn_done(
     // Stale response for a rewound/cancelled turn — ignore.
     if let Some(ref pid) = prompt_id
         && agent.session.current_prompt_id.as_deref() != Some(pid.as_str())
-        && agent.session.current_prompt_id.is_some()
     {
         tracing::debug!(
             target: "runtime",
@@ -153,11 +152,7 @@ fn handle_external_runtime_turn_done(
         }
     }
 
-    let ending_prompt_id = agent
-        .session
-        .current_prompt_id
-        .clone()
-        .or(prompt_id);
+    let ending_prompt_id = agent.session.current_prompt_id.clone().or(prompt_id);
     agent.session.finish_turn(&mut agent.scrollback);
 
     let event = match &result {

@@ -28,6 +28,18 @@ use tokio::sync::mpsc;
 /// - Version 1: ConversationItem format (used for new sessions)
 pub const CHAT_FORMAT_VERSION: u8 = 1;
 
+/// Append one user/assistant message produced by an external runtime addon.
+/// Those turns bypass the ACP session actor, so the pager calls this seam
+/// directly to preserve native resume/export history.
+pub async fn append_external_runtime_message(
+    info: &Info,
+    message: &ConversationItem,
+) -> io::Result<()> {
+    JsonlStorageAdapter::new()
+        .append_chat_message(info, message)
+        .await
+}
+
 #[derive(Debug, Clone)]
 pub struct PersistenceContentChunk {
     content_chunks: Vec<acp::ContentBlock>,
@@ -124,6 +136,8 @@ mod feedback_tests {
         FeedbackSubmission {
             session_id: "session-abc".into(),
             user_id: None,
+            author_name: None,
+            author_email: None,
             client_type: ClientType::Tui,
             feedback_type: if thumbs_up {
                 FeedbackType::Rating

@@ -5,6 +5,60 @@ use super::super::task_result::{
 };
 use super::*;
 
+#[test]
+fn matching_external_runtime_result_completes_the_pager_turn() {
+    let mut app = test_app_with_agent();
+    {
+        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        agent.session.start_turn(&mut agent.scrollback);
+        agent.session.current_prompt_id = Some("external-prompt".into());
+        agent.turn_started_at = Some(std::time::Instant::now());
+    }
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::ExternalRuntimeTurnDone {
+            agent_id: AgentId(0),
+            prompt_id: Some("external-prompt".into()),
+            result: Ok("external reply".into()),
+            runtime: crate::runtime_backend::RuntimeBackend::Claude,
+        }),
+        &mut app,
+    );
+
+    assert!(effects.is_empty());
+    let agent = &app.agents[&AgentId(0)];
+    assert!(matches!(agent.session.state, AgentState::Idle));
+    assert!(agent.session.current_prompt_id.is_none());
+    assert!((0..agent.scrollback.len()).any(|index| {
+        matches!(
+            &agent.scrollback.get(index).unwrap().block,
+            RenderBlock::AgentMessage(message) if message.text() == "external reply"
+        )
+    }));
+}
+
+#[test]
+fn late_external_runtime_result_is_dropped_after_turn_retired() {
+    let mut app = test_app_with_agent();
+    let before = app.agents[&AgentId(0)].scrollback.len();
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::ExternalRuntimeTurnDone {
+            agent_id: AgentId(0),
+            prompt_id: Some("retired-prompt".into()),
+            result: Ok("must not appear".into()),
+            runtime: crate::runtime_backend::RuntimeBackend::Codex,
+        }),
+        &mut app,
+    );
+
+    assert!(effects.is_empty());
+    let agent = &app.agents[&AgentId(0)];
+    assert_eq!(agent.scrollback.len(), before);
+    assert!(matches!(agent.session.state, AgentState::Idle));
+    assert!(agent.session.current_prompt_id.is_none());
+}
+
 fn foreign_resume_hint(
     tool: agent_tui_workspace::foreign_sessions::ForeignSessionTool,
 ) -> agent_tui_workspace::foreign_sessions::RecentForeignSession {

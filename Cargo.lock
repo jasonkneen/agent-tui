@@ -207,6 +207,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "which",
 ]
 
 [[package]]
@@ -514,7 +515,9 @@ dependencies = [
 name = "agent-tui-hermes-runtime"
 version = "0.1.210"
 dependencies = [
+ "tempfile",
  "tokio",
+ "which",
 ]
 
 [[package]]
@@ -827,6 +830,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "wait-timeout",
+ "which",
  "windows-sys 0.59.0",
 ]
 

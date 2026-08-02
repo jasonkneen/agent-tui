@@ -25,6 +25,19 @@ use tokio::sync::Mutex;
 
 /// Default per-turn wall clock timeout.
 const DEFAULT_TURN_TIMEOUT: Duration = Duration::from_secs(600);
+/// Lazar currently accepts its prompt only as an argv value. Keep it below
+/// the Windows command-line ceiling and reject larger direct API calls rather
+/// than letting spawn fail with an opaque OS error.
+pub const MAX_ARG_PROMPT_BYTES: usize = 10_000;
+
+/// Permission contract inherited from the Agent TUI session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PermissionMode {
+    #[default]
+    Ask,
+    Auto,
+    AlwaysApprove,
+}
 
 /// Errors from the lazar runtime.
 #[derive(Debug)]
@@ -39,6 +52,8 @@ pub enum LazarRuntimeError {
     Timeout(Duration),
     /// Non-zero exit with no reply text (code, stderr diagnostics).
     Exit(Option<i32>, String),
+    /// Prompt cannot be represented safely in the vendor CLI argv contract.
+    PromptTooLarge { actual: usize, max: usize },
 }
 
 impl fmt::Display for LazarRuntimeError {
@@ -49,13 +64,18 @@ impl fmt::Display for LazarRuntimeError {
             Self::Turn(msg) => write!(f, "{msg}"),
             Self::Timeout(d) => write!(f, "lazar turn timed out after {}s", d.as_secs()),
             Self::Exit(code, stderr) => {
-                let code_str = code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".into());
+                let code_str = code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "unknown".into());
                 let trimmed = stderr.trim();
                 if trimmed.is_empty() {
                     write!(f, "lazar exited with code {code_str}")
                 } else {
                     write!(f, "lazar exited with code {code_str}: {trimmed}")
                 }
+            }
+            Self::PromptTooLarge { actual, max } => {
+                write!(f, "lazar prompt is {actual} bytes; maximum is {max}")
             }
         }
     }
@@ -143,7 +163,11 @@ impl LazarRuntimePool {
     }
 
     /// Run one text turn; returns the concatenated assistant reply.
-    pub async fn start_text_turn(&self, prompt: &str, model: Option<&str>) -> Result<LazarTurnResult> {
+    pub async fn start_text_turn(
+        &self,
+        prompt: &str,
+        model: Option<&str>,
+    ) -> Result<LazarTurnResult> {
         self.start_text_turn_keyed(prompt, model, None).await
     }
 
@@ -154,6 +178,23 @@ impl LazarRuntimePool {
         model: Option<&str>,
         sticky_key: Option<&str>,
     ) -> Result<LazarTurnResult> {
+        self.start_text_turn_keyed_with_permission(prompt, model, sticky_key, PermissionMode::Ask)
+            .await
+    }
+
+    pub async fn start_text_turn_keyed_with_permission(
+        &self,
+        prompt: &str,
+        model: Option<&str>,
+        sticky_key: Option<&str>,
+        permission_mode: PermissionMode,
+    ) -> Result<LazarTurnResult> {
+        if prompt.len() > MAX_ARG_PROMPT_BYTES {
+            return Err(LazarRuntimeError::PromptTooLarge {
+                actual: prompt.len(),
+                max: MAX_ARG_PROMPT_BYTES,
+            });
+        }
         let session_id = if let Some(key) = sticky_key.filter(|k| !k.is_empty()) {
             let sanitized = sanitize_session_id(key);
             self.state.lock().await.session_id = Some(sanitized.clone());
@@ -174,12 +215,16 @@ impl LazarRuntimePool {
         }
         cmd.arg("--session").arg(&session_id);
         cmd.arg("-p").arg(prompt);
+        if permission_mode == PermissionMode::AlwaysApprove {
+            cmd.arg("--no-sandbox");
+        }
         if let Some(cwd) = &self.config.cwd {
             cmd.current_dir(cwd);
         }
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .stdin(Stdio::null());
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
 
         let turn_timeout = self.config.turn_timeout;
         let work = async move {
@@ -311,7 +356,13 @@ fn new_session_id() -> String {
 pub fn sanitize_session_id(id: &str) -> String {
     let mut safe: String = id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     safe = safe.replace("..", "_");
     while safe.starts_with('.') || safe.starts_with('_') {
@@ -364,6 +415,26 @@ mod tests {
             64
         );
         assert_eq!(sanitize_session_id("sess@123!#$"), "sess_123___");
+    }
+
+    #[tokio::test]
+    async fn oversized_argv_prompt_fails_before_spawn() {
+        let pool = LazarRuntimePool::new(PoolConfig {
+            lazar_bin: PathBuf::from("definitely-not-a-real-lazar"),
+            ..Default::default()
+        });
+        let prompt = "x".repeat(MAX_ARG_PROMPT_BYTES + 1);
+        let err = pool
+            .start_text_turn_keyed_with_permission(&prompt, None, Some("test"), PermissionMode::Ask)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            LazarRuntimeError::PromptTooLarge {
+                actual,
+                max: MAX_ARG_PROMPT_BYTES
+            } if actual == MAX_ARG_PROMPT_BYTES + 1
+        ));
     }
 
     /// Real-CLI integration: requires `lazar` on PATH (or `$LAZAR_HOME/bin`)

@@ -22,6 +22,18 @@ use tokio::sync::Mutex;
 
 const DEFAULT_TURN_TIMEOUT: Duration = Duration::from_secs(600);
 const DEFAULT_STICKY_KEY: &str = "default";
+/// Hermes exposes only `-q <query>` for non-interactive turns. Bound that argv
+/// value so Windows and Unix both fail predictably before process creation.
+pub const MAX_ARG_PROMPT_BYTES: usize = 10_000;
+
+/// Permission contract inherited from the Agent TUI session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PermissionMode {
+    #[default]
+    Ask,
+    Auto,
+    AlwaysApprove,
+}
 
 #[derive(Debug)]
 pub enum HermesRuntimeError {
@@ -29,10 +41,8 @@ pub enum HermesRuntimeError {
     Io(std::io::Error),
     Turn(String),
     Timeout(Duration),
-    Exit {
-        code: Option<i32>,
-        stderr: String,
-    },
+    Exit { code: Option<i32>, stderr: String },
+    PromptTooLarge { actual: usize, max: usize },
 }
 
 impl fmt::Display for HermesRuntimeError {
@@ -54,6 +64,9 @@ impl fmt::Display for HermesRuntimeError {
                     let first = detail.lines().next().unwrap_or(detail);
                     write!(f, "hermes exited with code {code}: {first}")
                 }
+            }
+            Self::PromptTooLarge { actual, max } => {
+                write!(f, "hermes prompt is {actual} bytes; maximum is {max}")
             }
         }
     }
@@ -161,6 +174,23 @@ impl HermesRuntimePool {
         model: Option<&str>,
         sticky_key: Option<&str>,
     ) -> Result<HermesTurnResult> {
+        self.start_text_turn_keyed_with_permission(prompt, model, sticky_key, PermissionMode::Ask)
+            .await
+    }
+
+    pub async fn start_text_turn_keyed_with_permission(
+        &self,
+        prompt: &str,
+        model: Option<&str>,
+        sticky_key: Option<&str>,
+        permission_mode: PermissionMode,
+    ) -> Result<HermesTurnResult> {
+        if prompt.len() > MAX_ARG_PROMPT_BYTES {
+            return Err(HermesRuntimeError::PromptTooLarge {
+                actual: prompt.len(),
+                max: MAX_ARG_PROMPT_BYTES,
+            });
+        }
         let key = sticky_key
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -185,15 +215,13 @@ impl HermesRuntimePool {
         // First attempt (with sticky resume if any). On "Session not found",
         // clear that key and retry once fresh — multi-agent / stale sticky.
         match self
-            .run_one_turn(prompt, model.as_deref(), sticky.as_deref())
+            .run_one_turn(prompt, model.as_deref(), sticky.as_deref(), permission_mode)
             .await
         {
             Ok(result) => {
                 if !result.session_id.is_empty() && !is_placeholder_session(&result.session_id) {
                     let mut state = self.state.lock().await;
-                    state
-                        .sessions
-                        .insert(key, result.session_id.clone());
+                    state.sessions.insert(key, result.session_id.clone());
                 }
                 Ok(result)
             }
@@ -203,13 +231,11 @@ impl HermesRuntimePool {
                     state.sessions.remove(&key);
                 }
                 let result = self
-                    .run_one_turn(prompt, model.as_deref(), None)
+                    .run_one_turn(prompt, model.as_deref(), None, permission_mode)
                     .await?;
                 if !result.session_id.is_empty() && !is_placeholder_session(&result.session_id) {
                     let mut state = self.state.lock().await;
-                    state
-                        .sessions
-                        .insert(key, result.session_id.clone());
+                    state.sessions.insert(key, result.session_id.clone());
                 }
                 Ok(result)
             }
@@ -222,12 +248,10 @@ impl HermesRuntimePool {
         prompt: &str,
         model: Option<&str>,
         resume: Option<&str>,
+        permission_mode: PermissionMode,
     ) -> Result<HermesTurnResult> {
         let mut cmd = Command::new(&self.config.hermes_bin);
-        cmd.arg("chat")
-            .arg("-q")
-            .arg(prompt)
-            .arg("-Q"); // quiet: final response on stdout; session_id on stderr
+        cmd.arg("chat").arg("-q").arg(prompt).arg("-Q"); // quiet: final response on stdout; session_id on stderr
         if let Some(m) = model {
             if !m.is_empty() {
                 cmd.arg("-m").arg(m);
@@ -239,13 +263,13 @@ impl HermesRuntimePool {
         if let Some(cwd) = &self.config.cwd {
             cmd.current_dir(cwd);
         }
-        // Hermes tools can be interactive; yolo for agent-tui non-interactive path.
-        if std::env::var_os("HERMES_NO_YOLO").is_none() {
+        // Never bypass Hermes approvals unless the user explicitly selected
+        // Agent TUI's Always Approve mode for this turn.
+        if permission_mode == PermissionMode::AlwaysApprove {
             cmd.arg("--yolo");
+            cmd.env("HERMES_ACCEPT_HOOKS", "1");
+            cmd.arg("--accept-hooks");
         }
-        // Prefer a clean non-interactive claim for third-party hosts.
-        cmd.env("HERMES_ACCEPT_HOOKS", "1");
-        cmd.arg("--accept-hooks");
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null())
@@ -371,6 +395,10 @@ pub fn discover_active_model() -> Option<String> {
         }
     }
     let raw = std::fs::read_to_string(hermes_home().join("config.yaml")).ok()?;
+    discover_active_model_from_yaml(&raw)
+}
+
+fn discover_active_model_from_yaml(raw: &str) -> Option<String> {
     // Tiny YAML scrape — avoid pulling a full yaml dep for one key.
     let mut in_model = false;
     for line in raw.lines() {
@@ -383,10 +411,12 @@ pub fn discover_active_model() -> Option<String> {
             continue;
         }
         if in_model {
-            if !line.starts_with(' ') && !line.starts_with('\t') && t.contains(':') && !t.starts_with("default") {
-                if !t.starts_with("default") {
-                    in_model = false;
-                }
+            if !line.starts_with(' ')
+                && !line.starts_with('\t')
+                && t.contains(':')
+                && !t.starts_with("default")
+            {
+                in_model = false;
             }
             if let Some(rest) = t.strip_prefix("default:") {
                 let v = normalize_model_id(rest.trim().trim_matches('"').trim_matches('\''));
@@ -480,20 +510,11 @@ fn is_session_not_found(err: &HermesRuntimeError) -> bool {
 
 /// True when `hermes` is on PATH or `$HERMES_HOME/bin/hermes` exists.
 pub fn hermes_available() -> bool {
-    which_bin("hermes")
-        || hermes_home().join("bin/hermes").is_file()
-        || std::path::Path::new("/Users/jkneen/.local/bin/hermes").is_file()
+    hermes_bin_path().is_some()
 }
 
 fn which_bin(name: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|paths| {
-            std::env::split_paths(&paths).any(|p| {
-                let candidate = p.join(name);
-                candidate.is_file()
-            })
-        })
-        .unwrap_or(false)
+    which::which(name).is_ok()
 }
 
 pub fn hermes_bin_path() -> Option<PathBuf> {
@@ -504,8 +525,8 @@ pub fn hermes_bin_path() -> Option<PathBuf> {
     if home_bin.is_file() {
         return Some(home_bin);
     }
-    let local = PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
-        .join(".local/bin/hermes");
+    let local =
+        PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/bin/hermes");
     local.is_file().then_some(local)
 }
 
@@ -515,7 +536,19 @@ mod tests {
 
     #[test]
     fn discover_parses_default_from_yaml_snippet() {
-        let _ = discover_active_model();
+        let yaml = r#"
+provider: openai
+model:
+  default: "openai/gpt-5.4"
+  fallback: anthropic/claude-sonnet-4-6
+logging:
+  level: info
+"#;
+        assert_eq!(
+            discover_active_model_from_yaml(yaml).as_deref(),
+            Some("openai/gpt-5.4")
+        );
+        assert_eq!(discover_active_model_from_yaml("model: nope\n"), None);
     }
 
     #[test]
@@ -544,10 +577,7 @@ mod tests {
 
     #[test]
     fn normalize_strips_hermes_display_prefix() {
-        assert_eq!(
-            normalize_model_id("Hermes — gpt-5.6-sol"),
-            "gpt-5.6-sol"
-        );
+        assert_eq!(normalize_model_id("Hermes — gpt-5.6-sol"), "gpt-5.6-sol");
         assert_eq!(normalize_model_id("Hermes - gpt-5.6-sol"), "gpt-5.6-sol");
         assert_eq!(normalize_model_id("Hermes"), "");
         assert_eq!(normalize_model_id("gpt-5.6-sol"), "gpt-5.6-sol");
@@ -565,6 +595,94 @@ mod tests {
             stderr: "HTTP 400: bad".into(),
         };
         assert!(!is_session_not_found(&e2));
+    }
+
+    #[tokio::test]
+    async fn oversized_argv_prompt_fails_before_spawn() {
+        let pool = HermesRuntimePool::new(PoolConfig {
+            hermes_bin: PathBuf::from("definitely-not-a-real-hermes"),
+            ..Default::default()
+        });
+        let prompt = "x".repeat(MAX_ARG_PROMPT_BYTES + 1);
+        let err = pool
+            .start_text_turn_keyed_with_permission(&prompt, None, Some("test"), PermissionMode::Ask)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            HermesRuntimeError::PromptTooLarge {
+                actual,
+                max: MAX_ARG_PROMPT_BYTES
+            } if actual == MAX_ARG_PROMPT_BYTES + 1
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fake_cli_proves_keyed_resume_and_permission_flags() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("fake-hermes");
+        let args_log = temp.path().join("args.log");
+        std::fs::write(
+            &bin,
+            r#"#!/bin/sh
+printf 'CALL\n' >> "$HERMES_TEST_ARGS"
+printf '<%s>\n' "$@" >> "$HERMES_TEST_ARGS"
+printf '%s\n' 'ok'
+printf '%s\n' 'session_id: fake-session' >&2
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&bin).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&bin, permissions).unwrap();
+        unsafe {
+            std::env::set_var("HERMES_TEST_ARGS", &args_log);
+        }
+
+        let pool = HermesRuntimePool::new(PoolConfig {
+            hermes_bin: bin,
+            turn_timeout: Duration::from_secs(5),
+            ..Default::default()
+        });
+        pool.start_text_turn_keyed_with_permission(
+            "one",
+            None,
+            Some("agent-a"),
+            PermissionMode::Ask,
+        )
+        .await
+        .unwrap();
+        pool.start_text_turn_keyed_with_permission(
+            "two",
+            None,
+            Some("agent-a"),
+            PermissionMode::Ask,
+        )
+        .await
+        .unwrap();
+        pool.start_text_turn_keyed_with_permission(
+            "three",
+            None,
+            Some("agent-b"),
+            PermissionMode::AlwaysApprove,
+        )
+        .await
+        .unwrap();
+
+        let args = std::fs::read_to_string(args_log).unwrap();
+        let calls: Vec<&str> = args.split("CALL\n").filter(|s| !s.is_empty()).collect();
+        assert_eq!(calls.len(), 3);
+        assert!(!calls[0].contains("--resume"));
+        assert!(calls[1].contains("--resume") && calls[1].contains("fake-session"));
+        assert!(!calls[2].contains("--resume"));
+        assert!(!calls[0].contains("--yolo") && !calls[0].contains("--accept-hooks"));
+        assert!(calls[2].contains("--yolo") && calls[2].contains("--accept-hooks"));
+        unsafe {
+            std::env::remove_var("HERMES_TEST_ARGS");
+        }
     }
 
     #[tokio::test]

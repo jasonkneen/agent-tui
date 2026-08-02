@@ -160,20 +160,23 @@ pub fn default_runtime() -> RuntimeBackend {
 pub fn enabled_runtimes() -> Vec<RuntimeBackend> {
     let p = get();
     match &p.enabled_runtimes {
-        Some(list) if !list.is_empty() => list.clone(),
-        _ => RuntimeBackend::all().to_vec(),
+        Some(list) => list.clone(),
+        None => RuntimeBackend::all().to_vec(),
     }
 }
 
 /// True if this backend may be selected under the current product.
 pub fn runtime_allowed(backend: RuntimeBackend) -> bool {
-    let p = get();
+    runtime_allowed_by_profile(get(), backend)
+}
+
+fn runtime_allowed_by_profile(p: &ProductProfile, backend: RuntimeBackend) -> bool {
     if p.lock_runtime {
         return backend == p.default_runtime;
     }
     match &p.enabled_runtimes {
-        Some(list) if !list.is_empty() => list.contains(&backend),
-        _ => true,
+        Some(list) => list.contains(&backend),
+        None => true,
     }
 }
 
@@ -186,23 +189,19 @@ fn load_profile() -> ProductProfile {
                 return p;
             }
             // Treat as path to a product.toml
-            if let Some(p) = load_from_path(Path::new(v)) {
-                return p;
-            }
+            return load_explicit_profile(Path::new(v));
         }
     }
     if let Ok(path) = std::env::var("AGENT_TUI_PRODUCT_FILE") {
         let path = path.trim();
         if !path.is_empty() {
-            if let Some(p) = load_from_path(Path::new(path)) {
-                return p;
-            }
+            return load_explicit_profile(Path::new(path));
         }
     }
     // 2) Config home product.toml
     let home_file = product_file_path();
-    if let Some(p) = load_from_path(&home_file) {
-        return p;
+    if home_file.is_file() {
+        return load_explicit_profile(&home_file);
     }
     agent_tui_defaults()
 }
@@ -229,13 +228,25 @@ fn preset(name: &str) -> Option<ProductProfile> {
     }
 }
 
-fn load_from_path(path: &Path) -> Option<ProductProfile> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    let file: ProductFile = toml::from_str(&raw).ok()?;
-    Some(merge_file(file))
+fn load_explicit_profile(path: &Path) -> ProductProfile {
+    match load_from_path(path) {
+        Ok(profile) => profile,
+        Err(error) => {
+            tracing::error!(path = %path.display(), %error, "invalid product policy; locking to Grok");
+            grok_defaults()
+        }
+    }
 }
 
-fn merge_file(file: ProductFile) -> ProductProfile {
+fn load_from_path(path: &Path) -> Result<ProductProfile, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("failed to read product profile: {e}"))?;
+    let file: ProductFile =
+        toml::from_str(&raw).map_err(|e| format!("invalid product TOML: {e}"))?;
+    merge_file(file)
+}
+
+fn merge_file(file: ProductFile) -> Result<ProductProfile, String> {
     // Start from preset if id matches a known product; else agent-tui base.
     let mut base = file
         .id
@@ -252,8 +263,9 @@ fn merge_file(file: ProductFile) -> ProductProfile {
     if let Some(token) = file.title_token {
         base.title_token = token;
     }
-    if let Some(rt) = file.default_runtime.as_deref().and_then(RuntimeBackend::parse) {
-        base.default_runtime = rt;
+    if let Some(raw) = file.default_runtime.as_deref() {
+        base.default_runtime =
+            RuntimeBackend::parse(raw).ok_or_else(|| format!("unknown default_runtime `{raw}`"))?;
     }
     if let Some(lock) = file.lock_runtime {
         base.lock_runtime = lock;
@@ -261,21 +273,37 @@ fn merge_file(file: ProductFile) -> ProductProfile {
     // Prefer `addons`; fall back to legacy `enabled_runtimes`.
     let list = file.addons.or(file.enabled_runtimes);
     if let Some(list) = list {
-        let parsed: Vec<RuntimeBackend> = list
-            .iter()
-            .filter_map(|s| RuntimeBackend::parse(s))
-            .collect();
-        base.enabled_runtimes = if parsed.is_empty() {
-            None
-        } else {
-            Some(parsed)
-        };
+        if list.is_empty() {
+            return Err("explicit addon allow-list must not be empty".into());
+        }
+        let mut parsed = Vec::with_capacity(list.len());
+        for raw in list {
+            let runtime =
+                RuntimeBackend::parse(&raw).ok_or_else(|| format!("unknown addon `{raw}`"))?;
+            if !parsed.contains(&runtime) {
+                parsed.push(runtime);
+            }
+        }
+        base.enabled_runtimes = Some(parsed);
     }
-    // lock_runtime implies enabled list is at least the default.
+    // A locked profile must name its default explicitly. An unlocked profile
+    // deterministically falls back to the first allowed addon.
     if base.lock_runtime {
+        if let Some(list) = &base.enabled_runtimes
+            && !list.contains(&base.default_runtime)
+        {
+            return Err(format!(
+                "default runtime `{}` is not present in the addon allow-list",
+                base.default_runtime.as_str()
+            ));
+        }
         base.enabled_runtimes = Some(vec![base.default_runtime]);
+    } else if let Some(list) = &base.enabled_runtimes
+        && !list.contains(&base.default_runtime)
+    {
+        base.default_runtime = list[0];
     }
-    base
+    Ok(base)
 }
 
 /// Resolve which runtime should be active given disk state + product policy.
@@ -287,11 +315,20 @@ pub fn resolve_active_runtime(
     if p.lock_runtime {
         return p.default_runtime;
     }
+    let fallback = p
+        .enabled_runtimes
+        .as_ref()
+        .and_then(|list| list.first().copied())
+        .unwrap_or(p.default_runtime);
     if !runtime_file_exists {
-        return p.default_runtime;
+        return if runtime_allowed(p.default_runtime) {
+            p.default_runtime
+        } else {
+            fallback
+        };
     }
     if !runtime_allowed(disk_active) {
-        return p.default_runtime;
+        return fallback;
     }
     disk_active
 }
@@ -305,7 +342,10 @@ mod tests {
         let p = lazar_defaults();
         assert_eq!(p.default_runtime, RuntimeBackend::Lazar);
         assert!(p.lock_runtime);
-        assert_eq!(p.enabled_runtimes.as_deref(), Some(&[RuntimeBackend::Lazar][..]));
+        assert_eq!(
+            p.enabled_runtimes.as_deref(),
+            Some(&[RuntimeBackend::Lazar][..])
+        );
         assert_eq!(p.name, "Lazar");
         assert_eq!(p.title_token, "lazar");
     }
@@ -315,7 +355,10 @@ mod tests {
         let p = grok_defaults();
         assert_eq!(p.default_runtime, RuntimeBackend::Grok);
         assert!(p.lock_runtime);
-        assert_eq!(p.enabled_runtimes.as_deref(), Some(&[RuntimeBackend::Grok][..]));
+        assert_eq!(
+            p.enabled_runtimes.as_deref(),
+            Some(&[RuntimeBackend::Grok][..])
+        );
         assert_eq!(p.name, "Grok");
         assert_eq!(p.title_token, "grok");
     }
@@ -338,11 +381,15 @@ mod tests {
         assert_eq!(all.id, "all");
         assert!(!all.lock_runtime);
         assert!(all.enabled_runtimes.as_ref().unwrap().len() >= 5);
-        assert!(all.enabled_runtimes.as_ref().unwrap().contains(&RuntimeBackend::Hermes));
+        assert!(
+            all.enabled_runtimes
+                .as_ref()
+                .unwrap()
+                .contains(&RuntimeBackend::Hermes)
+        );
         assert_eq!(preset("multi").unwrap().id, "all");
     }
 
-    #[test]
     #[test]
     fn merge_file_overrides_name_and_default() {
         let file = ProductFile {
@@ -354,11 +401,16 @@ mod tests {
             addons: Some(vec!["lazar".into(), "codex".into()]),
             enabled_runtimes: None,
         };
-        let p = merge_file(file);
+        let p = merge_file(file).unwrap();
         assert_eq!(p.name, "Lazar NERV");
         assert_eq!(p.default_runtime, RuntimeBackend::Lazar);
         assert!(!p.lock_runtime);
-        assert!(p.enabled_runtimes.as_ref().unwrap().contains(&RuntimeBackend::Codex));
+        assert!(
+            p.enabled_runtimes
+                .as_ref()
+                .unwrap()
+                .contains(&RuntimeBackend::Codex)
+        );
     }
 
     #[test]
@@ -372,8 +424,11 @@ mod tests {
             addons: Some(vec!["lazar".into(), "grok".into()]),
             enabled_runtimes: None,
         };
-        let p = merge_file(file);
-        assert_eq!(p.enabled_runtimes.as_deref(), Some(&[RuntimeBackend::Lazar][..]));
+        let p = merge_file(file).unwrap();
+        assert_eq!(
+            p.enabled_runtimes.as_deref(),
+            Some(&[RuntimeBackend::Lazar][..])
+        );
     }
 
     #[test]
@@ -387,7 +442,68 @@ mod tests {
             addons: Some(vec!["lazar".into()]),
             enabled_runtimes: Some(vec!["grok".into(), "codex".into()]),
         };
-        let p = merge_file(file);
-        assert_eq!(p.enabled_runtimes.as_deref(), Some(&[RuntimeBackend::Lazar][..]));
+        let p = merge_file(file).unwrap();
+        assert_eq!(
+            p.enabled_runtimes.as_deref(),
+            Some(&[RuntimeBackend::Lazar][..])
+        );
+    }
+
+    #[test]
+    fn explicit_empty_or_unknown_addon_lists_are_rejected() {
+        let empty = ProductFile {
+            addons: Some(Vec::new()),
+            ..Default::default()
+        };
+        assert!(merge_file(empty).unwrap_err().contains("must not be empty"));
+
+        let unknown = ProductFile {
+            addons: Some(vec!["not-a-runtime".into()]),
+            ..Default::default()
+        };
+        assert!(merge_file(unknown).unwrap_err().contains("unknown addon"));
+    }
+
+    #[test]
+    fn explicit_empty_allowlist_never_fails_open() {
+        let mut p = agent_tui_defaults();
+        p.enabled_runtimes = Some(Vec::new());
+        for runtime in RuntimeBackend::all() {
+            assert!(!runtime_allowed_by_profile(&p, *runtime));
+        }
+    }
+
+    #[test]
+    fn excluded_default_is_rejected_when_locked_and_replaced_when_unlocked() {
+        let locked = ProductFile {
+            default_runtime: Some("grok".into()),
+            lock_runtime: Some(true),
+            addons: Some(vec!["codex".into()]),
+            ..Default::default()
+        };
+        assert!(
+            merge_file(locked)
+                .unwrap_err()
+                .contains("not present in the addon allow-list")
+        );
+
+        let unlocked = ProductFile {
+            default_runtime: Some("grok".into()),
+            lock_runtime: Some(false),
+            addons: Some(vec!["codex".into(), "claude".into()]),
+            ..Default::default()
+        };
+        let profile = merge_file(unlocked).unwrap();
+        assert_eq!(profile.default_runtime, RuntimeBackend::Codex);
+    }
+
+    #[test]
+    fn invalid_explicit_profile_locks_to_safe_runtime() {
+        let profile = load_explicit_profile(Path::new(
+            "/definitely-missing-agent-tui-product-policy.toml",
+        ));
+        assert_eq!(profile.default_runtime, RuntimeBackend::Grok);
+        assert!(profile.lock_runtime);
+        assert_eq!(profile.enabled_runtimes, Some(vec![RuntimeBackend::Grok]));
     }
 }

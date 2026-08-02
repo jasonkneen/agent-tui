@@ -1,6 +1,31 @@
 #![cfg_attr(rustfmt, rustfmt::skip)]
 use super::*;
 use agent_tui_shell::extensions::billing::{BillingConfig, Cent, UsagePeriod};
+
+#[test]
+fn external_runtime_permissions_follow_session_mode() {
+    use crate::runtime_backend::RuntimePermissionMode;
+
+    assert_eq!(
+        external_permission_mode(&SessionFlags::default()),
+        RuntimePermissionMode::Ask
+    );
+    assert_eq!(
+        external_permission_mode(&SessionFlags {
+            auto_mode: true,
+            ..Default::default()
+        }),
+        RuntimePermissionMode::Auto
+    );
+    assert_eq!(
+        external_permission_mode(&SessionFlags {
+            yolo_mode: true,
+            auto_mode: true,
+            ..Default::default()
+        }),
+        RuntimePermissionMode::AlwaysApprove
+    );
+}
 /// The invalid-params server detail survives `attach_prompt_usage`
 /// wrapping `error.data` as `{message, promptUsage}`.
 #[test]

@@ -1055,8 +1055,8 @@ pub(crate) fn execute(
         } => {
             let runtime = crate::runtime_backend::active();
             if runtime != crate::runtime_backend::RuntimeBackend::Grok {
-                // Route to Codex app-server (or Claude when SDK lands).
-                // User prompt is already in scrollback; we only produce the reply.
+                let permission_mode = external_permission_mode(session_flags);
+                let fallback_cwd = cwd.to_string_lossy().into_owned();
                 tasks.spawn(async move {
                     ulog::info(
                         "prompt.external_runtime.start",
@@ -1069,12 +1069,42 @@ pub(crate) fn execute(
                     );
                     let send_start = std::time::Instant::now();
                     let sticky_key = Some(session_id.0.to_string());
-                    let result = crate::runtime_backend::run_external_turn_keyed(
-                        runtime,
-                        text,
-                        sticky_key,
+                    let info = external_session_info(&session_id, fallback_cwd);
+                    let result = match agent_tui_shell::session::persistence::append_external_runtime_message(
+                        &info,
+                        &agent_tui_shell::sampling::ConversationItem::user(text.clone()),
                     )
-                    .await;
+                    .await
+                    {
+                        Ok(()) => {
+                            match crate::runtime_backend::run_external_turn_keyed_with_permission(
+                                runtime,
+                                text,
+                                sticky_key,
+                                permission_mode,
+                            )
+                            .await
+                            {
+                                Ok(reply) => {
+                                    match agent_tui_shell::session::persistence::append_external_runtime_message(
+                                        &info,
+                                        &agent_tui_shell::sampling::ConversationItem::assistant(reply.clone()),
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => Ok(reply),
+                                        Err(error) => Err(format!(
+                                            "external reply could not be persisted: {error}"
+                                        )),
+                                    }
+                                }
+                                Err(error) => Err(error),
+                            }
+                        }
+                        Err(error) => Err(format!(
+                            "external prompt was not sent because history persistence failed: {error}"
+                        )),
+                    };
                     let send_elapsed_ms = send_start.elapsed().as_millis() as u64;
                     ulog::info(
                         "prompt.external_runtime.done",
@@ -1151,6 +1181,8 @@ pub(crate) fn execute(
             let send_now = effect_is_send_now;
             let runtime = crate::runtime_backend::active();
             if runtime != crate::runtime_backend::RuntimeBackend::Grok {
+                let permission_mode = external_permission_mode(session_flags);
+                let fallback_cwd = cwd.to_string_lossy().into_owned();
                 // Flatten text blocks; image/other content not yet supported on
                 // external runtimes.
                 let text = blocks
@@ -1174,12 +1206,42 @@ pub(crate) fn execute(
                     } else if text.trim().is_empty() {
                         Err("Empty prompt".into())
                     } else {
-                        crate::runtime_backend::run_external_turn_keyed(
-                            runtime,
-                            text,
-                            sticky_key,
+                        let info = external_session_info(&session_id, fallback_cwd);
+                        match agent_tui_shell::session::persistence::append_external_runtime_message(
+                            &info,
+                            &agent_tui_shell::sampling::ConversationItem::user(text.clone()),
                         )
                         .await
+                        {
+                            Ok(()) => {
+                                match crate::runtime_backend::run_external_turn_keyed_with_permission(
+                                    runtime,
+                                    text,
+                                    sticky_key,
+                                    permission_mode,
+                                )
+                                .await
+                                {
+                                    Ok(reply) => {
+                                        match agent_tui_shell::session::persistence::append_external_runtime_message(
+                                            &info,
+                                            &agent_tui_shell::sampling::ConversationItem::assistant(reply.clone()),
+                                        )
+                                        .await
+                                        {
+                                            Ok(()) => Ok(reply),
+                                            Err(error) => Err(format!(
+                                                "external reply could not be persisted: {error}"
+                                            )),
+                                        }
+                                    }
+                                    Err(error) => Err(error),
+                                }
+                            }
+                            Err(error) => Err(format!(
+                                "external prompt was not sent because history persistence failed: {error}"
+                            )),
+                        }
                     };
                     TaskResult::ExternalRuntimeTurnDone {
                         agent_id,
@@ -1309,6 +1371,26 @@ pub(crate) fn execute(
             trigger,
             rewind_if_pristine,
         } => {
+            let runtime = crate::runtime_backend::active();
+            if runtime != crate::runtime_backend::RuntimeBackend::Grok {
+                let sticky_key = session_id.0.to_string();
+                tasks.spawn(async move {
+                    let cancelled = crate::runtime_backend::cancel_external_turn(
+                        runtime,
+                        &sticky_key,
+                    );
+                    ulog::info(
+                        "cancel.external_runtime",
+                        Some(&sticky_key),
+                        Some(serde_json::json!({
+                            "runtime": runtime.as_str(),
+                            "cancelled": cancelled,
+                        })),
+                    );
+                    TaskResult::CancelComplete
+                });
+                return (false, meta);
+            }
             let tx = acp_tx.clone();
             let trigger_str = trigger.map(|t| t.as_wire_str());
             tasks
@@ -4315,6 +4397,32 @@ fn format_session_info(
         "{title_line}  Shell version: {version_display}\n  Session ID: {session_id}{conversation_line}\n  Working directory: {cwd}\n  Model: {model_display}{model_hash_line}{backend_line}{sandbox_line}{turn_line}\n  Context: {used} / {total} tokens ({pct}%)"
     )
 }
+fn external_permission_mode(
+    flags: &SessionFlags,
+) -> crate::runtime_backend::RuntimePermissionMode {
+    if flags.yolo_mode {
+        crate::runtime_backend::RuntimePermissionMode::AlwaysApprove
+    } else if flags.auto_mode {
+        crate::runtime_backend::RuntimePermissionMode::Auto
+    } else {
+        crate::runtime_backend::RuntimePermissionMode::Ask
+    }
+}
+
+fn external_session_info(
+    session_id: &acp::SessionId,
+    fallback_cwd: String,
+) -> agent_tui_shell::session::info::Info {
+    let cwd = agent_tui_shell::session::persistence::resolve_local_session_any_cwd(
+        session_id.0.as_ref(),
+    )
+    .unwrap_or(fallback_cwd);
+    agent_tui_shell::session::info::Info {
+        id: session_id.clone(),
+        cwd,
+    }
+}
+
 /// Build the single text content block for a plain `Effect::SendPrompt`.
 ///
 /// Non-empty `skill_token_ranges` are stamped into the block `_meta` as

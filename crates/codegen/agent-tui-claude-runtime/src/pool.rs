@@ -2,11 +2,12 @@
 
 use crate::error::{ClaudeRuntimeError, Result};
 use crate::protocol::{ClaudeTurnResult, PrintResultJson};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
@@ -25,8 +26,30 @@ pub struct PoolConfig {
     pub turn_timeout: Duration,
     /// Default model alias (`sonnet`, `opus`, full id).
     pub default_model: Option<String>,
-    /// Claude Code permission mode for headless agent use.
-    pub permission_mode: String,
+    /// Default permission policy for headless turns.
+    pub default_permission_mode: PermissionMode,
+}
+
+/// Permission contract inherited from the Agent TUI session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PermissionMode {
+    /// Do not approve tool actions without the vendor's normal checks.
+    #[default]
+    Ask,
+    /// Let Claude Code apply its automatic permission policy.
+    Auto,
+    /// Explicit user opt-in to bypass vendor permission prompts.
+    AlwaysApprove,
+}
+
+impl PermissionMode {
+    fn claude_cli_value(self) -> &'static str {
+        match self {
+            Self::Ask => "manual",
+            Self::Auto => "auto",
+            Self::AlwaysApprove => "bypassPermissions",
+        }
+    }
 }
 
 impl Default for PoolConfig {
@@ -37,19 +60,27 @@ impl Default for PoolConfig {
             idle_timeout: Duration::from_secs(600),
             turn_timeout: Duration::from_secs(600),
             default_model: None,
-            // Agent TUI owns the UX; accept edits without interactive prompts.
-            permission_mode: "acceptEdits".into(),
+            default_permission_mode: PermissionMode::Ask,
         }
     }
 }
 
-struct PoolState {
+#[derive(Debug)]
+struct SessionState {
     sticky_session_id: Option<String>,
     sticky_model: Option<String>,
+    sticky_permission_mode: PermissionMode,
     last_used: Instant,
 }
 
-/// Single-slot pool: sticky Claude Code session id, recreated on idle/model change.
+#[derive(Default)]
+struct PoolState {
+    sessions: HashMap<String, SessionState>,
+}
+
+const DEFAULT_STICKY_KEY: &str = "default";
+
+/// Keyed pool of sticky Claude Code sessions, recreated on idle/model/policy change.
 pub struct ClaudeRuntimePool {
     config: PoolConfig,
     inner: Mutex<PoolState>,
@@ -59,11 +90,7 @@ impl ClaudeRuntimePool {
     pub fn new(config: PoolConfig) -> Arc<Self> {
         Arc::new(Self {
             config,
-            inner: Mutex::new(PoolState {
-                sticky_session_id: None,
-                sticky_model: None,
-                last_used: Instant::now(),
-            }),
+            inner: Mutex::new(PoolState::default()),
         })
     }
 
@@ -82,12 +109,38 @@ impl ClaudeRuntimePool {
         prompt: impl Into<String>,
         model: Option<String>,
     ) -> Result<ClaudeTurnResult> {
+        self.start_text_turn_keyed(prompt, model, None, self.config.default_permission_mode)
+            .await
+    }
+
+    /// Run one text turn with continuity isolated by `sticky_key`.
+    pub async fn start_text_turn_keyed(
+        &self,
+        prompt: impl Into<String>,
+        model: Option<String>,
+        sticky_key: Option<&str>,
+        permission_mode: PermissionMode,
+    ) -> Result<ClaudeTurnResult> {
         self.ensure_binary()?;
         let prompt = prompt.into();
         let model = model.or_else(|| self.config.default_model.clone());
+        let key = sticky_key
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .unwrap_or(DEFAULT_STICKY_KEY)
+            .to_string();
 
         let resume = {
-            let mut state = self.inner.lock().await;
+            let mut pool = self.inner.lock().await;
+            let state = pool
+                .sessions
+                .entry(key.clone())
+                .or_insert_with(|| SessionState {
+                    sticky_session_id: None,
+                    sticky_model: None,
+                    sticky_permission_mode: permission_mode,
+                    last_used: Instant::now(),
+                });
             if state.last_used.elapsed() >= self.config.idle_timeout {
                 if state.sticky_session_id.is_some() {
                     info!("claude runtime: idle timeout — dropping sticky session");
@@ -95,12 +148,15 @@ impl ClaudeRuntimePool {
                 state.sticky_session_id = None;
                 state.sticky_model = None;
             }
-            let reuse = state.sticky_session_id.is_some() && state.sticky_model == model;
+            let reuse = state.sticky_session_id.is_some()
+                && state.sticky_model == model
+                && state.sticky_permission_mode == permission_mode;
             if reuse {
                 state.sticky_session_id.clone()
             } else {
                 state.sticky_session_id = None;
                 state.sticky_model = model.clone();
+                state.sticky_permission_mode = permission_mode;
                 None
             }
         };
@@ -112,35 +168,48 @@ impl ClaudeRuntimePool {
         );
 
         let result = self
-            .run_print_turn(&prompt, model.as_deref(), resume.as_deref())
+            .run_print_turn(
+                &prompt,
+                model.as_deref(),
+                resume.as_deref(),
+                permission_mode,
+            )
             .await?;
 
         {
-            let mut state = self.inner.lock().await;
+            let mut pool = self.inner.lock().await;
+            let state = pool.sessions.entry(key).or_insert_with(|| SessionState {
+                sticky_session_id: None,
+                sticky_model: None,
+                sticky_permission_mode: permission_mode,
+                last_used: Instant::now(),
+            });
             state.last_used = Instant::now();
             if let Some(ref sid) = result.session_id {
                 state.sticky_session_id = Some(sid.clone());
             }
             state.sticky_model = model;
+            state.sticky_permission_mode = permission_mode;
         }
 
         if result.is_error {
-            return Err(ClaudeRuntimeError::Api(
-                if result.text.is_empty() {
-                    "claude reported an error with empty body".into()
-                } else {
-                    result.text
-                },
-            ));
+            return Err(ClaudeRuntimeError::Api(if result.text.is_empty() {
+                "claude reported an error with empty body".into()
+            } else {
+                result.text
+            }));
         }
         Ok(result)
     }
 
     /// Drop sticky session (e.g. after model change).
     pub async fn reset_session(&self) {
-        let mut state = self.inner.lock().await;
-        state.sticky_session_id = None;
-        state.sticky_model = None;
+        self.inner.lock().await.sessions.clear();
+    }
+
+    /// Drop continuity for one Agent TUI session.
+    pub async fn reset_session_key(&self, key: &str) {
+        self.inner.lock().await.sessions.remove(key);
     }
 
     async fn run_print_turn(
@@ -148,18 +217,22 @@ impl ClaudeRuntimePool {
         prompt: &str,
         model: Option<&str>,
         resume: Option<&str>,
+        permission_mode: PermissionMode,
     ) -> Result<ClaudeTurnResult> {
         let mut cmd = Command::new(&self.config.claude_bin);
         cmd.arg("-p")
-            .arg(prompt)
             .arg("--output-format")
             .arg("json")
             .arg("--permission-mode")
-            .arg(&self.config.permission_mode)
-            .stdin(Stdio::null())
+            .arg(permission_mode.claude_cli_value())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+
+        if permission_mode == PermissionMode::AlwaysApprove {
+            cmd.arg("--dangerously-skip-permissions");
+        }
 
         if let Some(cwd) = &self.config.cwd {
             cmd.current_dir(cwd);
@@ -172,12 +245,24 @@ impl ClaudeRuntimePool {
         }
 
         let mut child = cmd.spawn().map_err(ClaudeRuntimeError::Spawn)?;
-        let mut stdout = child.stdout.take().ok_or_else(|| {
-            ClaudeRuntimeError::Other("claude stdout missing".into())
-        })?;
-        let mut stderr = child.stderr.take().ok_or_else(|| {
-            ClaudeRuntimeError::Other("claude stderr missing".into())
-        })?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| ClaudeRuntimeError::Other("claude stdin missing".into()))?;
+        stdin
+            .write_all(prompt.as_bytes())
+            .await
+            .map_err(ClaudeRuntimeError::Spawn)?;
+        stdin.shutdown().await.map_err(ClaudeRuntimeError::Spawn)?;
+        drop(stdin);
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| ClaudeRuntimeError::Other("claude stdout missing".into()))?;
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| ClaudeRuntimeError::Other("claude stderr missing".into()))?;
 
         let out_fut = async {
             let mut buf = Vec::new();
@@ -221,10 +306,7 @@ impl ClaudeRuntimePool {
             } else {
                 stderr_str.trim().to_string()
             };
-            return Err(ClaudeRuntimeError::Exit {
-                code,
-                stderr: msg,
-            });
+            return Err(ClaudeRuntimeError::Exit { code, stderr: msg });
         }
 
         parse_print_json(&stdout_str).or_else(|e| {
@@ -273,18 +355,7 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 fn which_bin(bin: &std::path::Path) -> bool {
-    if bin.is_absolute() {
-        return bin.is_file();
-    }
-    let name = bin.to_string_lossy();
-    std::env::var_os("PATH")
-        .map(|paths| {
-            std::env::split_paths(&paths).any(|dir| {
-                let p = dir.join(name.as_ref());
-                p.is_file()
-            })
-        })
-        .unwrap_or(false)
+    which::which(bin).is_ok()
 }
 
 #[cfg(test)]
@@ -302,9 +373,88 @@ mod tests {
 
     #[test]
     fn parse_error_result() {
-        let raw = r#"{"type":"result","is_error":true,"result":"boom","terminal_reason":"api_error"}"#;
+        let raw =
+            r#"{"type":"result","is_error":true,"result":"boom","terminal_reason":"api_error"}"#;
         let t = parse_print_json(raw).unwrap();
         assert!(t.is_error);
         assert_eq!(t.text, "boom");
+    }
+
+    #[test]
+    fn permission_modes_are_explicit_and_fail_closed_by_default() {
+        assert_eq!(PermissionMode::default(), PermissionMode::Ask);
+        assert_eq!(PermissionMode::Ask.claude_cli_value(), "manual");
+        assert_eq!(PermissionMode::Auto.claude_cli_value(), "auto");
+        assert_eq!(
+            PermissionMode::AlwaysApprove.claude_cli_value(),
+            "bypassPermissions"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prompt_uses_stdin_and_sessions_are_keyed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("fake-claude");
+        let args_log = temp.path().join("args.log");
+        let stdin_log = temp.path().join("stdin.log");
+        std::fs::write(
+            &bin,
+            r#"#!/bin/sh
+printf 'CALL\n' >> "$CLAUDE_TEST_ARGS"
+printf '<%s>\n' "$@" >> "$CLAUDE_TEST_ARGS"
+input=$(cat)
+printf '%s' "$input" >> "$CLAUDE_TEST_STDIN"
+printf '\n' >> "$CLAUDE_TEST_STDIN"
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"fake-session"}'
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&bin).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&bin, permissions).unwrap();
+
+        let pool = ClaudeRuntimePool::new(PoolConfig {
+            claude_bin: bin,
+            turn_timeout: Duration::from_secs(5),
+            ..PoolConfig::default()
+        });
+        // Set env only on the fake process by wrapping the binary's inherited
+        // test environment. The test crate runs this one serially in practice;
+        // paths are unique even if another test happens to set the same names.
+        unsafe {
+            std::env::set_var("CLAUDE_TEST_ARGS", &args_log);
+            std::env::set_var("CLAUDE_TEST_STDIN", &stdin_log);
+        }
+
+        pool.start_text_turn_keyed("first secret", None, Some("agent-a"), PermissionMode::Ask)
+            .await
+            .unwrap();
+        pool.start_text_turn_keyed("second secret", None, Some("agent-a"), PermissionMode::Ask)
+            .await
+            .unwrap();
+        pool.start_text_turn_keyed("third secret", None, Some("agent-b"), PermissionMode::Ask)
+            .await
+            .unwrap();
+
+        let args = std::fs::read_to_string(args_log).unwrap();
+        let calls: Vec<&str> = args.split("CALL\n").filter(|s| !s.is_empty()).collect();
+        assert_eq!(calls.len(), 3);
+        assert!(!calls[0].contains("--resume"));
+        assert!(calls[1].contains("--resume") && calls[1].contains("fake-session"));
+        assert!(!calls[2].contains("--resume"));
+        assert!(!args.contains("secret"), "prompt leaked into argv");
+        assert!(calls.iter().all(|call| call.contains("<manual>")));
+
+        assert_eq!(
+            std::fs::read_to_string(stdin_log).unwrap(),
+            "first secret\nsecond secret\nthird secret\n"
+        );
+        unsafe {
+            std::env::remove_var("CLAUDE_TEST_ARGS");
+            std::env::remove_var("CLAUDE_TEST_STDIN");
+        }
     }
 }

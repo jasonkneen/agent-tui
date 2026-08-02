@@ -12,8 +12,14 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
 use std::sync::OnceLock;
+use std::sync::{Arc, RwLock};
+
+mod turns;
+pub use turns::{
+    RuntimePermissionMode, cancel_external_turn, run_external_turn, run_external_turn_keyed,
+    run_external_turn_keyed_with_permission,
+};
 
 /// Which harness handles user turns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -422,12 +428,18 @@ fn lazar_status() -> (bool, String) {
     // Provider/model config is owned by the kernel (LAZAR_MODEL / lazar-env);
     // Agent TUI only displays what the kernel side reports.
     let Some(bin) = lazar_bin_path() else {
-        return (false, "install lazar (on PATH or $LAZAR_HOME/bin/lazar)".into());
+        return (
+            false,
+            "install lazar (on PATH or $LAZAR_HOME/bin/lazar)".into(),
+        );
     };
     let model = lazar_model()
         .or_else(agent_tui_lazar_runtime::discover_active_model)
         .unwrap_or_else(|| "kernel default".into());
-    (true, format!("lazar kernel ({}) · model {model}", bin.display()))
+    (
+        true,
+        format!("lazar kernel ({}) · model {model}", bin.display()),
+    )
 }
 
 fn hermes_status() -> (bool, String) {
@@ -444,14 +456,7 @@ fn hermes_status() -> (bool, String) {
 }
 
 fn which_bin(name: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|paths| {
-            std::env::split_paths(&paths).any(|dir| {
-                let p = dir.join(name);
-                p.is_file()
-            })
-        })
-        .unwrap_or(false)
+    which::which(name).is_ok()
 }
 
 /// Global Lazar pool (lazy). Spawn-per-turn; kernel-side continuity via `--session`.
@@ -477,8 +482,8 @@ pub fn lazar_pool() -> Arc<agent_tui_lazar_runtime::LazarRuntimePool> {
 pub fn hermes_pool() -> Arc<agent_tui_hermes_runtime::HermesRuntimePool> {
     static POOL: OnceLock<Arc<agent_tui_hermes_runtime::HermesRuntimePool>> = OnceLock::new();
     POOL.get_or_init(|| {
-        let hermes_bin = agent_tui_hermes_runtime::hermes_bin_path()
-            .unwrap_or_else(|| PathBuf::from("hermes"));
+        let hermes_bin =
+            agent_tui_hermes_runtime::hermes_bin_path().unwrap_or_else(|| PathBuf::from("hermes"));
         Arc::new(agent_tui_hermes_runtime::HermesRuntimePool::new(
             agent_tui_hermes_runtime::PoolConfig {
                 hermes_bin,
@@ -512,23 +517,18 @@ pub fn claude_pool() -> Arc<agent_tui_claude_runtime::ClaudeRuntimePool> {
     static POOL: OnceLock<Arc<agent_tui_claude_runtime::ClaudeRuntimePool>> = OnceLock::new();
     POOL.get_or_init(|| {
         let cwd = std::env::current_dir().ok();
-        agent_tui_claude_runtime::ClaudeRuntimePool::new(
-            agent_tui_claude_runtime::PoolConfig {
-                cwd,
-                default_model: claude_model(),
-                ..Default::default()
-            },
-        )
+        agent_tui_claude_runtime::ClaudeRuntimePool::new(agent_tui_claude_runtime::PoolConfig {
+            cwd,
+            default_model: claude_model(),
+            ..Default::default()
+        })
     })
     .clone()
 }
 
 /// Cached Codex model catalog (None until first successful fetch).
 pub fn codex_catalog() -> Option<crate::acp::model_state::ModelState> {
-    catalog_lock()
-        .read()
-        .ok()
-        .and_then(|g| g.clone())
+    catalog_lock().read().ok().and_then(|g| g.clone())
 }
 
 /// Stash the current Grok catalog before replacing it with Codex models.
@@ -562,7 +562,10 @@ pub fn model_state_from_codex_entries(
         let id = acp::ModelId::new(Arc::from(e.id.as_str()));
         let mut meta = serde_json::Map::new();
         if !e.supported_reasoning_efforts.is_empty() {
-            meta.insert("supportsReasoningEffort".into(), serde_json::Value::Bool(true));
+            meta.insert(
+                "supportsReasoningEffort".into(),
+                serde_json::Value::Bool(true),
+            );
             let efforts: Vec<serde_json::Value> = e
                 .supported_reasoning_efforts
                 .iter()
@@ -574,10 +577,7 @@ pub fn model_state_from_codex_entries(
                     })
                 })
                 .collect();
-            meta.insert(
-                "reasoningEfforts".into(),
-                serde_json::Value::Array(efforts),
-            );
+            meta.insert("reasoningEfforts".into(), serde_json::Value::Array(efforts));
         }
         if let Some(ref d) = e.default_reasoning_effort {
             meta.insert(
@@ -653,9 +653,7 @@ pub async fn refresh_codex_models() -> Result<crate::acp::model_state::ModelStat
 
 /// Load Claude model catalog (Claude Code cache + built-ins + selected).
 pub fn refresh_claude_models() -> Result<crate::acp::model_state::ModelState, String> {
-    claude_pool()
-        .ensure_binary()
-        .map_err(|e| e.to_string())?;
+    claude_pool().ensure_binary().map_err(|e| e.to_string())?;
     let preferred = claude_model();
     let state = model_state_from_claude_discovered(preferred.as_deref());
     if claude_model().is_none() {
@@ -744,10 +742,7 @@ pub fn model_state_from_claude_discovered(
         if let Some(p) = preferred {
             let id = acp::ModelId::new(Arc::from(p));
             if !available.contains_key(&id) {
-                available.insert(
-                    id.clone(),
-                    acp::ModelInfo::new(id.clone(), p.to_string()),
-                );
+                available.insert(id.clone(), acp::ModelInfo::new(id.clone(), p.to_string()));
             }
             Some(id)
         } else {
@@ -771,148 +766,5 @@ pub fn model_state_from_claude_known(
     model_state_from_claude_discovered(preferred)
 }
 
-/// Run one text turn on the active non-Grok runtime.
-///
-/// `sticky_key` isolates multi-agent continuity for spawn-per-turn runtimes
-/// that support sticky resume (Hermes). Pass the Agent TUI session id.
-pub async fn run_external_turn(
-    runtime: RuntimeBackend,
-    text: String,
-) -> Result<String, String> {
-    run_external_turn_keyed(runtime, text, None).await
-}
-
-/// Like [`run_external_turn`], with an optional sticky key (Agent TUI session id).
-pub async fn run_external_turn_keyed(
-    runtime: RuntimeBackend,
-    text: String,
-    sticky_key: Option<String>,
-) -> Result<String, String> {
-    match runtime {
-        RuntimeBackend::Grok => Err(
-            "internal: run_external_turn called with Grok (use ACP path)".into(),
-        ),
-        RuntimeBackend::Claude => {
-            let pool = claude_pool();
-            let model = claude_model();
-            let result = pool
-                .start_text_turn(text, model)
-                .await
-                .map_err(|e| format!("Claude turn failed: {e}"))?;
-            Ok(result.text)
-        }
-        RuntimeBackend::Codex => {
-            let pool = codex_pool();
-            let client = pool
-                .ensure_ready()
-                .await
-                .map_err(|e| format!("Codex app-server: {e}"))?;
-            let mut rx = client.subscribe();
-            let model = codex_model();
-            pool.start_text_turn(text, model)
-                .await
-                .map_err(|e| format!("Codex turn start failed: {e}"))?;
-            agent_tui_codex_runtime::collect_turn_text(
-                &mut rx,
-                std::time::Duration::from_secs(600),
-            )
-            .await
-            .map_err(|e| format!("Codex turn failed: {e}"))
-        }
-        RuntimeBackend::Lazar => {
-            let pool = lazar_pool();
-            let model = lazar_model();
-            let result = pool
-                .start_text_turn_keyed(&text, model.as_deref(), sticky_key.as_deref())
-                .await
-                .map_err(|e| format!("Lazar turn failed: {e}"))?;
-            Ok(result.text)
-        }
-        RuntimeBackend::Hermes => {
-            let pool = hermes_pool();
-            let model = hermes_model().map(|m| {
-                agent_tui_hermes_runtime::normalize_model_id(&m)
-            });
-            let model_ref = model.as_deref().filter(|m| !m.is_empty());
-            let result = pool
-                .start_text_turn_keyed(&text, model_ref, sticky_key.as_deref())
-                .await
-                .map_err(|e| format!("Hermes turn failed: {e}"))?;
-            Ok(result.text)
-        }
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_runtime_aliases() {
-        assert_eq!(RuntimeBackend::parse("grok"), Some(RuntimeBackend::Grok));
-        assert_eq!(RuntimeBackend::parse("xai"), Some(RuntimeBackend::Grok));
-        assert_eq!(RuntimeBackend::parse("codex"), Some(RuntimeBackend::Codex));
-        assert_eq!(
-            RuntimeBackend::parse("openai"),
-            Some(RuntimeBackend::Codex)
-        );
-        assert_eq!(
-            RuntimeBackend::parse("claude"),
-            Some(RuntimeBackend::Claude)
-        );
-        assert_eq!(
-            RuntimeBackend::parse("lazar"),
-            Some(RuntimeBackend::Lazar)
-        );
-        assert_eq!(
-            RuntimeBackend::parse("hermes"),
-            Some(RuntimeBackend::Hermes)
-        );
-        assert_eq!(
-            RuntimeBackend::parse("anthropic"),
-            Some(RuntimeBackend::Claude)
-        );
-        assert_eq!(RuntimeBackend::parse("nope"), None);
-    }
-
-    #[test]
-    fn status_list_includes_enabled_backends() {
-        let list = status_list();
-        // Default product enables all four; product profiles may filter.
-        assert!(!list.is_empty());
-        assert!(list.iter().any(|s| s.active));
-        for s in &list {
-            assert!(crate::product_profile::runtime_allowed(s.backend) || s.active);
-        }
-    }
-
-    #[test]
-    fn codex_entries_become_model_state() {
-        let entries = vec![
-            agent_tui_codex_runtime::CodexModelEntry {
-                id: "gpt-5.4".into(),
-                display_name: "GPT-5.4".into(),
-                description: Some("flagship".into()),
-                is_default: true,
-                hidden: false,
-                default_reasoning_effort: Some("medium".into()),
-                supported_reasoning_efforts: vec!["low".into(), "medium".into(), "high".into()],
-                input_modalities: vec!["text".into(), "image".into()],
-            },
-            agent_tui_codex_runtime::CodexModelEntry {
-                id: "hidden-x".into(),
-                display_name: "Hidden".into(),
-                description: None,
-                is_default: false,
-                hidden: true,
-                default_reasoning_effort: None,
-                supported_reasoning_efforts: vec![],
-                input_modalities: vec!["text".into()],
-            },
-        ];
-        let state = model_state_from_codex_entries(&entries, None);
-        assert_eq!(state.available.len(), 1);
-        assert_eq!(state.current_model_id_str(), Some("gpt-5.4"));
-        assert_eq!(state.current_model_name().as_deref(), Some("GPT-5.4"));
-    }
-}
+mod tests;

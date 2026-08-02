@@ -12,7 +12,7 @@ mod pool;
 mod protocol;
 
 pub use error::{ClaudeRuntimeError, Result};
-pub use pool::{ClaudeRuntimePool, PoolConfig};
+pub use pool::{ClaudeRuntimePool, PermissionMode, PoolConfig};
 pub use protocol::{
     ClaudeModelEntry, ClaudeTurnResult, DiscoveredModel, KNOWN_MODELS, discover_models,
 };

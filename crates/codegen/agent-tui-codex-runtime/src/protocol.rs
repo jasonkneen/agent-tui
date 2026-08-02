@@ -92,6 +92,8 @@ pub struct ThreadStartParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_policy: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub approvals_reviewer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ephemeral: Option<bool>,
@@ -145,15 +147,43 @@ pub enum UserInput {
 #[derive(Debug, Clone)]
 pub enum RuntimeEvent {
     /// Streaming agent text.
-    TextDelta { text: String },
+    TextDelta {
+        thread_id: Option<String>,
+        turn_id: Option<String>,
+        text: String,
+    },
     /// Turn began.
-    TurnStarted { turn_id: Option<String> },
+    TurnStarted {
+        thread_id: Option<String>,
+        turn_id: Option<String>,
+    },
     /// Turn finished successfully (or interrupted).
-    TurnCompleted { status: Option<String> },
+    TurnCompleted {
+        thread_id: Option<String>,
+        turn_id: Option<String>,
+        status: Option<String>,
+    },
     /// Named notification we don't specially map (method string kept).
     Notification { method: String, params: Value },
     /// Server-level error notification.
-    Error { message: String },
+    Error {
+        thread_id: Option<String>,
+        turn_id: Option<String>,
+        message: String,
+    },
+}
+
+fn string_field(params: &Value, key: &str) -> Option<String> {
+    params.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn turn_id(params: &Value) -> Option<String> {
+    string_field(params, "turnId").or_else(|| {
+        params
+            .pointer("/turn/id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
 }
 
 /// Map a server notification into a [`RuntimeEvent`] when possible.
@@ -165,21 +195,26 @@ pub fn map_notification(method: &str, params: &Value) -> RuntimeEvent {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            RuntimeEvent::TextDelta { text }
+            RuntimeEvent::TextDelta {
+                thread_id: string_field(params, "threadId"),
+                turn_id: turn_id(params),
+                text,
+            }
         }
-        "turn/started" => {
-            let turn_id = params
-                .pointer("/turn/id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            RuntimeEvent::TurnStarted { turn_id }
-        }
+        "turn/started" => RuntimeEvent::TurnStarted {
+            thread_id: string_field(params, "threadId"),
+            turn_id: turn_id(params),
+        },
         "turn/completed" => {
             let status = params
                 .pointer("/turn/status")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            RuntimeEvent::TurnCompleted { status }
+            RuntimeEvent::TurnCompleted {
+                thread_id: string_field(params, "threadId"),
+                turn_id: turn_id(params),
+                status,
+            }
         }
         "error" => {
             let message = params
@@ -187,11 +222,58 @@ pub fn map_notification(method: &str, params: &Value) -> RuntimeEvent {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown app-server error")
                 .to_string();
-            RuntimeEvent::Error { message }
+            RuntimeEvent::Error {
+                thread_id: string_field(params, "threadId"),
+                turn_id: turn_id(params),
+                message,
+            }
         }
         other => RuntimeEvent::Notification {
             method: other.to_string(),
             params: params.clone(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn notification_mapping_preserves_thread_and_turn_correlation() {
+        let event = map_notification(
+            "item/agentMessage/delta",
+            &json!({
+                "threadId": "thread-a",
+                "turnId": "turn-a",
+                "itemId": "item-a",
+                "delta": "hello"
+            }),
+        );
+        assert!(matches!(
+            event,
+            RuntimeEvent::TextDelta {
+                thread_id: Some(ref thread_id),
+                turn_id: Some(ref turn_id),
+                ref text,
+            } if thread_id == "thread-a" && turn_id == "turn-a" && text == "hello"
+        ));
+
+        let completed = map_notification(
+            "turn/completed",
+            &json!({
+                "threadId": "thread-a",
+                "turn": { "id": "turn-a", "status": "completed" }
+            }),
+        );
+        assert!(matches!(
+            completed,
+            RuntimeEvent::TurnCompleted {
+                thread_id: Some(ref thread_id),
+                turn_id: Some(ref turn_id),
+                status: Some(ref status),
+            } if thread_id == "thread-a" && turn_id == "turn-a" && status == "completed"
+        ));
     }
 }

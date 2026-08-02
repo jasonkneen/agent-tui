@@ -14,17 +14,33 @@ use prod_mc_cli_chat_proxy_types::FAIL_CLOSED_KEY;
 /// ([`prod_mc_cli_chat_proxy_types::FailClosedFlag`]); this fork's callers want the
 /// original bool, where a non-bool value reads as not-opted-in.
 pub fn fail_closed_flag_from_str(requirements: &str) -> bool {
-    prod_mc_cli_chat_proxy_types::fail_closed_flag_status(requirements).is_enabled()
+    use prod_mc_cli_chat_proxy_types::{FailClosedFlag, fail_closed_flag_status};
+    let status = fail_closed_flag_status(requirements);
+    if matches!(status, FailClosedFlag::Invalid) {
+        warn_invalid_fail_closed();
+    }
+    status.is_enabled()
 }
 
 /// Read the `fail_closed` opt-in from a parsed requirements layer — same semantics as
 /// [`fail_closed_flag_from_str`]. Env tightening (file vs `GROK_MANAGED_CONFIG_FAIL_CLOSED`)
 /// is layered on top by [`resolve_fail_closed_mode`], not here.
 fn fail_closed_flag(requirements: &toml::Value) -> bool {
-    requirements
-        .get(FAIL_CLOSED_KEY)
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
+    use prod_mc_cli_chat_proxy_types::{FailClosedFlag, fail_closed_flag_status_from_value};
+    let status = fail_closed_flag_status_from_value(requirements);
+    if matches!(status, FailClosedFlag::Invalid) {
+        warn_invalid_fail_closed();
+    }
+    status.is_enabled()
+}
+
+fn warn_invalid_fail_closed() {
+    static WARN_ONCE: std::sync::Once = std::sync::Once::new();
+    WARN_ONCE.call_once(|| {
+        tracing::warn!(
+            "requirements fail_closed is present but not a boolean; treating it as false - use fail_closed = true or false"
+        );
+    });
 }
 
 /// Env override for [`FAIL_CLOSED_KEY`]. Named for prefix-alignment

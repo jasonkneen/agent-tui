@@ -24,10 +24,10 @@ mod pool;
 mod protocol;
 
 pub use client::{
-    ClientIdentity, CodexAppServerClient, TransportConfig, collect_turn_text,
+    ClientIdentity, CodexAppServerClient, TransportConfig, collect_turn_text, collect_turn_text_for,
 };
 pub use error::{CodexRuntimeError, Result};
-pub use pool::{CodexRuntimePool, PoolConfig};
+pub use pool::{CodexRuntimePool, PermissionMode, PoolConfig};
 pub use protocol::{
     ClientInfo, CodexModelEntry, InitializeParams, ModelListParams, RuntimeEvent,
     ThreadStartParams, TurnStartParams, UserInput, map_notification,

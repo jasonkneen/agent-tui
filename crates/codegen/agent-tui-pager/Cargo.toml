@@ -125,6 +125,7 @@ image = { workspace = true, features = ["png", "jpeg", "tiff", "gif", "webp"] }
 
 # ID generation
 uuid = { workspace = true, features = ["v4"] }
+which = { workspace = true }
 
 # Path computation (plan file, etc.)
 dirs = { workspace = true }
@@ -167,7 +168,7 @@ windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
 
 [dev-dependencies]
 # Enable the render crate's test-only helpers for the pager's test build.
-agent-tui-pager-render = { path = "../agent-tui-pager-render", features = [] }
+agent-tui-pager-render = { path = "../agent-tui-pager-render", features = ["test-support"] }
 pretty_assertions = { workspace = true }
 insta = { workspace = true }
 criterion = { workspace = true }

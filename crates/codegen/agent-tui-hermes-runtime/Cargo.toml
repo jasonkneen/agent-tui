@@ -16,6 +16,8 @@ tokio = { workspace = true, features = [
   "sync",
   "time",
 ] }
+which = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tempfile = { workspace = true }

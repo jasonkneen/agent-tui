@@ -98,19 +98,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_has_five_compiled_addons() {
-        assert_eq!(catalog().len(), 5);
-        assert!(catalog().iter().any(|a| a.slug == "lazar"));
-        assert!(catalog().iter().any(|a| a.slug == "hermes"));
-        assert!(catalog().iter().any(|a| a.slug == "grok"));
-    }
-
-    #[test]
-    fn enabled_is_nonempty_subset_of_catalog() {
-        let on = enabled();
-        assert!(!on.is_empty());
-        for a in &on {
-            assert!(catalog().iter().any(|c| c.id == a.id));
+    fn catalog_exactly_matches_compiled_runtime_registry() {
+        let ids: Vec<_> = catalog().iter().map(|addon| addon.id).collect();
+        assert_eq!(ids, RuntimeBackend::all());
+        for addon in catalog() {
+            assert_eq!(addon.slug, addon.id.as_str());
+            assert_eq!(get(addon.id).map(|found| found.slug), Some(addon.slug));
+            assert!(!addon.label.trim().is_empty());
+            assert!(!addon.turn_shape.trim().is_empty());
         }
     }
 }

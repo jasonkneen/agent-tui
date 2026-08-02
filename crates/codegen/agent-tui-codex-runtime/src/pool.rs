@@ -4,6 +4,7 @@ use crate::client::{ClientIdentity, CodexAppServerClient, TransportConfig};
 use crate::error::Result;
 use crate::protocol::{ThreadStartParams, TurnStartParams, UserInput};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -20,6 +21,28 @@ pub struct PoolConfig {
     pub default_model: Option<String>,
     /// Working directory for threads (Agent TUI cwd).
     pub cwd: Option<String>,
+}
+
+/// Permission contract inherited from the Agent TUI session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PermissionMode {
+    #[default]
+    Ask,
+    Auto,
+    AlwaysApprove,
+}
+
+impl PermissionMode {
+    fn thread_policy(self) -> (&'static str, &'static str, Option<&'static str>) {
+        match self {
+            // Agent TUI does not yet render app-server approval requests. The
+            // client explicitly rejects any request it receives, so Ask fails
+            // closed instead of silently bypassing the approval contract.
+            Self::Ask => ("on-request", "workspace-write", Some("user")),
+            Self::Auto => ("on-request", "workspace-write", Some("auto_review")),
+            Self::AlwaysApprove => ("never", "danger-full-access", None),
+        }
+    }
 }
 
 impl Default for PoolConfig {
@@ -42,11 +65,17 @@ pub struct CodexRuntimePool {
 
 struct PoolState {
     client: Option<Arc<CodexAppServerClient>>,
-    /// Active thread for quick multi-turn (optional sticky).
-    sticky_thread_id: Option<String>,
-    /// Model used when sticky thread was created (reset thread if it changes).
-    sticky_model: Option<String>,
+    /// Agent TUI session key → isolated Codex thread.
+    sticky_threads: HashMap<String, StickyThread>,
 }
+
+struct StickyThread {
+    thread_id: String,
+    model: Option<String>,
+    permission_mode: PermissionMode,
+}
+
+const DEFAULT_STICKY_KEY: &str = "default";
 
 impl CodexRuntimePool {
     pub fn new(config: PoolConfig) -> Arc<Self> {
@@ -54,8 +83,7 @@ impl CodexRuntimePool {
             config,
             inner: Mutex::new(PoolState {
                 client: None,
-                sticky_thread_id: None,
-                sticky_model: None,
+                sticky_threads: HashMap::new(),
             }),
         })
     }
@@ -65,15 +93,14 @@ impl CodexRuntimePool {
         let mut state = self.inner.lock().await;
 
         if let Some(ref c) = state.client {
-            if c.idle_for().await < self.config.idle_timeout {
+            if c.idle_for().await < self.config.idle_timeout && c.is_healthy().await {
                 c.touch().await;
                 return Ok(c.clone());
             }
-            info!("codex runtime: idle timeout — recycling app-server connection");
+            info!("codex runtime: recycling idle or unhealthy app-server connection");
             c.shutdown().await;
             state.client = None;
-            state.sticky_thread_id = None;
-            state.sticky_model = None;
+            state.sticky_threads.clear();
         }
 
         debug!("codex runtime: spawning app-server");
@@ -87,7 +114,10 @@ impl CodexRuntimePool {
     }
 
     /// List models from the warm app-server.
-    pub async fn list_models(&self, include_hidden: bool) -> Result<Vec<crate::protocol::CodexModelEntry>> {
+    pub async fn list_models(
+        &self,
+        include_hidden: bool,
+    ) -> Result<Vec<crate::protocol::CodexModelEntry>> {
         let client = self.ensure_ready().await?;
         client.model_list(include_hidden).await
     }
@@ -102,32 +132,58 @@ impl CodexRuntimePool {
         prompt: impl Into<String>,
         model: Option<String>,
     ) -> Result<(String, Value)> {
+        self.start_text_turn_keyed(prompt, model, None, PermissionMode::Ask)
+            .await
+    }
+
+    /// Start a turn with continuity isolated by the Agent TUI session key.
+    pub async fn start_text_turn_keyed(
+        &self,
+        prompt: impl Into<String>,
+        model: Option<String>,
+        sticky_key: Option<&str>,
+        permission_mode: PermissionMode,
+    ) -> Result<(String, Value)> {
         let prompt = prompt.into();
         let client = self.ensure_ready().await?;
         let model = model.or_else(|| self.config.default_model.clone());
+        let key = sticky_key
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .unwrap_or(DEFAULT_STICKY_KEY)
+            .to_string();
 
         let thread_id = {
             let mut state = self.inner.lock().await;
             let reuse = state
-                .sticky_thread_id
-                .as_ref()
-                .is_some_and(|_| state.sticky_model == model);
-            if reuse {
-                state.sticky_thread_id.clone().expect("checked")
+                .sticky_threads
+                .get(&key)
+                .filter(|thread| thread.model == model && thread.permission_mode == permission_mode)
+                .map(|thread| thread.thread_id.clone());
+            if let Some(thread_id) = reuse {
+                thread_id
             } else {
+                let (approval_policy, sandbox, approvals_reviewer) =
+                    permission_mode.thread_policy();
                 let id = client
                     .thread_start(ThreadStartParams {
                         model: model.clone(),
                         cwd: self.config.cwd.clone(),
-                        approval_policy: Some("never".into()),
-                        // app-server enum is kebab-case (not camelCase).
-                        sandbox: Some("workspace-write".into()),
+                        approval_policy: Some(approval_policy.into()),
+                        approvals_reviewer: approvals_reviewer.map(str::to_string),
+                        sandbox: Some(sandbox.into()),
                         ephemeral: Some(false),
                         service_name: Some("agent_tui".into()),
                     })
                     .await?;
-                state.sticky_thread_id = Some(id.clone());
-                state.sticky_model = model;
+                state.sticky_threads.insert(
+                    key,
+                    StickyThread {
+                        thread_id: id.clone(),
+                        model,
+                        permission_mode,
+                    },
+                );
                 id
             }
         };
@@ -148,14 +204,49 @@ impl CodexRuntimePool {
         if let Some(c) = state.client.take() {
             c.shutdown().await;
         }
-        state.sticky_thread_id = None;
-        state.sticky_model = None;
+        state.sticky_threads.clear();
     }
 
     /// Clear sticky thread so the next turn starts a fresh conversation.
     pub async fn reset_thread(&self) {
-        let mut state = self.inner.lock().await;
-        state.sticky_thread_id = None;
-        state.sticky_model = None;
+        self.inner.lock().await.sticky_threads.clear();
+    }
+
+    /// Interrupt the active Codex turn for one Agent TUI session.
+    pub async fn interrupt_key(&self, sticky_key: &str) -> Result<()> {
+        let (client, thread_id) = {
+            let state = self.inner.lock().await;
+            let client = state.client.clone();
+            let thread_id = state
+                .sticky_threads
+                .get(sticky_key)
+                .map(|thread| thread.thread_id.clone());
+            (client, thread_id)
+        };
+        if let (Some(client), Some(thread_id)) = (client, thread_id) {
+            client.turn_interrupt(thread_id).await?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permission_modes_map_without_implicit_bypass() {
+        assert_eq!(
+            PermissionMode::Ask.thread_policy(),
+            ("on-request", "workspace-write", Some("user"))
+        );
+        assert_eq!(
+            PermissionMode::Auto.thread_policy(),
+            ("on-request", "workspace-write", Some("auto_review"))
+        );
+        assert_eq!(
+            PermissionMode::AlwaysApprove.thread_policy(),
+            ("never", "danger-full-access", None)
+        );
     }
 }
