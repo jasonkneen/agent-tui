@@ -9,6 +9,9 @@ use crate::prompt::ignore::{build_gitignore, is_ignored};
 
 use agent_tui_tools::types::compat::CompatConfig;
 
+/// No single project-instruction file may dominate the aggregate reminder.
+const MAX_INSTRUCTION_FILE_BYTES: usize = 6_000;
+
 /// Represents an agent config file with its path and content.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AgentConfigFile {
@@ -205,8 +208,26 @@ fn render_agents_md(configs: &[AgentConfigFile]) -> Option<String> {
         " (ordered from repo root to current directory - deeper files take precedence on conflicts):\n",
     );
 
-    for config in configs {
-        section.push_str(&format!("\n## From: {}\n", config.file_path));
+    let footer = "\nFollow these instructions exactly. When working in subdirectories not listed above, check for additional project instruction files (AGENTS.md, Claude.md, etc.).\n</system-reminder>";
+    let aggregate_budget = agent_tui_sampling_types::MAX_MODEL_ITEM_BYTES;
+    let mut remaining = aggregate_budget.saturating_sub(section.len() + footer.len());
+
+    for (index, config) in configs.iter().enumerate() {
+        let files_left = configs.len() - index;
+        let fair_entry_budget = remaining / files_left.max(1);
+        let header = format!("\n## From: {}\n", config.file_path);
+
+        if fair_entry_budget <= header.len() {
+            let omitted = format!(
+                "\n[Project instructions omitted from this prompt; read the full file: {}]\n",
+                config.file_path
+            );
+            let bounded =
+                agent_tui_sampling_types::bound_model_item_text(omitted, fair_entry_budget);
+            remaining = remaining.saturating_sub(bounded.len());
+            section.push_str(&bounded);
+            continue;
+        }
 
         // Strip YAML frontmatter from rules files (e.g. .claude/rules/*.md,
         // .grok/rules/*.md) so globs/paths metadata doesn't leak into the
@@ -219,14 +240,41 @@ fn render_agents_md(configs: &[AgentConfigFile]) -> Option<String> {
             config.content.clone()
         };
 
-        section.push_str(&content);
+        section.push_str(&header);
+        let content_budget = fair_entry_budget
+            .saturating_sub(header.len())
+            .min(MAX_INSTRUCTION_FILE_BYTES);
+        section.push_str(&bound_instruction_file(
+            &content,
+            content_budget,
+            &config.file_path,
+        ));
         section.push('\n');
+        remaining = remaining.saturating_sub(header.len() + content_budget + 1);
     }
 
-    section.push_str("\nFollow these instructions exactly. When working in subdirectories not listed above, check for additional project instruction files (AGENTS.md, Claude.md, etc.).");
-    section.push_str("\n</system-reminder>");
+    section.push_str(footer);
 
-    Some(section)
+    Some(agent_tui_sampling_types::bound_model_item_text(
+        section,
+        aggregate_budget,
+    ))
+}
+
+fn bound_instruction_file(content: &str, budget: usize, file_path: &str) -> String {
+    if content.len() <= budget {
+        return content.to_string();
+    }
+    let marker = format!("\n[Project instructions truncated; read the full file: {file_path}]");
+    if marker.len() >= budget {
+        return agent_tui_sampling_types::bound_model_item_text(marker, budget);
+    }
+    let head_budget = budget - marker.len();
+    format!(
+        "{}{}",
+        agent_tui_sampling_types::truncate_bytes(content, head_budget),
+        marker
+    )
 }
 
 #[cfg(test)]

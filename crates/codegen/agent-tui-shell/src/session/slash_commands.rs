@@ -936,6 +936,7 @@ pub(super) async fn build_skill_information_for_refs(
                         plugin_data: info.plugin_data.as_deref(),
                     },
                 );
+                let content = agent_tui_sampling_types::bound_model_item_text(content, 4_000);
                 skill_blocks.push(build_skill_block(&sk.name, &sk.args, &content));
             }
             Err(e) => {
@@ -954,7 +955,9 @@ pub(super) async fn build_skill_information_for_refs(
             path: &sk.skill_path,
         })
         .collect();
-    Some(build_skill_information(&skill_blocks, &refs))
+    Some(agent_tui_sampling_types::bound_synthetic_text(
+        build_skill_information(&skill_blocks, &refs),
+    ))
 }
 
 /// Resolve prompt blocks as a slash command.

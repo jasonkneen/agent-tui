@@ -571,7 +571,13 @@ impl SessionActor {
         );
         let pre_truncation_text = assembled.clone();
         let (user_message, truncated_local_path) = if verbatim {
-            (assembled, None)
+            (
+                agent_tui_sampling_types::bound_model_item_text(
+                    assembled,
+                    agent_tui_sampling_types::MAX_MODEL_ITEM_BYTES,
+                ),
+                None,
+            )
         } else {
             self.maybe_truncate_large_prompt_with_skills(
                 context,

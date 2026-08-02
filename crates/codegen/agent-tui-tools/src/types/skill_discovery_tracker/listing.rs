@@ -8,12 +8,14 @@ use std::collections::HashSet;
 use crate::implementations::skills::types::{SkillInfo, SkillScope};
 use crate::util::truncate_str_with_marker;
 
-/// Default fraction of the context window allocated to the skill listing (50%).
+/// Absolute model-item ceiling for discovery announcements. Skill bodies are
+/// loaded on invocation, so discovery never needs a context-window-sized share.
+pub(super) const MAX_SKILL_LISTING_BYTES: usize = 10_000;
+/// Legacy context fraction used only to derive a *smaller* caller budget.
+/// Every rendering path additionally clamps to [`MAX_SKILL_LISTING_BYTES`].
 pub(super) const SKILL_BUDGET_CONTEXT_PERCENT: f64 = 0.5;
-/// Default character budget when context window is unknown.
-/// Derived from percentage to prevent drift: (200k tokens * 4 bytes/token * 50%).
-pub(super) const DEFAULT_CHAR_BUDGET: usize =
-    (200_000.0 * 4.0 * SKILL_BUDGET_CONTEXT_PERCENT) as usize;
+/// Default budget when the caller does not provide a smaller one.
+pub(super) const DEFAULT_CHAR_BUDGET: usize = MAX_SKILL_LISTING_BYTES;
 /// Per-entry cap on description + when_to_use combined. Discovery only — the
 /// full skill body is loaded on invocation, so the listing stays terse. Split
 /// proportionally between the two fields (see `proportional_budgets`).
@@ -341,11 +343,9 @@ impl<'a> SkillListing<'a> {
         }
         let remaining = self.0.len() - included;
         if overflow_indicator && remaining > 0 {
-            let dirs = collect_source_dirs(&self.0[included..]);
-            out.push_str(&format!(
-                "<!-- {remaining} more skills available in {} -->\n",
-                dirs.join(", ")
-            ));
+            // Keep the overflow row fixed-size. Including every source
+            // directory here can itself exceed the listing budget.
+            out.push_str(&format!("<!-- {remaining} more skills available -->\n"));
         }
         out
     }
@@ -356,7 +356,7 @@ impl<'a> SkillListing<'a> {
     ///
     /// All skills are rendered with full descriptions, no budget-based
     /// truncation, no XML entity escaping of body content.
-    fn render_xml_verbatim(self) -> Option<String> {
+    fn render_xml_verbatim(&self) -> Option<String> {
         if self.0.is_empty() {
             return None;
         }
@@ -549,8 +549,9 @@ fn build_skill_entry<'a>(
 /// Rendering mode for [`format_announcement_xml`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum XmlRenderMode {
-    /// Verbatim rendering: every skill with its full description; no
-    /// budget cap, minimal escaping.
+    /// Compatibility rendering with full descriptions and minimal escaping
+    /// when the result fits the global model-item cap. Oversized listings
+    /// fall back to the budgeted representation.
     Verbatim,
     /// Grok build harness: budget-capped three-tier rendering with full
     /// XML entity escaping.
@@ -595,12 +596,21 @@ pub fn format_announcement_xml(
             .collect(),
     );
     match mode {
-        XmlRenderMode::Verbatim => listing.render_xml_verbatim(),
+        XmlRenderMode::Verbatim => {
+            let full = listing.render_xml_verbatim()?;
+            if full.len() <= MAX_SKILL_LISTING_BYTES {
+                Some(full)
+            } else {
+                listing.render_xml_budgeted(MAX_SKILL_LISTING_BYTES, true)
+            }
+        }
         XmlRenderMode::Budgeted {
             budget_chars,
             overflow_indicator,
         } => listing.render_xml_budgeted(
-            budget_chars.unwrap_or(DEFAULT_CHAR_BUDGET),
+            budget_chars
+                .unwrap_or(DEFAULT_CHAR_BUDGET)
+                .min(MAX_SKILL_LISTING_BYTES),
             overflow_indicator,
         ),
     }
@@ -618,7 +628,9 @@ pub(super) fn format_announcement(
     listing_budget_chars: Option<usize>,
     skill_tool_name: &str,
 ) -> Option<String> {
-    let budget = listing_budget_chars.unwrap_or(DEFAULT_CHAR_BUDGET);
+    let budget = listing_budget_chars
+        .unwrap_or(DEFAULT_CHAR_BUDGET)
+        .min(MAX_SKILL_LISTING_BYTES);
     let listing = SkillListing(
         skills
             .iter()
@@ -944,11 +956,10 @@ mod tests {
         assert!(!text.contains("review:"), "no name prefix in body");
     }
 
-    /// All skills are rendered regardless of count (no budget limiting).
-    /// Matches the alternate behavior where all AgentSkill protos are
-    /// rendered verbatim.
+    /// Compatibility mode stays verbatim only while it fits the common cap;
+    /// oversized catalogs degrade to bounded rows plus an omission marker.
     #[test]
-    fn xml_verbatim_all_skills_rendered_without_budget_limit() {
+    fn xml_verbatim_large_catalog_falls_back_to_bounded_rendering() {
         let skills: Vec<SkillInfo> = (0..200)
             .map(|i| skill(&format!("skill-{i:03}"), "Short description."))
             .collect();
@@ -957,7 +968,12 @@ mod tests {
             format_announcement_xml(&skills, &mut announced, None, None, XmlRenderMode::Verbatim)
                 .expect("non-empty input must render");
         let row_count = text.matches("<agent_skill fullPath=").count();
-        assert_eq!(row_count, 200, "all 200 skills must be rendered");
+        assert!(
+            row_count > 0 && row_count < 200,
+            "catalog should be clipped"
+        );
+        assert!(text.len() <= MAX_SKILL_LISTING_BYTES);
+        assert!(text.contains("more skills available"));
     }
 
     /// Skills with `disable_model_invocation = true` must NEVER appear.

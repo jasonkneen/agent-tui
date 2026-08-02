@@ -234,7 +234,7 @@ fn to_system_reminder_inner(
         sections.push(reminder);
     }
 
-    reminder::wrap_system_reminder(sections)
+    reminder::wrap_system_reminder(sections).map(agent_tui_sampling_types::bound_synthetic_text)
 }
 
 #[cfg(test)]

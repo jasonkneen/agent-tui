@@ -3,8 +3,8 @@
 use std::num::NonZeroU64;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
 use agent_tui_sampling_types::{ConversationItem, SamplingConfig};
+use tokio::sync::mpsc;
 
 use crate::actor::ChatStateActor;
 use crate::events::ChatStateEvent;
@@ -1221,12 +1221,15 @@ async fn build_request_injects_memory_reminder() {
         .await
         .unwrap();
 
-    if let ConversationItem::System(ref sys) = request.items[0] {
-        assert!(sys.content.contains("Remember: user prefers Rust"));
-        assert!(sys.content.starts_with("You are helpful."));
-    } else {
-        panic!("expected System item");
-    }
+    assert_eq!(request.items.len(), 3);
+    assert!(matches!(
+        &request.items[0],
+        ConversationItem::System(sys) if sys.content.as_ref() == "You are helpful."
+    ));
+    assert_eq!(
+        request.items.last().unwrap().text_content(),
+        "Remember: user prefers Rust"
+    );
 }
 
 #[tokio::test]
@@ -1245,8 +1248,9 @@ async fn build_request_injects_memory_when_no_system() {
         .await
         .unwrap();
 
-    assert_eq!(request.items.len(), 2); // new System + original User
-    assert!(matches!(&request.items[0], ConversationItem::System(_)));
+    assert_eq!(request.items.len(), 2); // original User + synthetic reminder
+    assert_eq!(request.items[0].text_content(), "hi");
+    assert_eq!(request.items[1].text_content(), "Remember this");
 }
 
 #[tokio::test]
@@ -1379,24 +1383,30 @@ async fn build_request_can_persist_memory_into_actor_state() {
         .await
         .unwrap();
 
-    if let ConversationItem::System(ref sys) = request.items[0] {
-        assert!(sys.content.contains("Remember this"));
-    } else {
-        panic!("expected System item in request");
-    }
+    assert_eq!(request.items[0].text_content(), "sys");
+    assert!(
+        request
+            .items
+            .last()
+            .unwrap()
+            .text_content()
+            .contains("Remember this")
+    );
 
     let conv = h.handle.get_conversation().await;
-    if let ConversationItem::System(ref sys) = conv[0] {
-        assert!(sys.content.contains("Remember this"));
-    } else {
-        panic!("expected persisted System item");
-    }
+    assert_eq!(conv[0].text_content(), "sys");
+    assert!(
+        conv.last()
+            .unwrap()
+            .text_content()
+            .contains("Remember this")
+    );
 
     let records = h.drain_persistence();
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, PersistenceRecord::ReplaceHistory(items) if matches!(items.first(), Some(ConversationItem::System(sys)) if sys.content.contains("Remember this"))))
+            .any(|r| matches!(r, PersistenceRecord::ReplaceHistory(items) if items.last().is_some_and(|item| item.text_content().contains("Remember this"))))
     );
 }
 
@@ -2605,9 +2615,9 @@ async fn integrity_repair_does_not_flag_compaction() {
 }
 
 #[tokio::test]
-async fn turn_capture_survives_persisted_memory_reminder_prepend() {
-    // No leading System item, so the persisted memory inject prepends one via
-    // `items.insert(0, ..)`, shifting every index by one under an active capture.
+async fn turn_capture_survives_persisted_memory_reminder_append() {
+    // No leading System item: persisted memory must append a synthetic item
+    // without changing the already-captured turn boundary.
     let h = TestHarness::with_conversation(vec![ConversationItem::user("hi")]);
 
     h.handle.begin_turn_capture();
@@ -2615,9 +2625,8 @@ async fn turn_capture_survives_persisted_memory_reminder_prepend() {
     h.handle
         .push_assistant_response(ConversationItem::assistant("turn-a"));
 
-    // Persist path injects into the LIVE conversation; without the snapshot +
-    // rebase the prepend shifts every index but not the offset, so the off-by-one
-    // tail over-reads past the turn boundary (the len check below catches it).
+    // Persist path injects into the LIVE conversation. The capture must remain
+    // the exact user/assistant slice and exclude the synthetic reminder.
     let request = h
         .handle
         .build_request(
@@ -2630,7 +2639,11 @@ async fn turn_capture_survives_persisted_memory_reminder_prepend() {
         )
         .await
         .unwrap();
-    assert!(matches!(&request.items[0], ConversationItem::System(_)));
+    assert_eq!(request.items[0].text_content(), "hi");
+    assert_eq!(
+        request.items.last().unwrap().text_content(),
+        "Remember this"
+    );
 
     let capture = h
         .handle
@@ -3780,9 +3793,10 @@ async fn prefix_stable_across_user_assistant_turns() {
     assert_prefix_stable_pair(&req2, &req3, "turn 2 -> turn 3");
 }
 
-/// Prefix stability when memory reminders are injected.
-/// Once a memory reminder is established, subsequent requests with the
-/// SAME reminder must produce stable prefixes.
+/// Memory reminders preserve every pre-existing request item byte-for-byte.
+/// A non-persisted reminder is an immutable tail delta, so later conversation
+/// items may precede it on later requests; the canonical history must never be
+/// rewritten to make the reminder appear stable.
 #[tokio::test]
 async fn prefix_stable_with_consistent_memory_injection() {
     let h = TestHarness::with_conversation(vec![
@@ -3790,6 +3804,11 @@ async fn prefix_stable_with_consistent_memory_injection() {
         ConversationItem::user("Hello"),
     ]);
 
+    let base1 = h
+        .handle
+        .build_request(vec![], None, false, None, "c".into(), "base1".into())
+        .await
+        .unwrap();
     let req1 = h
         .handle
         .build_request(
@@ -3803,11 +3822,26 @@ async fn prefix_stable_with_consistent_memory_injection() {
         .await
         .unwrap();
 
+    let base1_wire = serialize_via_public_api(&base1);
+    let req1_wire = serialize_via_public_api(&req1);
+    let base1_input = base1_wire["input"].as_array().unwrap();
+    let req1_input = req1_wire["input"].as_array().unwrap();
+    assert_eq!(
+        &req1_input[..base1_input.len()],
+        base1_input.as_slice(),
+        "first reminder injection rewrote canonical history"
+    );
+
     h.handle
         .push_assistant_response(ConversationItem::assistant("Hi!"));
     h.handle
         .push_user_message(ConversationItem::user("Tell me more"));
 
+    let base2 = h
+        .handle
+        .build_request(vec![], None, false, None, "c".into(), "base2".into())
+        .await
+        .unwrap();
     let req2 = h
         .handle
         .build_request(
@@ -3821,7 +3855,19 @@ async fn prefix_stable_with_consistent_memory_injection() {
         .await
         .unwrap();
 
-    assert_prefix_stable_pair(&req1, &req2, "memory-injected turn 1 -> turn 2");
+    let base2_wire = serialize_via_public_api(&base2);
+    let req2_wire = serialize_via_public_api(&req2);
+    let base2_input = base2_wire["input"].as_array().unwrap();
+    let req2_input = req2_wire["input"].as_array().unwrap();
+    assert_eq!(
+        &req2_input[..base2_input.len()],
+        base2_input.as_slice(),
+        "second reminder injection rewrote canonical history"
+    );
+    assert_eq!(
+        req1.items.last().unwrap().text_content(),
+        req2.items.last().unwrap().text_content()
+    );
 }
 
 /// Prefix stability with Reasoning siblings (encrypted reasoning) through

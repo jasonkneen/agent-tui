@@ -13,13 +13,13 @@
 //! files, skill registry, MCP servers) and hands them to
 //! `UserMessageContext::render`, which dispatches on `template`.
 use crate::prompt::agents_md::AgentConfigFile;
+use agent_tui_tools::bridge::ToolBridge;
+use agent_tui_tools::implementations::skills::types::SkillInfo;
+use agent_tui_tools::types::skill_discovery_tracker::{XmlRenderMode, format_announcement_xml};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
-use agent_tui_tools::bridge::ToolBridge;
-use agent_tui_tools::implementations::skills::types::SkillInfo;
-use agent_tui_tools::types::skill_discovery_tracker::{XmlRenderMode, format_announcement_xml};
 /// Date format for the `Today's date` field of the user-message preamble
 /// (e.g. "Friday Apr 24, 2026"). Any format change is observable to the model.
 pub const USER_MESSAGE_DATE_FORMAT: &str = "%A %b %-d, %Y";
@@ -27,7 +27,8 @@ pub const USER_MESSAGE_DATE_FORMAT: &str = "%A %b %-d, %Y";
 /// `<git_status>` block has no token budget -- this character cap is the only
 /// size control, and it is applied per repo at render, never at gather, so
 /// other consumers of the raw status are unaffected.
-pub const GIT_STATUS_CHARACTER_LIMIT: usize = 10_000;
+pub const GIT_STATUS_CHARACTER_LIMIT: usize =
+    agent_tui_sampling_types::MAX_MODEL_ITEM_BYTES - 1_000;
 /// Trim, drop-if-empty, and cap a VCS status string for the
 /// `<git_status>` block.
 ///
@@ -35,7 +36,7 @@ pub const GIT_STATUS_CHARACTER_LIMIT: usize = 10_000;
 /// and no empty code fence is emitted), otherwise the status capped at
 /// [`GIT_STATUS_CHARACTER_LIMIT`] -- snapped back to the last newline -- with
 /// the `... (git status truncated)` marker appended.
-fn normalize_git_status(status: &str) -> Option<String> {
+pub fn normalize_git_status(status: &str) -> Option<String> {
     let status = status.trim();
     if status.is_empty() {
         return None;
@@ -304,7 +305,12 @@ impl UserMessageContext {
             UserMessageTemplate::Default => return None,
             UserMessageTemplate::Custom(s) => bridge.render_prompt(s, &placeholders).await,
         };
-        rendered.map(|s| s.trim_end().to_string())
+        rendered.map(|s| {
+            agent_tui_sampling_types::bound_model_item_text(
+                s.trim_end().to_string(),
+                agent_tui_sampling_types::MAX_MODEL_ITEM_BYTES,
+            )
+        })
     }
 }
 #[cfg(test)]

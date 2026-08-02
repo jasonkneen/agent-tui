@@ -623,10 +623,10 @@ async fn record_verdict_clears_gaps_on_achieved() {
         })
         .await;
 }
-/// Prune drops the prior GoalSummary-tagged directive while preserving
-/// every other item, so only the latest copy stays in context.
+/// The historical prune seam is now append-only: prior GoalSummary-tagged
+/// directives and all surrounding history remain immutable.
 #[tokio::test(flavor = "current_thread")]
-async fn prune_prior_goal_continuation_directives_drops_only_directives() {
+async fn prune_prior_goal_continuation_directives_preserves_history() {
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -648,8 +648,8 @@ async fn prune_prior_goal_continuation_directives_drops_only_directives() {
             let conv = actor.chat_state_handle.get_conversation().await;
             assert!(
                 conv.iter()
-                    .all(|i| !i.text_content().contains(GOAL_CONTINUATION_SENTINEL)),
-                "the prior continuation directive must be pruned",
+                    .any(|i| i.text_content().contains(GOAL_CONTINUATION_SENTINEL)),
+                "the prior continuation directive must remain immutable",
             );
             assert!(
                 conv.iter()
@@ -658,15 +658,14 @@ async fn prune_prior_goal_continuation_directives_drops_only_directives() {
             );
             assert!(
                 conv.iter().any(|i| i.text_content().contains("on it")),
-                "the assistant reply must survive the prune",
+                "the assistant reply must survive",
             );
+            assert_eq!(conv.len(), 3);
         })
         .await;
 }
-/// Assistant / real-user / tool-result items merely QUOTING the
-/// sentinel survive the prune (substring-anywhere matching would let
-/// model text erase history), as does a GoalSummary-tagged item WITHOUT
-/// the sentinel.
+/// Every item survives the compatibility no-op, including a synthetic
+/// directive and ordinary items that quote its sentinel.
 #[tokio::test(flavor = "current_thread")]
 async fn prune_prior_goal_continuation_directives_spares_items_quoting_sentinel() {
     let local = tokio::task::LocalSet::new();
@@ -704,8 +703,8 @@ async fn prune_prior_goal_continuation_directives_spares_items_quoting_sentinel(
             }
             assert_eq!(
                 conv.len(),
-                4,
-                "only the synthetic GoalSummary directive may be pruned",
+                5,
+                "continuation maintenance must not delete any history",
             );
         })
         .await;

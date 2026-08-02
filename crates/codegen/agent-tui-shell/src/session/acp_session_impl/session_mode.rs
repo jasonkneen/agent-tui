@@ -16,6 +16,33 @@ pub(super) fn filter_cursor_tools_by_plan_mode(
 ) -> Vec<ToolDefinition> {
     defs
 }
+
+/// Prepare an agent-mode prompt update without rewriting model-visible history.
+///
+/// Before the first inference, replacing the bootstrap system prompt is safe.
+/// Once a response or tool interaction exists, return a bounded reminder that
+/// callers append as a new item instead.
+pub(super) fn prepare_agent_mode_prompt_update(
+    conversation: &mut [ConversationItem],
+    agent_name: &str,
+    new_prompt: &str,
+) -> Option<String> {
+    if agent_tui_chat_state::conversation_util::has_inference_history(conversation) {
+        return Some(agent_tui_sampling_types::bound_synthetic_text(format!(
+            "<agent-mode-change name=\"{}\">\n{}\n</agent-mode-change>",
+            agent_name, new_prompt
+        )));
+    }
+
+    if let Some(ConversationItem::System(system)) = conversation
+        .iter_mut()
+        .find(|item| matches!(item, ConversationItem::System(_)))
+    {
+        system.content = std::sync::Arc::<str>::from(new_prompt.to_owned());
+    }
+    None
+}
+
 impl SessionActor {
     pub(super) fn apply_prompt_modes_to_snapshot(&self, snapshot: &mut TurnDeltaSnapshot) {
         snapshot.start_prompt_mode = Some(self.turn_start_prompt_mode.lock().to_string());
@@ -119,13 +146,14 @@ impl SessionActor {
         if let Some(ref def) = agent_def {
             let new_prompt = self.agent.borrow().render_prompt_for_definition(def).await;
             let mut conversation = self.chat_state_handle.get_conversation().await;
-            for item in conversation.iter_mut() {
-                if let ConversationItem::System(sys) = item {
-                    sys.content = std::sync::Arc::<str>::from(new_prompt);
-                    break;
-                }
+            if let Some(delta) =
+                prepare_agent_mode_prompt_update(&mut conversation, &def.name, &new_prompt)
+            {
+                self.chat_state_handle
+                    .push_user_message(ConversationItem::system_reminder(delta));
+            } else {
+                self.chat_state_handle.replace_conversation(conversation);
             }
-            self.chat_state_handle.replace_conversation(conversation);
         }
     }
     /// Bring the plan-mode tracker into agreement with the prompt's mode.

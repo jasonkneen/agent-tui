@@ -259,6 +259,7 @@ impl PromptContext {
     /// correctly regardless of prompt mode.
     pub async fn render(&self, tool_bridge: &ToolBridge) -> Option<String> {
         let placeholders = self.placeholders();
+        let custom_base = matches!(self.system_prompt, TemplateOverride::Custom(_));
         let prompt = match self.prompt_mode {
             PromptMode::Extend => {
                 let decrypted;
@@ -284,7 +285,10 @@ impl PromptContext {
                         .render_prompt(body, &placeholders)
                         .await
                         .unwrap_or_else(|| body.clone());
-                    p.push_str(&rendered_body);
+                    p.push_str(&agent_tui_sampling_types::bound_model_item_text(
+                        rendered_body,
+                        agent_tui_sampling_types::MAX_MODEL_ITEM_BYTES,
+                    ));
                 }
                 p
             }
@@ -293,7 +297,14 @@ impl PromptContext {
                 tool_bridge.render_prompt(body, &placeholders).await?
             }
         };
-        Some(prompt)
+        if custom_base || self.prompt_mode == PromptMode::Full {
+            Some(agent_tui_sampling_types::bound_model_item_text(
+                prompt,
+                agent_tui_sampling_types::MAX_MODEL_ITEM_BYTES,
+            ))
+        } else {
+            Some(prompt)
+        }
     }
 }
 #[cfg(test)]

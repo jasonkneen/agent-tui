@@ -1852,37 +1852,12 @@ impl SessionActor {
     /// `GoalPrematureStopDetected` emit, so no bail event is recorded on
     /// that turn. The classifier nudge already forces continuation with
     /// the gap inlined, so this precedence is intentional.
-    /// Remove every prior goal-continuation directive from the persisted
-    /// conversation, keeping only the copy about to be pushed. The
-    /// directive re-embeds the full objective each turn, so without this
-    /// a copy accumulates per turn and bloats context until compaction.
-    /// No-op (no replace) when none are present.
-    ///
-    /// Matches only the harness's own synthetic injection (a `User` item
-    /// tagged [`SyntheticReason::GoalSummary`] carrying
-    /// [`GOAL_CONTINUATION_SENTINEL`]) — substring-anywhere matching
-    /// would let model-authored text quoting the sentinel erase
-    /// arbitrary history items. Untagged legacy copies are not matched
-    /// and persist until compaction (safe direction of failure).
+    /// Historical test seam retained to prove continuation history is
+    /// immutable. Goal state now appends bounded deltas and never rewrites
+    /// prior conversation items, so pruning is intentionally a no-op.
+    #[cfg(test)]
     pub(super) async fn prune_prior_goal_continuation_directives(&self) {
-        use agent_tui_sampling_types::conversation::SyntheticReason;
-
-        fn is_goal_continuation_directive(item: &ConversationItem) -> bool {
-            matches!(
-                item,
-                ConversationItem::User(u)
-                    if u.synthetic_reason == Some(SyntheticReason::GoalSummary)
-            ) && item.text_content().contains(GOAL_CONTINUATION_SENTINEL)
-        }
-        let conv = self.chat_state_handle.get_conversation().await;
-        if !conv.iter().any(is_goal_continuation_directive) {
-            return;
-        }
-        let kept: Vec<ConversationItem> = conv
-            .into_iter()
-            .filter(|item| !is_goal_continuation_directive(item))
-            .collect();
-        self.chat_state_handle.replace_conversation(kept);
+        // Deliberately empty. See method documentation.
     }
 
     /// Enforce the goal token budget at a turn end. If the ratcheted goal
@@ -2035,7 +2010,7 @@ impl SessionActor {
                 })
                 .unwrap_or_default();
             (
-                o.objective.clone(),
+                agent_tui_sampling_types::bound_model_item_text(o.objective.clone(), 1_000),
                 elapsed,
                 plan_pointer,
                 verifier_gaps,
@@ -2078,6 +2053,7 @@ impl SessionActor {
             &scratch_dir,
             scratch_ready,
         );
+        let directive = agent_tui_sampling_types::bound_model_item_text(directive, 6_000);
         Some(GoalContinuationPlan {
             directive,
             stop_pattern,
@@ -2133,11 +2109,9 @@ impl SessionActor {
     }
 
     /// Inject the continuation directive into the conversation as the next
-    /// user turn for the in-turn goal loop. Prunes prior directives so only
-    /// the latest copy stays in history (the directive re-embeds the full
-    /// objective each round).
+    /// user turn for the in-turn goal loop. Each directive is a bounded,
+    /// immutable state delta; prior history remains byte-stable.
     pub(super) async fn inject_goal_continuation_message(&self, directive: String) {
-        self.prune_prior_goal_continuation_directives().await;
         self.chat_state_handle
             .push_user_message(ConversationItem::goal_summary(directive));
     }
@@ -2168,9 +2142,6 @@ impl SessionActor {
                 return;
             }
         }
-        // Keep only the latest continuation directive in history.
-        self.prune_prior_goal_continuation_directives().await;
-
         let prompt_id = format!("goal-summary-{}", uuid::Uuid::now_v7());
         // Receiver intentionally dropped — goal continuation turns have no
         // caller awaiting the result.

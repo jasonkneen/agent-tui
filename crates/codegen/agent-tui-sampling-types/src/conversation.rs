@@ -153,6 +153,48 @@ impl SyntheticReason {
     }
 }
 
+/// Hard ceiling for any runtime-synthesized model-facing text item.
+///
+/// Tool results already use the same 10 KiB trust-boundary limit in the shell.
+/// Keeping synthetic reminders, project instructions, compaction state, and
+/// interjections under one absolute ceiling prevents any single runtime-built
+/// item from consuming a material fraction of a model context window.
+pub const MAX_MODEL_ITEM_BYTES: usize = 10_000;
+
+const MODEL_ITEM_TRUNCATION_MARKER: &str =
+    "\n\n[... middle truncated at the Agent TUI model-item boundary ...]\n\n";
+
+/// Bound model-facing text to `max_bytes`, preserving both its leading context
+/// and trailing directive/question. The returned string is always valid UTF-8
+/// and never exceeds the requested byte budget.
+pub fn bound_model_item_text(content: impl Into<String>, max_bytes: usize) -> String {
+    let content = content.into();
+    if content.len() <= max_bytes {
+        return content;
+    }
+    if max_bytes <= MODEL_ITEM_TRUNCATION_MARKER.len() {
+        return truncate_bytes(&content, max_bytes).to_string();
+    }
+
+    let payload_budget = max_bytes - MODEL_ITEM_TRUNCATION_MARKER.len();
+    let tail_budget = (payload_budget / 5).min(2_000);
+    let head_budget = payload_budget - tail_budget;
+    let head = truncate_bytes(&content, head_budget);
+    let mut tail_start = content.len().saturating_sub(tail_budget);
+    while tail_start < content.len() && !content.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    format!(
+        "{head}{MODEL_ITEM_TRUNCATION_MARKER}{}",
+        &content[tail_start..]
+    )
+}
+
+/// Apply the universal model-item ceiling to runtime-synthesized text.
+pub fn bound_synthetic_text(content: impl Into<String>) -> String {
+    bound_model_item_text(content, MAX_MODEL_ITEM_BYTES)
+}
+
 /// How the user *fatally* interrupted (cancelled) the turn immediately
 /// preceding this *real* user message. Set only on genuine user messages
 /// (`synthetic_reason == None`) that directly follow a cancelled turn, so
@@ -843,6 +885,17 @@ impl ConversationResponse {
 // ============================================================================
 
 impl ConversationItem {
+    fn synthetic_user(content: impl Into<String>, reason: SyntheticReason) -> Self {
+        Self::User(UserItem {
+            content: vec![ContentPart::Text {
+                text: Arc::<str>::from(bound_synthetic_text(content)),
+            }],
+            synthetic_reason: Some(reason),
+            prior_turn_interrupt: None,
+            prompt_index: None,
+        })
+    }
+
     /// Create a system message
     pub fn system(content: impl Into<String>) -> Self {
         Self::System(SystemItem {
@@ -884,14 +937,7 @@ impl ConversationItem {
     /// plain-text user messages. Tagged with [`SyntheticReason::CompactionMeta`]
     /// so downstream code (pruning, compaction helpers) skips it.
     pub fn user_meta(content: impl Into<String>) -> Self {
-        Self::User(UserItem {
-            content: vec![ContentPart::Text {
-                text: Arc::<str>::from(content.into()),
-            }],
-            synthetic_reason: Some(SyntheticReason::CompactionMeta),
-            prior_turn_interrupt: None,
-            prompt_index: None,
-        })
+        Self::synthetic_user(content, SyntheticReason::CompactionMeta)
     }
 
     /// Create a synthetic user message for a runtime system reminder.
@@ -901,14 +947,7 @@ impl ConversationItem {
     /// [`SyntheticReason::SystemReminder`] so downstream code can skip it when
     /// counting real user prompts.
     pub fn system_reminder(content: impl Into<String>) -> Self {
-        Self::User(UserItem {
-            content: vec![ContentPart::Text {
-                text: Arc::<str>::from(content.into()),
-            }],
-            synthetic_reason: Some(SyntheticReason::SystemReminder),
-            prior_turn_interrupt: None,
-            prompt_index: None,
-        })
+        Self::synthetic_user(content, SyntheticReason::SystemReminder)
     }
 
     /// User message containing project instructions (AGENTS.md / CLAUDE.md),
@@ -916,14 +955,7 @@ impl ConversationItem {
     /// idempotence. Once in the conversation, MUST NOT be replaced or
     /// re-inserted — see the variant docstring.
     pub fn project_instructions(content: impl Into<String>) -> Self {
-        Self::User(UserItem {
-            content: vec![ContentPart::Text {
-                text: Arc::<str>::from(content.into()),
-            }],
-            synthetic_reason: Some(SyntheticReason::ProjectInstructions),
-            prior_turn_interrupt: None,
-            prompt_index: None,
-        })
+        Self::synthetic_user(content, SyntheticReason::ProjectInstructions)
     }
 
     /// Create a synthetic user message for an auto-continue prompt.
@@ -932,14 +964,7 @@ impl ConversationItem {
     /// [`SyntheticReason::AutoContinue`] so it is not counted as a real user
     /// prompt by truncation / rewind logic.
     pub fn auto_continue(content: impl Into<String>) -> Self {
-        Self::User(UserItem {
-            content: vec![ContentPart::Text {
-                text: Arc::<str>::from(content.into()),
-            }],
-            synthetic_reason: Some(SyntheticReason::AutoContinue),
-            prior_turn_interrupt: None,
-            prompt_index: None,
-        })
+        Self::synthetic_user(content, SyntheticReason::AutoContinue)
     }
 
     /// Create a synthetic user message for an auto-recovery retry prompt.
@@ -948,14 +973,7 @@ impl ConversationItem {
     /// with [`SyntheticReason::AutoRecovery`] so it is not counted as a real
     /// user prompt by truncation / rewind logic.
     pub fn auto_recovery(content: impl Into<String>) -> Self {
-        Self::User(UserItem {
-            content: vec![ContentPart::Text {
-                text: Arc::<str>::from(content.into()),
-            }],
-            synthetic_reason: Some(SyntheticReason::AutoRecovery),
-            prior_turn_interrupt: None,
-            prompt_index: None,
-        })
+        Self::synthetic_user(content, SyntheticReason::AutoRecovery)
     }
 
     /// Create a synthetic user message for a mid-turn interjection.
@@ -965,62 +983,27 @@ impl ConversationItem {
     /// compaction, replay, and analytics can distinguish it from real
     /// prompts and other synthetic injections.
     pub fn interjection(content: impl Into<String>) -> Self {
-        Self::User(UserItem {
-            content: vec![ContentPart::Text {
-                text: Arc::<str>::from(content.into()),
-            }],
-            synthetic_reason: Some(SyntheticReason::Interjection),
-            prior_turn_interrupt: None,
-            prompt_index: None,
-        })
+        Self::synthetic_user(content, SyntheticReason::Interjection)
     }
 
     /// Auto-wake synthetic prompt for a completed background bash task.
     pub fn task_completed(content: impl Into<String>) -> Self {
-        Self::User(UserItem {
-            content: vec![ContentPart::Text {
-                text: Arc::<str>::from(content.into()),
-            }],
-            synthetic_reason: Some(SyntheticReason::TaskCompleted),
-            prior_turn_interrupt: None,
-            prompt_index: None,
-        })
+        Self::synthetic_user(content, SyntheticReason::TaskCompleted)
     }
 
     /// Auto-wake synthetic prompt for a completed background subagent.
     pub fn subagent_completed(content: impl Into<String>) -> Self {
-        Self::User(UserItem {
-            content: vec![ContentPart::Text {
-                text: Arc::<str>::from(content.into()),
-            }],
-            synthetic_reason: Some(SyntheticReason::SubagentCompleted),
-            prior_turn_interrupt: None,
-            prompt_index: None,
-        })
+        Self::synthetic_user(content, SyntheticReason::SubagentCompleted)
     }
 
     /// Idle-gated notification drain (batched completions / monitor events).
     pub fn notification_drain(content: impl Into<String>) -> Self {
-        Self::User(UserItem {
-            content: vec![ContentPart::Text {
-                text: Arc::<str>::from(content.into()),
-            }],
-            synthetic_reason: Some(SyntheticReason::NotificationDrain),
-            prior_turn_interrupt: None,
-            prompt_index: None,
-        })
+        Self::synthetic_user(content, SyntheticReason::NotificationDrain)
     }
 
     /// Goal orchestrator summary turn.
     pub fn goal_summary(content: impl Into<String>) -> Self {
-        Self::User(UserItem {
-            content: vec![ContentPart::Text {
-                text: Arc::<str>::from(content.into()),
-            }],
-            synthetic_reason: Some(SyntheticReason::GoalSummary),
-            prior_turn_interrupt: None,
-            prompt_index: None,
-        })
+        Self::synthetic_user(content, SyntheticReason::GoalSummary)
     }
 
     /// Goal-achievement classifier nudge injected after the classifier
@@ -1029,26 +1012,12 @@ impl ConversationItem {
     /// synthetic user turns apart even though the wire role/tag is the
     /// same `<system-reminder>` shape.
     pub fn goal_classifier_nudge(content: impl Into<String>) -> Self {
-        Self::User(UserItem {
-            content: vec![ContentPart::Text {
-                text: Arc::<str>::from(content.into()),
-            }],
-            synthetic_reason: Some(SyntheticReason::GoalClassifierNudge),
-            prior_turn_interrupt: None,
-            prompt_index: None,
-        })
+        Self::synthetic_user(content, SyntheticReason::GoalClassifierNudge)
     }
 
     /// Scheduled task (`/loop`) prompt fired by the scheduler.
     pub fn scheduler_fired(content: impl Into<String>) -> Self {
-        Self::User(UserItem {
-            content: vec![ContentPart::Text {
-                text: Arc::<str>::from(content.into()),
-            }],
-            synthetic_reason: Some(SyntheticReason::SchedulerFired),
-            prior_turn_interrupt: None,
-            prompt_index: None,
-        })
+        Self::synthetic_user(content, SyntheticReason::SchedulerFired)
     }
 
     /// Create an assistant message
@@ -7791,6 +7760,41 @@ mod tests {
             );
         } else {
             panic!("expected User variant");
+        }
+    }
+
+    #[test]
+    fn synthetic_constructors_share_the_model_item_ceiling() {
+        let oversized = format!("{}TAIL", "界".repeat(MAX_MODEL_ITEM_BYTES));
+        let items = vec![
+            ConversationItem::user_meta(oversized.clone()),
+            ConversationItem::system_reminder(oversized.clone()),
+            ConversationItem::project_instructions(oversized.clone()),
+            ConversationItem::auto_continue(oversized.clone()),
+            ConversationItem::auto_recovery(oversized.clone()),
+            ConversationItem::interjection(oversized.clone()),
+            ConversationItem::task_completed(oversized.clone()),
+            ConversationItem::subagent_completed(oversized.clone()),
+            ConversationItem::notification_drain(oversized.clone()),
+            ConversationItem::goal_summary(oversized.clone()),
+            ConversationItem::goal_classifier_nudge(oversized.clone()),
+            ConversationItem::scheduler_fired(oversized),
+        ];
+        for item in items {
+            let text = item.text_content();
+            assert!(text.len() <= MAX_MODEL_ITEM_BYTES);
+            assert!(text.contains("middle truncated"));
+            assert!(text.ends_with("TAIL"));
+        }
+    }
+
+    #[test]
+    fn model_item_bound_is_utf8_safe_for_tiny_and_normal_budgets() {
+        let content = "é界".repeat(100);
+        for budget in [0, 1, 2, 3, 17, 128] {
+            let bounded = bound_model_item_text(content.clone(), budget);
+            assert!(bounded.len() <= budget);
+            assert!(std::str::from_utf8(bounded.as_bytes()).is_ok());
         }
     }
 

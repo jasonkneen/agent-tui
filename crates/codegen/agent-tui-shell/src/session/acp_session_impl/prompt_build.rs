@@ -182,8 +182,9 @@ mod install_system_prompt_tests {
         );
     }
 }
-pub(super) const LARGE_PROMPT_THRESHOLD: usize = 25_000;
-pub(super) const TRUNCATED_PROMPT_PREFIX_SIZE: usize = 25_000;
+pub(super) const LARGE_PROMPT_THRESHOLD: usize = agent_tui_sampling_types::MAX_MODEL_ITEM_BYTES;
+pub(super) const TRUNCATED_PROMPT_PREFIX_SIZE: usize =
+    agent_tui_sampling_types::MAX_MODEL_ITEM_BYTES;
 /// Percent of the bounded-prompt budget given to the query (capped; rest is context head).
 const LARGE_QUERY_BUDGET_PERCENT: usize = 80;
 /// Bytes kept at the TAIL when bounding head+tail, so a trailing question survives.

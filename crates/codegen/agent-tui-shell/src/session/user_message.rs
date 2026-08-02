@@ -96,6 +96,8 @@ pub fn format_vcs_status_block(status: &str, vcs_kind: VcsKind) -> String {
              is a snapshot in time, and will not update during the conversation.",
         )
     };
+    let status =
+        agent_tui_agent::prompt::user_message::normalize_git_status(status).unwrap_or_default();
     format!("\n\n<{tag}>\n{description}\n{status}\n</{tag}>\n")
 }
 
@@ -156,7 +158,10 @@ pub async fn construct_user_message(
     if let Some(vcs) = vcs_block {
         user_info.push_str(&vcs);
     }
-    user_info
+    agent_tui_sampling_types::bound_model_item_text(
+        user_info,
+        agent_tui_sampling_types::MAX_MODEL_ITEM_BYTES,
+    )
 }
 
 // Tests for extract_user_query now live in agent_tui_chat_state::compaction_utils.
