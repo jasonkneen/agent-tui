@@ -10,9 +10,10 @@ Under the config home: `~/.agent-tui`, resolved via `$AGENT_TUI_HOME` with legac
 
 | Key | Meaning | Written by | Applies |
 |---|---|---|---|
-| runtime selection | Which vendor serves turns (Grok / Codex / Claude) | `/runtime <vendor>` (aliases `/provider`, `/rt`) | Persists across restarts |
+| `active` (runtime selection) | Which vendor serves turns (Grok / Codex / Claude / Lazar) | `/runtime <vendor>` (aliases `/provider`, `/rt`) | Persists across restarts |
 | `codex_model` | Model pick within the Codex catalog (loaded live via `model/list` over the warm app-server) | `/model` while the Codex runtime is active | **Next thread**, never mid-thread |
 | `claude_model` | Model pick within the Claude catalog (loaded live via the `claude -p --output-format json` harness) | `/model` while the Claude runtime is active | **Next thread**, never mid-thread |
+| `lazar_model` | Model pick for the Lazar kernel (`--model`; default from `LAZAR_MODEL` / `memory/model.txt`) | `/model` while the Lazar runtime is active | **Next turn** (spawn-per-turn; session sticky) |
 
 Pattern for future vendors: one `<vendor>_model` key per catalog-shipped vendor, co-located with the runtime selection. Grok's model pick predates this file's vendor-scoped scheme and rides the built-in sampler catalog.
 

@@ -1,0 +1,9 @@
+# Claude alone — or: cargo run -p agent-tui-bin --bin claude
+# Requires: Claude Code (`claude` on PATH, logged in)
+
+id = "claude"
+name = "Claude"
+title_token = "claude"
+default_runtime = "claude"
+lock_runtime = true
+addons = ["claude"]

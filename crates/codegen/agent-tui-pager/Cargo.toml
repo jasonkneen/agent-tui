@@ -100,6 +100,8 @@ agent-tui-shell = { workspace = true }
 agent-tui-codex-runtime = { workspace = true }
 # Claude Agent SDK harness via Claude Code CLI (local login).
 agent-tui-claude-runtime = { workspace = true }
+agent-tui-lazar-runtime = { workspace = true }
+agent-tui-hermes-runtime = { workspace = true }
 agent-tui-workspace = { workspace = true }
 agent-tui-token-estimation = { workspace = true }
 agent-tui-telemetry = { workspace = true }

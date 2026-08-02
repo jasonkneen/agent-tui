@@ -10,8 +10,12 @@ use crate::version_overrides::{VersionOverrideError, apply_version_overrides};
 use prod_mc_cli_chat_proxy_types::FAIL_CLOSED_KEY;
 /// The canonical opt-in key + string parse live in the shared types crate, next to
 /// the signed payload that carries the flag, so the server-side signer and this
-/// client parse the same semantics.
-pub use prod_mc_cli_chat_proxy_types::fail_closed_flag_from_str;
+/// client parse the same semantics. Upstream now returns a tri-state
+/// ([`prod_mc_cli_chat_proxy_types::FailClosedFlag`]); this fork's callers want the
+/// original bool, where a non-bool value reads as not-opted-in.
+pub fn fail_closed_flag_from_str(requirements: &str) -> bool {
+    prod_mc_cli_chat_proxy_types::fail_closed_flag_status(requirements).is_enabled()
+}
 
 /// Read the `fail_closed` opt-in from a parsed requirements layer — same semantics as
 /// [`fail_closed_flag_from_str`]. Env tightening (file vs `GROK_MANAGED_CONFIG_FAIL_CLOSED`)

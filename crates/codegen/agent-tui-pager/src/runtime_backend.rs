@@ -1,7 +1,11 @@
-//! Active agent **runtime** selection (Grok vs Codex app-server vs Claude).
+//! Active agent **runtime addon** selection (Grok / Codex / Claude / Lazar / Hermes).
 //!
-//! Persisted to `~/.agent-tui/runtime.toml`. Used by `/runtime`, `/model` (when
-//! Codex), and the send-prompt path to route turns without Agent TUI OAuth.
+//! Architecture: **ONE CORE + ADDONS** — see [`crate::runtime_addon`] and
+//! `docs/CORE_AND_ADDONS.md`. This module holds the active addon id, model
+//! picks, readiness probes, and turn dispatch.
+//!
+//! Persisted to `~/.agent-tui/runtime.toml`. Used by `/runtime`, `/model`, and
+//! the send-prompt path to route turns without Agent TUI OAuth.
 
 use agent_client_protocol as acp;
 use indexmap::IndexMap;
@@ -22,6 +26,10 @@ pub enum RuntimeBackend {
     Codex,
     /// Claude Agent SDK (detect-only until sidecar lands).
     Claude,
+    /// Local `lazar` kernel (spawn-per-turn; providers/models owned by the kernel).
+    Lazar,
+    /// Local Hermes Agent CLI (`hermes chat -q`; sticky `--resume`).
+    Hermes,
 }
 
 impl RuntimeBackend {
@@ -30,6 +38,8 @@ impl RuntimeBackend {
             Self::Grok => "grok",
             Self::Codex => "codex",
             Self::Claude => "claude",
+            Self::Lazar => "lazar",
+            Self::Hermes => "hermes",
         }
     }
 
@@ -38,6 +48,8 @@ impl RuntimeBackend {
             Self::Grok => "Grok (xAI)",
             Self::Codex => "Codex (app-server)",
             Self::Claude => "Claude (Agent SDK)",
+            Self::Lazar => "Lazar (kernel)",
+            Self::Hermes => "Hermes (agent)",
         }
     }
 
@@ -46,12 +58,20 @@ impl RuntimeBackend {
             "grok" | "xai" | "default" => Some(Self::Grok),
             "codex" | "chatgpt" | "openai" => Some(Self::Codex),
             "claude" | "anthropic" => Some(Self::Claude),
+            "lazar" => Some(Self::Lazar),
+            "hermes" => Some(Self::Hermes),
             _ => None,
         }
     }
 
     pub fn all() -> &'static [Self] {
-        &[Self::Grok, Self::Codex, Self::Claude]
+        &[
+            Self::Grok,
+            Self::Codex,
+            Self::Claude,
+            Self::Lazar,
+            Self::Hermes,
+        ]
     }
 }
 
@@ -71,6 +91,12 @@ struct RuntimeFile {
     /// Last selected Claude model id / alias.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     claude_model: Option<String>,
+    /// Last selected Lazar model id (kernel `--model`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lazar_model: Option<String>,
+    /// Last selected Hermes model id (`hermes chat -m`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hermes_model: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +104,8 @@ struct RuntimeMem {
     active: RuntimeBackend,
     codex_model: Option<String>,
     claude_model: Option<String>,
+    lazar_model: Option<String>,
+    hermes_model: Option<String>,
 }
 
 static MEM: RwLock<Option<RuntimeMem>> = RwLock::new(None);
@@ -107,12 +135,34 @@ fn load_mem() -> RuntimeMem {
             return m.clone();
         }
     }
-    let file = load_from_disk().unwrap_or_default();
+    let path = runtime_file_path();
+    let exists = path.is_file();
+    let file = if exists {
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| toml::from_str(&raw).ok())
+            .unwrap_or_default()
+    } else {
+        RuntimeFile::default()
+    };
+    let active = crate::product_profile::resolve_active_runtime(file.active, exists);
     let mem = RuntimeMem {
-        active: file.active,
+        active,
         codex_model: file.codex_model,
         claude_model: file.claude_model,
+        lazar_model: file.lazar_model,
+        hermes_model: file.hermes_model,
     };
+    // Persist product-forced default when no runtime.toml yet, or when lock rewrote active.
+    if !exists || mem.active != file.active {
+        let _ = save_to_disk(&RuntimeFile {
+            active: mem.active,
+            codex_model: mem.codex_model.clone(),
+            claude_model: mem.claude_model.clone(),
+            lazar_model: mem.lazar_model.clone(),
+            hermes_model: mem.hermes_model.clone(),
+        });
+    }
     if let Ok(mut g) = MEM.write() {
         *g = Some(mem.clone());
     }
@@ -124,6 +174,8 @@ fn store_mem(mem: RuntimeMem) -> Result<(), String> {
         active: mem.active,
         codex_model: mem.codex_model.clone(),
         claude_model: mem.claude_model.clone(),
+        lazar_model: mem.lazar_model.clone(),
+        hermes_model: mem.hermes_model.clone(),
     })?;
     if let Ok(mut g) = MEM.write() {
         *g = Some(mem);
@@ -146,8 +198,36 @@ pub fn claude_model() -> Option<String> {
     load_mem().claude_model
 }
 
+/// Selected Lazar model id (if any).
+pub fn lazar_model() -> Option<String> {
+    load_mem().lazar_model
+}
+
+/// Selected Hermes model id (if any).
+pub fn hermes_model() -> Option<String> {
+    load_mem().hermes_model.and_then(|m| {
+        let n = agent_tui_hermes_runtime::normalize_model_id(&m);
+        if n.is_empty() { None } else { Some(n) }
+    })
+}
+
 /// Persist and set the active runtime.
 pub fn set_active(backend: RuntimeBackend) -> Result<(), String> {
+    if !crate::product_profile::runtime_allowed(backend) {
+        let p = crate::product_profile::get();
+        if p.lock_runtime {
+            return Err(format!(
+                "This product ({}) is locked to runtime `{}`",
+                p.name,
+                p.default_runtime.as_str()
+            ));
+        }
+        return Err(format!(
+            "Runtime `{}` is not enabled for product `{}`",
+            backend.as_str(),
+            p.name
+        ));
+    }
     let mut mem = load_mem();
     mem.active = backend;
     store_mem(mem)
@@ -189,6 +269,46 @@ pub fn set_claude_model(model_id: impl Into<String>) -> Result<(), String> {
     Ok(())
 }
 
+/// Persist Lazar model selection (and reset sticky session).
+pub fn set_lazar_model(model_id: impl Into<String>) -> Result<(), String> {
+    let model_id = model_id.into();
+    let mut mem = load_mem();
+    let changed = mem.lazar_model.as_deref() != Some(model_id.as_str());
+    mem.lazar_model = Some(model_id.clone());
+    store_mem(mem)?;
+    if changed {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async {
+                lazar_pool().reset_session().await;
+            });
+        }
+    }
+    sync_catalog_current(&model_id);
+    Ok(())
+}
+
+/// Persist Hermes model selection (and reset sticky session).
+pub fn set_hermes_model(model_id: impl Into<String>) -> Result<(), String> {
+    // UI may pass display labels ("Hermes — gpt-5.6-sol"); store the wire id.
+    let model_id = agent_tui_hermes_runtime::normalize_model_id(&model_id.into());
+    if model_id.is_empty() {
+        return Err("empty Hermes model id".into());
+    }
+    let mut mem = load_mem();
+    let changed = mem.hermes_model.as_deref() != Some(model_id.as_str());
+    mem.hermes_model = Some(model_id.clone());
+    store_mem(mem)?;
+    if changed {
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async {
+                hermes_pool().reset_session().await;
+            });
+        }
+    }
+    sync_catalog_current(&model_id);
+    Ok(())
+}
+
 fn sync_catalog_current(model_id: &str) {
     if let Ok(mut g) = catalog_lock().write() {
         if let Some(ref mut state) = *g {
@@ -198,12 +318,6 @@ fn sync_catalog_current(model_id: &str) {
             }
         }
     }
-}
-
-fn load_from_disk() -> Option<RuntimeFile> {
-    let path = runtime_file_path();
-    let raw = std::fs::read_to_string(path).ok()?;
-    toml::from_str(&raw).ok()
 }
 
 fn save_to_disk(file: &RuntimeFile) -> Result<(), String> {
@@ -223,17 +337,18 @@ pub struct RuntimeStatus {
     pub detail: String,
 }
 
-/// Probe readiness of each backend for the UI.
+/// Probe readiness of each backend for the UI (product-filtered).
 pub fn status_list() -> Vec<RuntimeStatus> {
     let current = active();
-    RuntimeBackend::all()
-        .iter()
-        .copied()
+    crate::product_profile::enabled_runtimes()
+        .into_iter()
         .map(|backend| {
             let (ready, detail) = match backend {
                 RuntimeBackend::Grok => (true, "built-in agent".into()),
                 RuntimeBackend::Codex => codex_status(),
                 RuntimeBackend::Claude => claude_status(),
+                RuntimeBackend::Lazar => lazar_status(),
+                RuntimeBackend::Hermes => hermes_status(),
             };
             RuntimeStatus {
                 backend,
@@ -290,6 +405,44 @@ fn claude_status() -> (bool, String) {
     }
 }
 
+fn lazar_bin_path() -> Option<PathBuf> {
+    if let Some(bin) = std::env::var_os("LAZAR_BIN").map(PathBuf::from) {
+        if bin.is_file() {
+            return Some(bin);
+        }
+    }
+    if which_bin("lazar") {
+        return Some(PathBuf::from("lazar"));
+    }
+    let candidate = agent_tui_lazar_runtime::lazar_home().join("bin/lazar");
+    candidate.is_file().then_some(candidate)
+}
+
+fn lazar_status() -> (bool, String) {
+    // Provider/model config is owned by the kernel (LAZAR_MODEL / lazar-env);
+    // Agent TUI only displays what the kernel side reports.
+    let Some(bin) = lazar_bin_path() else {
+        return (false, "install lazar (on PATH or $LAZAR_HOME/bin/lazar)".into());
+    };
+    let model = lazar_model()
+        .or_else(agent_tui_lazar_runtime::discover_active_model)
+        .unwrap_or_else(|| "kernel default".into());
+    (true, format!("lazar kernel ({}) · model {model}", bin.display()))
+}
+
+fn hermes_status() -> (bool, String) {
+    let Some(bin) = agent_tui_hermes_runtime::hermes_bin_path() else {
+        return (
+            false,
+            "install Hermes Agent (`hermes` on PATH or ~/.hermes)".into(),
+        );
+    };
+    let model = hermes_model()
+        .or_else(agent_tui_hermes_runtime::discover_active_model)
+        .unwrap_or_else(|| "config default".into());
+    (true, format!("hermes ({}) · model {model}", bin.display()))
+}
+
 fn which_bin(name: &str) -> bool {
     std::env::var_os("PATH")
         .map(|paths| {
@@ -299,6 +452,43 @@ fn which_bin(name: &str) -> bool {
             })
         })
         .unwrap_or(false)
+}
+
+/// Global Lazar pool (lazy). Spawn-per-turn; kernel-side continuity via `--session`.
+pub fn lazar_pool() -> Arc<agent_tui_lazar_runtime::LazarRuntimePool> {
+    static POOL: OnceLock<Arc<agent_tui_lazar_runtime::LazarRuntimePool>> = OnceLock::new();
+    POOL.get_or_init(|| {
+        let lazar_bin = lazar_bin_path().unwrap_or_else(|| PathBuf::from("lazar"));
+        Arc::new(agent_tui_lazar_runtime::LazarRuntimePool::new(
+            agent_tui_lazar_runtime::PoolConfig {
+                lazar_bin,
+                // Run from the kernel's home so it resolves skills/hooks/memory/
+                // sessions exactly as its own launcher does.
+                cwd: Some(agent_tui_lazar_runtime::lazar_home()),
+                default_model: agent_tui_lazar_runtime::discover_active_model(),
+                ..Default::default()
+            },
+        ))
+    })
+    .clone()
+}
+
+/// Global Hermes pool (lazy). Spawn-per-turn; sticky `--resume` session.
+pub fn hermes_pool() -> Arc<agent_tui_hermes_runtime::HermesRuntimePool> {
+    static POOL: OnceLock<Arc<agent_tui_hermes_runtime::HermesRuntimePool>> = OnceLock::new();
+    POOL.get_or_init(|| {
+        let hermes_bin = agent_tui_hermes_runtime::hermes_bin_path()
+            .unwrap_or_else(|| PathBuf::from("hermes"));
+        Arc::new(agent_tui_hermes_runtime::HermesRuntimePool::new(
+            agent_tui_hermes_runtime::PoolConfig {
+                hermes_bin,
+                cwd: Some(agent_tui_hermes_runtime::hermes_home()),
+                default_model: agent_tui_hermes_runtime::discover_active_model(),
+                ..Default::default()
+            },
+        ))
+    })
+    .clone()
 }
 
 /// Global Codex pool (lazy). One warm app-server per pager process.
@@ -479,6 +669,54 @@ pub fn refresh_claude_models() -> Result<crate::acp::model_state::ModelState, St
     Ok(state)
 }
 
+/// Load the Lazar "catalog": the kernel owns providers and reports one active
+/// model (LAZAR_MODEL / memory/model.txt); there is no catalog API.
+pub fn refresh_lazar_models() -> Result<crate::acp::model_state::ModelState, String> {
+    Ok(model_state_from_lazar_active(lazar_model().as_deref()))
+}
+
+/// Build ModelState from the kernel-reported active model (single entry).
+pub fn model_state_from_lazar_active(
+    preferred: Option<&str>,
+) -> crate::acp::model_state::ModelState {
+    let id = preferred
+        .map(str::to_string)
+        .or_else(agent_tui_lazar_runtime::discover_active_model)
+        .unwrap_or_else(|| "lazar-default".to_string());
+    let model_id = acp::ModelId::new(Arc::from(id.as_str()));
+    let info = acp::ModelInfo::new(model_id.clone(), format!("Lazar — {id}"));
+    let mut available = IndexMap::new();
+    available.insert(model_id.clone(), info);
+    let mut state = crate::acp::model_state::ModelState::default();
+    state.update_catalog(available, Some(model_id.clone()));
+    state.set_current(model_id, None);
+    state
+}
+
+/// Load the Hermes "catalog": config.yaml default + optional selected model.
+pub fn refresh_hermes_models() -> Result<crate::acp::model_state::ModelState, String> {
+    Ok(model_state_from_hermes_active(hermes_model().as_deref()))
+}
+
+pub fn model_state_from_hermes_active(
+    preferred: Option<&str>,
+) -> crate::acp::model_state::ModelState {
+    let id = preferred
+        .map(|p| agent_tui_hermes_runtime::normalize_model_id(p))
+        .filter(|s| !s.is_empty())
+        .or_else(agent_tui_hermes_runtime::discover_active_model)
+        .unwrap_or_else(|| "hermes-default".to_string());
+    // Wire id must be the real Hermes/provider model slug — never the display label.
+    let model_id = acp::ModelId::new(Arc::from(id.as_str()));
+    let info = acp::ModelInfo::new(model_id.clone(), format!("Hermes — {id}"));
+    let mut available = IndexMap::new();
+    available.insert(model_id.clone(), info);
+    let mut state = crate::acp::model_state::ModelState::default();
+    state.update_catalog(available, Some(model_id.clone()));
+    state.set_current(model_id, None);
+    state
+}
+
 /// Build ModelState from Claude discovery (cache + known aliases).
 pub fn model_state_from_claude_discovered(
     preferred: Option<&str>,
@@ -534,9 +772,21 @@ pub fn model_state_from_claude_known(
 }
 
 /// Run one text turn on the active non-Grok runtime.
+///
+/// `sticky_key` isolates multi-agent continuity for spawn-per-turn runtimes
+/// that support sticky resume (Hermes). Pass the Agent TUI session id.
 pub async fn run_external_turn(
     runtime: RuntimeBackend,
     text: String,
+) -> Result<String, String> {
+    run_external_turn_keyed(runtime, text, None).await
+}
+
+/// Like [`run_external_turn`], with an optional sticky key (Agent TUI session id).
+pub async fn run_external_turn_keyed(
+    runtime: RuntimeBackend,
+    text: String,
+    sticky_key: Option<String>,
 ) -> Result<String, String> {
     match runtime {
         RuntimeBackend::Grok => Err(
@@ -569,6 +819,27 @@ pub async fn run_external_turn(
             .await
             .map_err(|e| format!("Codex turn failed: {e}"))
         }
+        RuntimeBackend::Lazar => {
+            let pool = lazar_pool();
+            let model = lazar_model();
+            let result = pool
+                .start_text_turn_keyed(&text, model.as_deref(), sticky_key.as_deref())
+                .await
+                .map_err(|e| format!("Lazar turn failed: {e}"))?;
+            Ok(result.text)
+        }
+        RuntimeBackend::Hermes => {
+            let pool = hermes_pool();
+            let model = hermes_model().map(|m| {
+                agent_tui_hermes_runtime::normalize_model_id(&m)
+            });
+            let model_ref = model.as_deref().filter(|m| !m.is_empty());
+            let result = pool
+                .start_text_turn_keyed(&text, model_ref, sticky_key.as_deref())
+                .await
+                .map_err(|e| format!("Hermes turn failed: {e}"))?;
+            Ok(result.text)
+        }
     }
 }
 
@@ -590,6 +861,14 @@ mod tests {
             Some(RuntimeBackend::Claude)
         );
         assert_eq!(
+            RuntimeBackend::parse("lazar"),
+            Some(RuntimeBackend::Lazar)
+        );
+        assert_eq!(
+            RuntimeBackend::parse("hermes"),
+            Some(RuntimeBackend::Hermes)
+        );
+        assert_eq!(
             RuntimeBackend::parse("anthropic"),
             Some(RuntimeBackend::Claude)
         );
@@ -597,13 +876,14 @@ mod tests {
     }
 
     #[test]
-    fn status_list_includes_all_backends() {
+    fn status_list_includes_enabled_backends() {
         let list = status_list();
-        assert_eq!(list.len(), 3);
-        assert!(list.iter().any(|s| s.backend == RuntimeBackend::Grok));
-        assert!(list.iter().any(|s| s.backend == RuntimeBackend::Codex));
-        assert!(list.iter().any(|s| s.backend == RuntimeBackend::Claude));
+        // Default product enables all four; product profiles may filter.
+        assert!(!list.is_empty());
         assert!(list.iter().any(|s| s.active));
+        for s in &list {
+            assert!(crate::product_profile::runtime_allowed(s.backend) || s.active);
+        }
     }
 
     #[test]

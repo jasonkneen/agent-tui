@@ -5,7 +5,7 @@ description: Browse the active vendor runtime's live model catalog with /model, 
 
 # Switch models within the active vendor runtime
 
-`/model` operates on the **active runtime's** catalog, not a fixed Grok list (`docs/LOCAL_CLI_AUTH.md`, "TUI usage (shipped)": "After `/runtime codex` or `/runtime claude`, Agent TUI loads that vendor's model catalog and **`/model` switches it**"). The older "`/model` only switches Grok models" reading is superseded — do not apply it, and do not quote skills that still assert it.
+`/model` operates on the **active runtime's** catalog, not a fixed Grok list (`docs/LOCAL_CLI_AUTH.md`, "TUI usage (shipped)": after `/runtime codex`, `/runtime claude`, or `/runtime lazar`, Agent TUI loads that vendor's model catalog and **`/model` switches it**). The older "`/model` only switches Grok models" reading is superseded — do not apply it, and do not quote skills that still assert it.
 
 ## 1. Confirm which vendor is active
 
@@ -27,11 +27,12 @@ The list you see is fetched **live from the vendor's own runtime** — never a h
 |---|---|
 | Grok / xAI | Built-in sampler catalog |
 | Codex | `model/list` over the warm `codex app-server` connection |
-| Claude | Claude Code Agent SDK harness via `claude -p --output-format json` (+ sticky `--resume`) |
+| Claude | Claude Code harness via `claude -p --output-format json` (+ sticky `--resume`) |
+| Lazar | Kernel-reported active model (`LAZAR_MODEL` / `memory/model.txt`); providers stay kernel-side |
 
 ## 3. Know where the pick persists and when it applies
 
-Selection is stored as a **vendor-scoped key** in `~/.agent-tui/runtime.toml` — `codex_model` / `claude_model` — alongside the runtime selection itself, and it **applies on the next thread**, not mid-thread. To verify or script a pick, read/edit that file rather than hunting for another config surface; each vendor's key is independent, so switching runtimes later restores that vendor's last pick.
+Selection is stored as a **vendor-scoped key** in `~/.agent-tui/runtime.toml` — `codex_model` / `claude_model` / `lazar_model` — alongside the runtime selection itself, and it **applies on the next thread**, not mid-thread. To verify or script a pick, read/edit that file rather than hunting for another config surface; each vendor's key is independent, so switching runtimes later restores that vendor's last pick.
 
 ## 4. Know what a catalog does NOT prove
 

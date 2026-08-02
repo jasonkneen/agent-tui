@@ -1,0 +1,12 @@
+# Convention: a persisted runtime selection records user choice, never vendor capability — selection ≠ routing
+
+**Rule.** The runtime selection and every vendor-scoped model pick in `~/.agent-tui/runtime.toml` are records of what the **user chose**, not evidence of what the **vendor can do**. A vendor below the inference rung of the readiness ladder persists its selection like any other while turns do not route to it. No surface — doc, skill, support answer, drift adjudication, or code review — may cite a persisted selection key (or a loaded model catalog) as proof that turns route through that vendor. Routability is proven only by the inference rung of the readiness probe.
+
+**Grounding.**
+- `suggested/wiki/runtime-toml-reference.md`: "**Selection ≠ routing.** For a vendor below the inference rung of the readiness ladder, the runtime selection persists here even though turns don't route to it — the file records the user's choice, not the vendor's capability."
+- `suggested/agent-updates/detect-only-runtime-state.md`: a detect-only vendor "can even be selected — but no turns route to it until its real runtime bridge (warm pool / SDK client) lands."
+- `suggested/wiki/vendor-runtime-readiness-ladder.md`: a selected vendor below rung 3 is "selectable-but-inert," and the Claude row shows a browsable catalog "does not mean turns route."
+
+**Why:** selection state looks exactly like capability state to anyone reading `runtime.toml` — a `claude_model` key sitting next to a routable vendor's `codex_model` invites the inference that both serve turns. The farm side already learned this lesson in a different substrate: a managed silo's `ready` descriptor is not proof of routability. Without the TUI-side convention written down, a reviewer or support answer can settle a rung question from file contents, exactly the shortcut the readiness ladder and its probe exist to block — and a drift adjudication that weighed a persisted key as capability evidence would be resting on the wrong evidence class.
+
+**How to apply:** in a rung adjudication, classify `runtime.toml` contents as user-choice evidence only; establish capability with the readiness-rung probe. When writing docs or skills, phrase persistence as recording a choice ("the pick persists and applies next thread"), never as implying routing. When reviewing, flag any claim of the form "the key exists / the catalog loads, so routing works" as a defect.

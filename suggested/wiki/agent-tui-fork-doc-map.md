@@ -9,7 +9,9 @@ The Agent TUI fork governs itself through a small set of root documents, each ow
 | How do I cut a release? | `RELEASING.md` | Channel table (stable vs alpha tag shapes), asset-name contract, `version.rs` constants, what ships where (GitHub Releases / npm / never x.ai CDN) |
 | What must automation never break? | `AGENTS.md` | Do-not-break list, multi-vendor runtime table with hard boundaries, release-surface pointer table |
 | Where does a fix or patch go? | `CONTRIBUTING.md` | Upstream is source-transparency only — all contribution flow targets the fork; the verify command pair; the doc table this map extends |
-| How do external vendor runtimes work? | `docs/LOCAL_CLI_AUTH.md` | Warm-harness design: detection vs inference split, runtime/transport/auth table, cold-start rationale |
+| What is the architecture? | `docs/CORE_AND_ADDONS.md` | ONE CORE + ADDONS; zero-dup symlink product skins; product profiles |
+| How do external vendor runtimes work? | `docs/LOCAL_CLI_AUTH.md` | Addon harness detail: Grok · Codex · Claude · Lazar; gaps vs Go `lazartui` |
+| Where is the Go Lazar TUI? | `docs/LOCAL_CLI_AUTH.md` (Lazar section) + `~/lazar/workspace/tui/` | **Not in this repo** — Go source + `lazartui` binary live under lazar home |
 | Upstream security issues | upstream `SECURITY.md` | Explicitly not the fork's channel (`CONTRIBUTING.md`) |
 
 ## How to use it

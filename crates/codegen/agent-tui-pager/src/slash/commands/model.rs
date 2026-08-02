@@ -23,7 +23,7 @@ impl SlashCommand for ModelCommand {
     }
 
     fn description(&self) -> &str {
-        "Switch model (Grok / Codex / Claude — depends on /runtime)"
+        "Switch model (Grok / Codex / Claude / Lazar — depends on /runtime)"
     }
 
     fn session_scoped(&self) -> bool {

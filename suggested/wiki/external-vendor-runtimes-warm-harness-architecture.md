@@ -1,4 +1,4 @@
-# External vendor runtimes — Claude Agent SDK and Codex app-server via warm local harnesses
+# External vendor runtimes — Claude, Codex, and Lazar via local harnesses
 
 Agent TUI integrates non-Grok vendors the way their own products do — through a **local, already-authenticated harness** — rather than reimplementing OAuth or raw chat HTTP (`docs/LOCAL_CLI_AUTH.md`).
 
@@ -6,11 +6,12 @@ Agent TUI integrates non-Grok vendors the way their own products do — through 
 
 | Vendor | Runtime | Transport | Auth |
 |--------|---------|-----------|------|
-| **Claude** | Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) | Long-lived SDK client / subprocess; async message stream | Reuses Claude Code login (keychain / `~/.claude`) — no Agent TUI OAuth |
-| **Codex** | `codex app-server` (+ optional `daemon`) | JSON-RPC over stdio / unix socket / ws; turn events stream as notifications (`item/agentMessage/delta`, `turn/completed`, …) | Reuses `~/.codex/auth.json` ChatGPT login — no Agent TUI OAuth |
+| **Claude** | Claude Code harness (`claude -p`; Agent SDK sidecar optional) | Subprocess stream / sticky `--resume` | Reuses Claude Code login (keychain / `~/.claude`) — no Agent TUI OAuth |
+| **Codex** | `codex app-server` (+ optional `daemon`) | JSON-RPC over stdio / unix socket / ws; turn events stream as notifications | Reuses `~/.codex/auth.json` ChatGPT login — no Agent TUI OAuth |
 | **Grok / xAI** | Existing `agent-tui-sampler` | HTTP SSE to cli-chat-proxy | Existing OIDC / API key |
+| **Lazar** | `lazar -p --output-format stream-json` (`agent-tui-lazar-runtime`) | Spawn-per-turn JSONL; sticky `--session` | Kernel providers (`lazar-env.sh` / `LAZAR_MODEL`) — no Agent TUI provider code |
 
-Note the streaming asymmetry: Codex streaming is JSON-RPC notifications on a persistent socket, not classic HTTP SSE — same latency properties (one open channel, incremental events); Claude streaming is the SDK's message stream over its long-lived client (internally the Claude Code harness).
+Streaming shapes: Codex holds a warm JSON-RPC socket; Claude uses a sticky subprocess session; Lazar re-spawns the kernel each turn (same contract as the Go `lazartui` at `~/lazar/workspace/tui/`).
 
 ## Detection vs inference — two separate concerns
 
@@ -30,6 +31,6 @@ This is the "always on (with timeout) SSE connection for speed."
 
 - Do **not** rename ACP method IDs (`xai.api_key`, `grok.com`, …)
 - Do **not** send third-party tokens to the Grok chat proxy
-- Do **not** force Claude/Codex through `SamplerConfig` HTTP — use a runtime bridge
+- Do **not** force Claude/Codex/Lazar through `SamplerConfig` HTTP — use a runtime bridge
 
 See the companion convention doc for why these boundaries exist and how to apply them when adding a vendor.

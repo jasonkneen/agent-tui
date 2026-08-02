@@ -1,0 +1,22 @@
+[package]
+name = "agent-tui-lazar-runtime"
+version = "0.1.210"
+edition = "2024"
+description = "Lazar kernel runtime client (spawn-per-turn stream-json)"
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+tokio = { workspace = true, features = [
+  "io-util",
+  "process",
+  "rt",
+  "sync",
+  "time",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

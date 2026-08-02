@@ -794,6 +794,9 @@ impl ReasoningEffort {
             crate::rs::ReasoningEffort::Medium => Self::Medium,
             crate::rs::ReasoningEffort::High => Self::High,
             crate::rs::ReasoningEffort::Xhigh => Self::Xhigh,
+            // `max` is a CLI/UX alias of `xhigh` in this fork (see `FromStr`), so the
+            // Responses API's distinct `Max` echo folds back onto `Xhigh`.
+            crate::rs::ReasoningEffort::Max => Self::Xhigh,
         }
     }
 

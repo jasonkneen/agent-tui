@@ -1,0 +1,26 @@
+# Example product profile — install as ~/.agent-tui/product.toml
+# (or point AGENT_TUI_PRODUCT_FILE at this file).
+#
+# Quick preset without a file:
+#   AGENT_TUI_PRODUCT=lazar agent-tui
+#
+# Effect:
+#   - Product name / window title → Lazar
+#   - Default + locked runtime → lazar kernel
+#   - /runtime cannot switch vendors
+#   - /model uses the Lazar kernel catalog only
+
+# ONE CORE + ADDONS — this file only skins the core and picks addons.
+# See docs/CORE_AND_ADDONS.md
+
+id = "lazar"
+name = "Lazar"
+title_token = "lazar"
+default_runtime = "lazar"   # default addon
+lock_runtime = true         # single-product: no /runtime switch
+addons = ["lazar"]          # allow-list (legacy: enabled_runtimes)
+
+# Multi-addon with Lazar brand (still switchable):
+#   lock_runtime = false
+#   addons = ["lazar", "codex", "claude", "grok"]
+#   default_runtime = "lazar"

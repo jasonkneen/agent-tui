@@ -138,6 +138,10 @@ pub enum Action {
     RefreshCodexModels,
     /// Load Claude model aliases into the session catalog (after `/runtime claude`).
     RefreshClaudeModels,
+    /// Load the Lazar kernel-reported model into the session catalog (after `/runtime lazar`).
+    RefreshLazarModels,
+    /// Load the Hermes config default model into the session catalog (after `/runtime hermes`).
+    RefreshHermesModels,
     /// Send the current prompt text to the agent.
     SendPrompt(String),
     /// Submit a clicked follow-up suggestion chip as a LITERAL model prompt.
@@ -1893,6 +1897,10 @@ pub enum Effect {
     RefreshCodexModels,
     /// Load Claude known-model catalog into the active session.
     RefreshClaudeModels,
+    /// Load the Lazar kernel-reported model catalog into the active session.
+    RefreshLazarModels,
+    /// Load the Hermes config default model catalog into the active session.
+    RefreshHermesModels,
     /// Register the current session in the active-sessions crash-recovery
     /// registry (`~/.grok/active_sessions.json`).
     RegisterActiveSession {
@@ -2231,6 +2239,14 @@ pub enum TaskResult {
     },
     /// Claude model catalog ready — apply to `/model` list.
     ClaudeModelsLoaded {
+        result: Result<crate::acp::model_state::ModelState, String>,
+    },
+    /// Lazar model catalog ready — apply to `/model` list.
+    LazarModelsLoaded {
+        result: Result<crate::acp::model_state::ModelState, String>,
+    },
+    /// Hermes model catalog ready — apply to `/model` list.
+    HermesModelsLoaded {
         result: Result<crate::acp::model_state::ModelState, String>,
     },
     /// A send-now `session/prompt` RPC failed at the transport/RPC layer —

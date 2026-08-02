@@ -68,7 +68,18 @@ fn handle_vendor_models_loaded(
 ) -> Vec<Effect> {
     match result {
         Ok(state) => {
-            crate::runtime_backend::stash_grok_catalog(app.models.clone());
+            // Stash Grok only when the UI still holds a non-overlapping (Grok)
+            // catalog. Avoid clobbering a prior stash with empty defaults or a
+            // second vendor refresh after product-skin startup already stashed.
+            let still_grok_catalog = !app.models.available.is_empty()
+                && !app
+                    .models
+                    .available
+                    .keys()
+                    .any(|id| state.available.contains_key(id));
+            if still_grok_catalog {
+                crate::runtime_backend::stash_grok_catalog(app.models.clone());
+            }
             let count = state.available.len();
             let name = state
                 .current_model_name()
@@ -502,6 +513,12 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         }
         TaskResult::ClaudeModelsLoaded { result } => {
             handle_vendor_models_loaded(app, "Claude", result)
+        }
+        TaskResult::LazarModelsLoaded { result } => {
+            handle_vendor_models_loaded(app, "Lazar", result)
+        }
+        TaskResult::HermesModelsLoaded { result } => {
+            handle_vendor_models_loaded(app, "Hermes", result)
         }
         TaskResult::SendPromptNowFailed {
             agent_id,

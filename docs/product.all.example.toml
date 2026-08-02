@@ -1,0 +1,12 @@
+# All providers — multi-addon platform (not locked).
+# Or: cargo run -p agent-tui-bin --bin agent-multi
+# Or: AGENT_TUI_PRODUCT=all agent-tui
+#
+# Switch addons in-session: /runtime grok|codex|claude|lazar|hermes
+
+id = "all"
+name = "Agent TUI (all providers)"
+title_token = "agent-tui"
+default_runtime = "grok"
+lock_runtime = false
+addons = ["grok", "codex", "claude", "lazar", "hermes"]

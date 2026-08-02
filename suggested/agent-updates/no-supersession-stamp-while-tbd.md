@@ -1,0 +1,12 @@
+# Convention: a supersession stamp is itself an adjudication — never stamp while the canonical answer is TBD
+
+**Rule.** Stamping a convention doc "Superseded by <new-doc> — do not apply" (or retiring it) declares a winner between two operative rules. That declaration is only available when the supersession is established: either the disputed fact has a **closed drift-ledger row** whose canonical value identifies the survivor, or the superseding doc landed as an undisputed same-change reconciliation. If two docs genuinely conflict but no row exists, the required move is to **register the drift first** — and while the row's canonical answer is TBD, no stamp may be applied in either direction. Confirm the conflict is genuine before any of this: the two docs must assert incompatible operative rules for one fact, not adjacent rules lumped by wording.
+
+**Grounding.**
+- `suggested/workflows/backfill-supersession-markers.md`, step 2: "if no row exists and the conflict is real, register the drift first — a marker cannot be applied while the canonical answer is genuinely TBD."
+- Same step: "verify the two docs assert incompatible operative rules for one fact (not adjacent rules lumped by wording). Check the drift ledger: if the fact has a closed row, the canonical value identifies the survivor."
+- The existing freeze law: a TBD row still freezes the fact — "write neither competing value until ground truth is established." A stamp writes one of the values in the strongest possible form: it instructs every future reader to discard the other.
+
+**Why:** the same-change supersession rule creates pressure to stamp quickly — an unstamped superseded doc is a named defect. But when which doc supersedes which is exactly the open question, a stamp resolves the drift outside the drift process: it is an adjudication with no wire probe, no evidentiary-weight comparison, and no ledger record, dressed as housekeeping. The freeze exists precisely so that neither value gets asserted before ground truth; a supersession banner is the most operative assertion a doc can carry.
+
+**How to apply:** in any supersession sweep or reconciliation, order the steps: confirm the conflict is genuine → find or register the ledger row → adjudicate to a canonical value → only then stamp or retire the loser (attributed and dated). When reviewing a change that adds a supersession banner, ask for the closed row (or the same-change reconciliation) that licenses it; a stamp citing only "this doc is newer" is the defect this convention names.

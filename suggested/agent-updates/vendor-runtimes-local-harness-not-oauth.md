@@ -1,6 +1,6 @@
 # Convention: external vendors integrate via local harness reuse — never Agent TUI OAuth, never tokens to the Grok proxy, never SamplerConfig HTTP
 
-**Rule.** When Agent TUI adds or maintains a non-Grok vendor (Claude, Codex, future vendors), it uses the vendor's own local, already-authenticated runtime — "vendor harnesses + local login, not Agent TUI OAuth" (`AGENTS.md`). Three prohibitions are absolute:
+**Rule.** When Agent TUI adds or maintains a non-Grok vendor (Claude, Codex, Lazar, future vendors), it uses the vendor's own local, already-authenticated runtime — "vendor harnesses + local login, not Agent TUI OAuth" (`AGENTS.md`). Three prohibitions are absolute:
 
 1. Do **not** implement Agent TUI-side OAuth for a vendor whose local CLI login can be reused (Claude Code login in keychain / `~/.claude`; Codex ChatGPT login in `~/.codex/auth.json`).
 2. Do **not** send third-party tokens to the Grok chat proxy.

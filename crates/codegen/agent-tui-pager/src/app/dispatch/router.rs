@@ -799,7 +799,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             // External runtimes: local selection only (no Grok ACP switch).
             match crate::runtime_backend::active() {
                 crate::runtime_backend::RuntimeBackend::Codex
-                | crate::runtime_backend::RuntimeBackend::Claude => {
+                | crate::runtime_backend::RuntimeBackend::Claude
+                | crate::runtime_backend::RuntimeBackend::Lazar
+                | crate::runtime_backend::RuntimeBackend::Hermes => {
                     return set_default_model(app, model_id);
                 }
                 crate::runtime_backend::RuntimeBackend::Grok => {}
@@ -1019,6 +1021,12 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                         crate::runtime_backend::RuntimeBackend::Claude => {
                             "Runtime: Claude — loading models (Claude Code Agent SDK harness)…".to_string()
                         }
+                        crate::runtime_backend::RuntimeBackend::Lazar => {
+                            "Runtime: Lazar — kernel-reported model".to_string()
+                        }
+                        crate::runtime_backend::RuntimeBackend::Hermes => {
+                            "Runtime: Hermes — config default model".to_string()
+                        }
                     };
                     app.show_toast(&note);
                     if let Some(agent) = get_active_agent_mut(app) {
@@ -1033,6 +1041,12 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                         crate::runtime_backend::RuntimeBackend::Claude => {
                             vec![Effect::RefreshClaudeModels]
                         }
+                        crate::runtime_backend::RuntimeBackend::Lazar => {
+                            vec![Effect::RefreshLazarModels]
+                        }
+                        crate::runtime_backend::RuntimeBackend::Hermes => {
+                            vec![Effect::RefreshHermesModels]
+                        }
                         crate::runtime_backend::RuntimeBackend::Grok => vec![],
                     };
                 }
@@ -1044,6 +1058,8 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         }
         Action::RefreshCodexModels => vec![Effect::RefreshCodexModels],
         Action::RefreshClaudeModels => vec![Effect::RefreshClaudeModels],
+        Action::RefreshLazarModels => vec![Effect::RefreshLazarModels],
+        Action::RefreshHermesModels => vec![Effect::RefreshHermesModels],
         Action::Login => dispatch_login(app),
         Action::CancelLogin => dispatch_cancel_login(app),
         Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),

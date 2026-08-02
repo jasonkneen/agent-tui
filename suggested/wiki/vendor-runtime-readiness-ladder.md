@@ -5,16 +5,17 @@ A vendor runtime integration in Agent TUI is not binary. `docs/LOCAL_CLI_AUTH.md
 | Stage | What it means | Wiring |
 |---|---|---|
 | **1. Detect** | `/runtime` shows the vendor's readiness — "is this CLI logged in?" | `auth::local_cli` credential detection; discovery-only, never an inference path |
-| **2. Catalog** | Selecting the vendor loads its live model catalog and `/model` switches within it, persisted as a vendor-scoped `runtime.toml` key (`codex_model` / `claude_model`) | Per-vendor catalog fetch: Codex via `model/list` over the warm app-server; Claude via the Agent SDK harness (`claude -p --output-format json` + sticky `--resume`) |
-| **3. Inference** | Turns actually route through the vendor's warm runtime | The full runtime bridge: warm pool / long-lived SDK client with idle timeout, health probe, optional eager warm |
+| **2. Catalog** | Selecting the vendor loads its live model catalog and `/model` switches within it, persisted as a vendor-scoped `runtime.toml` key (`codex_model` / `claude_model` / `lazar_model`) | Per-vendor catalog fetch: Codex via `model/list`; Claude via CLI harness; Lazar via kernel-reported active model |
+| **3. Inference** | Turns actually route through the vendor's runtime | Full bridge: warm pool / sticky session / spawn-per-turn as appropriate |
 
 ## Where each vendor sits (per the shipped table)
 
 - **Grok / xAI** — all three (the built-in default; existing sampler HTTP SSE).
 - **Codex** — all three: detected via `~/.codex/auth.json`, catalog over `model/list`, turns route through the warm `codex app-server`.
-- **Claude** — stages 1 and 2, not 3: `/runtime claude` is "detect-only until Agent SDK bridge" for *turn routing*, yet selecting it loads the Claude model catalog through the `claude -p` harness and `/model` persists a `claude_model` choice.
+- **Claude** — all three via the `claude -p` harness (full Agent SDK sidecar remains optional polish).
+- **Lazar** — all three: binary detect, kernel-reported model catalog, turns via `LazarRuntimePool` spawn-per-turn.
 
-The Claude row is the load-bearing example: **catalog can ship before inference**. A vendor whose models are browsable but whose turns don't route is a sanctioned intermediate state, not a half-broken integration.
+Historically Claude shipped catalog before full routing; that intermediate state remains a sanctioned pattern for *future* vendors, but Claude and Lazar both route turns today.
 
 ## Rules the ladder implies
 

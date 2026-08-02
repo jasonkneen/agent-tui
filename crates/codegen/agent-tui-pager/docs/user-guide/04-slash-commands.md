@@ -126,9 +126,40 @@ Aliases: `/title`
 
 ## Model and Mode
 
+### `/runtime [vendor]`
+
+Switch which **runtime addon** serves turns (not a model pick). Lists readiness
+when called with no argument. Architecture: [ONE CORE + ADDONS](../../../../../docs/CORE_AND_ADDONS.md).
+
+| Command | Addon |
+|---------|--------|
+| `/runtime grok` | Built-in xAI agent (default on platform) |
+| `/runtime codex` | Local `codex app-server` (`~/.codex` auth) |
+| `/runtime claude` | Claude Code CLI harness |
+| `/runtime lazar` | Local **lazar** kernel (`lazar -p`; providers stay in the kernel) |
+| `/runtime hermes` | **Hermes** Agent CLI (`hermes chat -q`) |
+
+```
+/runtime
+/runtime lazar
+```
+
+Aliases: `/provider`, `/rt`
+
+Selection is stored in `runtime.toml` under the config home. For Lazar, source
+`~/lazar/workspace/lazar-env.sh` first so keys and `LAZAR_MODEL` are set.
+
+**Product skins (zero core duplication):** one binary `agent-tui`; names like
+`grok` / `lazartui` / `hermes` are symlinks (`scripts/link-product-bins.sh`).
+Single-product skins lock `/runtime` and brand the UI. Multi-provider:
+`./agent-tui` or `./agent-multi`. See [CORE_AND_ADDONS.md](../../../../../docs/CORE_AND_ADDONS.md).
+
 ### `/model <name>`
 
-Switch to a different model. Accepts model IDs or display names (case-insensitive). For reasoning models you can also pass an effort level as a second argument:
+Switch model **within the active runtime**. Accepts model IDs or display names
+(case-insensitive). After `/runtime codex|claude|lazar`, the catalog comes from
+that vendor’s harness (not a hardcoded list). For Grok reasoning models you can
+also pass an effort level as a second argument:
 
 ```
 /model grok-build
