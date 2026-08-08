@@ -36,8 +36,9 @@ pub struct CampaignOverride {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct DoomLoopRecoverySettings {
-    /// Send the `x-grok-doom-loop-check` header and parse the reported
-    /// triggers. `Some(false)` is a kill-switch; absent ⇒ client default (off).
+    /// Send the `x-grok-doom-loop-check` header, parse the reported
+    /// triggers, and resample confident loops. `Some(false)` is a
+    /// kill-switch; absent ⇒ client default (ON).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     /// Highest `tail_repetition` threshold considered confident (clamped to
@@ -150,7 +151,7 @@ pub struct WorktreeAutoGcSettings {
         skip_serializing_if = "Option::is_none"
     )]
     pub max_age_by_kind: Option<std::collections::BTreeMap<String, WorktreeKindMaxAge>>,
-    /// Optional discovery rebuild + stale `.git/worktrees/` prune (default off).
+    /// Optional discovery rebuild + grok-scoped stale `.git/worktrees/` scrub (default off).
     #[serde(
         default,
         deserialize_with = "de_opt_bool_tolerant",
@@ -849,7 +850,7 @@ pub struct RemoteSettings {
     #[serde(default)]
     pub worktree_type: Option<String>,
     /// Server-recommended default for `restore_code` in worktree resume.
-    /// Fallback when no local `[cli] restore_code` is set in config.toml.
+    /// Applied only when the client omits `restoreCode`.
     #[serde(default)]
     pub restore_code: Option<bool>,
     /// When `Some(true)`, Ctrl+C before the first server activity rewinds
@@ -860,6 +861,11 @@ pub struct RemoteSettings {
     /// Optional remote kill-switch; shell defaults ON when unset (set `false` to disable).
     #[serde(default)]
     pub session_recap: Option<bool>,
+    /// Enables the per-turn dashboard summary (one-line "what happened last
+    /// turn" generated at turn end). Optional remote kill-switch; shell
+    /// defaults ON when unset (set `false` to disable).
+    #[serde(default)]
+    pub turn_summary: Option<bool>,
     /// Enables the `ask_user_question` tool. Optional remote kill-switch:
     /// `Some(false)` strips the tool; `Some(true)` or absent → the shell
     /// default (ON). Feature-flagged via remote settings.
@@ -1006,6 +1012,13 @@ pub struct RemoteSettings {
     /// Max subagent nesting depth (`grok_build_settings.subagents_max_depth`).
     #[serde(default)]
     pub subagents_max_depth: Option<u32>,
+    #[serde(default)]
+    pub subagents_max_concurrent: Option<u32>,
+    /// `"queue"` or `"fail"`.
+    #[serde(default)]
+    pub subagents_limit_behavior: Option<String>,
+    #[serde(default)]
+    pub workflow_max_concurrent_agents: Option<u32>,
     /// Global system-prompt identity label. Per-model override wins; see
     /// `resolve_system_prompt_label`.
     #[serde(default)]

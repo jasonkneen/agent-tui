@@ -10,7 +10,7 @@ use toml::Value as TomlValue;
 ///
 /// This is a lightweight duplicate of `agent_tui_update::channel_name()` for
 /// use in `agent-tui-shell` which cannot depend on `agent-tui-update`.
-pub fn channel_name_from_cache() -> Option<&'static str> {
+pub(crate) fn channel_name_from_cache() -> Option<&'static str> {
     use std::sync::OnceLock;
     static NAME: OnceLock<Option<&'static str>> = OnceLock::new();
     *NAME.get_or_init(|| {

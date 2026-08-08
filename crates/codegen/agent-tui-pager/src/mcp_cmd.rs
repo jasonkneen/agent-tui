@@ -80,14 +80,15 @@ pub enum McpCommand {
         #[arg(short = 's', long, value_enum)]
         scope: Option<McpScope>,
     },
-    /// Forget stored OAuth credentials for an MCP server
-    Logout {
-        /// Server name whose stored credentials should be removed
+    /// Enable an MCP server
+    Enable {
+        /// Server name
         name: String,
-
-        /// Server URL. Required only when the server is no longer configured.
-        #[arg(long, value_name = "URL")]
-        url: Option<String>,
+    },
+    /// Disable an MCP server
+    Disable {
+        /// Server name
+        name: String,
     },
     /// Diagnose MCP server configuration and connectivity
     Doctor {
@@ -151,7 +152,8 @@ pub async fn run(mcp_args: McpArgs) -> Result<()> {
         McpCommand::List { json } => run_list(json),
         McpCommand::Add(args) => run_add(args).await,
         McpCommand::Remove { name, scope } => run_remove(&name, scope).await,
-        McpCommand::Logout { name, url } => run_logout(&name, url.as_deref()).await,
+        McpCommand::Enable { name } => run_set_enabled(&name, true).await,
+        McpCommand::Disable { name } => run_set_enabled(&name, false).await,
         McpCommand::Doctor { json, name } => run_doctor(json, name).await,
     }
 }
@@ -161,6 +163,7 @@ fn run_list(json: bool) -> Result<()> {
     // a session started in this directory would load from config.toml files.
     let cwd = current_dir_or_exit();
     let servers = agent_tui_shell::util::config::load_mcp_server_configs_with_project(&cwd);
+    let disabled = agent_tui_shell::util::config::disabled_mcp_server_names(&cwd);
 
     if json {
         let payload: serde_json::Value = servers
@@ -170,6 +173,10 @@ fn run_list(json: bool) -> Result<()> {
                 if let Some(obj) = entry.as_object_mut() {
                     obj.insert("name".into(), serde_json::Value::String(name.clone()));
                     obj.insert("scope".into(), serde_json::Value::String(scope.to_string()));
+                    obj.insert(
+                        "enabled".into(),
+                        serde_json::Value::Bool(!disabled.contains(name)),
+                    );
                 }
                 entry
             })
@@ -189,7 +196,11 @@ fn run_list(json: bool) -> Result<()> {
                 }
                 McpServerTransportConfig::StreamableHttp { url, .. } => url.clone(),
             };
-            let status = if config.enabled { "" } else { " (disabled)" };
+            let status = if disabled.contains(name) {
+                " (disabled)"
+            } else {
+                ""
+            };
             let scope_note = if *scope == "project" {
                 " (project)"
             } else {
@@ -531,6 +542,86 @@ fn surviving_definition(
                 )
             })
         })
+}
+
+/// TOML / disabled list / compat JSON / legacy `grok_com_*` (not gateway).
+fn mcp_server_is_known(name: &str, cwd: &Path) -> bool {
+    if name.starts_with("grok_com_") {
+        return true;
+    }
+    agent_tui_shell::util::config::cli_known_mcp_server_names(cwd).contains(name)
+}
+
+fn available_mcp_server_names(cwd: &Path) -> Vec<String> {
+    let mut names: Vec<String> = agent_tui_shell::util::config::cli_known_mcp_server_names(cwd)
+        .into_iter()
+        .collect();
+    names.sort();
+    names
+}
+
+async fn run_set_enabled(name: &str, enabled: bool) -> Result<()> {
+    // Do not use validate_server_name (add-only: [A-Za-z0-9_-]). Enable/disable
+    // also targets compat/plugin names that may contain dots or other keys.
+    if name.is_empty() {
+        bail!("Server name cannot be empty.");
+    }
+    if name.starts_with("managed_gateway:") || name.contains(':') {
+        eprintln!(
+            "Gateway connectors (e.g. managed_gateway:…) cannot be toggled via CLI; use Space in /mcps."
+        );
+        std::process::exit(1);
+    }
+    let cwd = current_dir_or_exit();
+
+    if !mcp_server_is_known(name, &cwd) {
+        eprintln!("No MCP server named '{name}'.");
+        let available = available_mcp_server_names(&cwd);
+        if !available.is_empty() {
+            eprintln!("Available servers: {}", available.join(", "));
+        } else {
+            eprintln!("No MCP servers configured. Run `grok mcp add --help` to get started.");
+        }
+        std::process::exit(1);
+    }
+
+    let was_disabled = agent_tui_shell::util::config::disabled_mcp_server_names(&cwd).contains(name);
+
+    let modified =
+        agent_tui_shell::util::config::save_mcp_server_enabled_in(name, enabled, &cwd).await?;
+
+    let now_disabled = agent_tui_shell::util::config::disabled_mcp_server_names(&cwd).contains(name);
+    let now_enabled = !now_disabled;
+
+    if enabled && now_disabled {
+        eprintln!(
+            "Warning: '{name}' is still disabled after enable (check project-scoped config)."
+        );
+        std::process::exit(1);
+    }
+    if !enabled && now_enabled {
+        eprintln!("Warning: '{name}' is still enabled after disable.");
+        std::process::exit(1);
+    }
+
+    if was_disabled == now_disabled {
+        let state = if now_enabled { "enabled" } else { "disabled" };
+        println!("MCP server '{name}' is already {state}.");
+    } else if now_enabled {
+        println!("Enabled MCP server '{name}'.");
+    } else {
+        println!("Disabled MCP server '{name}'.");
+    }
+
+    let user_config = agent_tui_shell::util::config::user_config_path();
+    for path in &modified {
+        if path == &user_config {
+            println!("File modified: {}", display_user_grok_path("config.toml"));
+        } else {
+            println!("File modified: {}", path.display());
+        }
+    }
+    Ok(())
 }
 
 async fn run_remove(name: &str, requested_scope: Option<McpScope>) -> Result<()> {
@@ -1085,25 +1176,35 @@ mod tests {
     }
 
     #[test]
-    fn logout_accepts_explicit_url_for_removed_servers() {
-        let args = PagerArgs::try_parse_from([
-            "grok",
-            "mcp",
-            "logout",
-            "linear",
-            "--url",
-            "https://mcp.linear.app/mcp",
-        ])
-        .expect("logout with an explicit URL parses");
+    fn enable_and_disable_parse_name() {
+        let args = PagerArgs::try_parse_from(["grok", "mcp", "enable", "user-grafana"])
+            .expect("enable should parse");
         match args.command {
             Some(Command::Mcp(McpArgs {
-                command: McpCommand::Logout { name, url },
-            })) => {
-                assert_eq!(name, "linear");
-                assert_eq!(url.as_deref(), Some("https://mcp.linear.app/mcp"));
-            }
-            other => panic!("expected mcp logout, got {other:?}"),
+                command: McpCommand::Enable { name },
+            })) => assert_eq!(name, "user-grafana"),
+            other => panic!("expected mcp enable, got {other:?}"),
         }
+
+        let args = PagerArgs::try_parse_from(["grok", "mcp", "disable", "grok_com_slack"])
+            .expect("disable should parse");
+        match args.command {
+            Some(Command::Mcp(McpArgs {
+                command: McpCommand::Disable { name },
+            })) => assert_eq!(name, "grok_com_slack"),
+            other => panic!("expected mcp disable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enable_disable_require_name() {
+        let err = PagerArgs::try_parse_from(["grok", "mcp", "enable"])
+            .expect_err("enable without name must fail");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+
+        let err = PagerArgs::try_parse_from(["grok", "mcp", "disable"])
+            .expect_err("disable without name must fail");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
     }
 
     #[test]

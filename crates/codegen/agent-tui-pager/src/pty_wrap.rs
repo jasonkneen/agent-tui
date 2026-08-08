@@ -17,37 +17,23 @@ use anyhow::Result;
 use base64::Engine as _;
 use std::io::Write;
 
-/// Maximum size for a buffered escape sequence candidate (1 MiB).
-///
-/// This bounds the memory used while accumulating a candidate OSC 52 or DCS
-/// sequence. Must be large enough to hold the base64-encoded form of
-/// `MAX_CLIPBOARD_PAYLOAD` (~1.33x expansion) plus the escape envelope.
-const MAX_ESC_BUFFER: usize = 1024 * 1024;
+use crate::theme::system_appearance::SystemAppearance;
+use crate::wrap_filter::Osc52Filter;
+use crate::wrap_restore::ModeTracker;
 
-/// Maximum decoded clipboard payload size (768 KiB).
-///
-/// Aligned with `MAX_ESC_BUFFER`: a 768 KiB payload encodes to ~1 MiB of
-/// base64, fitting within the buffer limit. Payloads larger than this are
-/// unrealistic for clipboard content over SSH.
-const MAX_CLIPBOARD_PAYLOAD: usize = 768 * 1024;
-
-/// The prefix that identifies an OSC 52 sequence after the `ESC ]`.
-const OSC52_PREFIX: &[u8] = b"52;";
-
-/// The tmux DCS passthrough prefix after `ESC P`: `tmux;\x1b\x1b]`.
-const TMUX_DCS_PREFIX: &[u8] = b"tmux;\x1b\x1b]";
-
-/// Base64 engine that accepts both padded and unpadded input.
-///
-/// OSC 52 emitters in the wild (including some Go-based tools and terminals)
-/// may omit `=` padding. Using `Indifferent` mode avoids silent decode
-/// failures from legitimate clipboard sequences.
-const BASE64_STANDARD_INDIFFERENT: base64::engine::GeneralPurpose =
-    base64::engine::GeneralPurpose::new(
-        &base64::alphabet::STANDARD,
-        base64::engine::GeneralPurposeConfig::new()
-            .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent),
-    );
+/// OSC 52 sink markers plus optional local appearance (`LC_*` survives SSH).
+fn apply_wrap_child_env(
+    cmd: &mut portable_pty::CommandBuilder,
+    appearance: Option<SystemAppearance>,
+) {
+    cmd.env("GROK_OSC52_SINK", "1");
+    cmd.env("LC_GROK_OSC52_SINK", "1");
+    if let Some(appearance) = appearance {
+        let value = appearance.as_env_value();
+        cmd.env("GROK_APPEARANCE", value);
+        cmd.env("LC_GROK_APPEARANCE", value);
+    }
+}
 
 /// Run an arbitrary command inside a local PTY with OSC 52 output filtering.
 ///
@@ -79,24 +65,10 @@ pub(crate) fn run_wrapped_command(program: &str, args: &[String]) -> Result<i32>
     let mut cmd = CommandBuilder::new(program);
     args.iter().for_each(|arg| cmd.arg(arg));
 
-    // Advertise to the wrapped program — and anything it spawns, e.g. a remote
-    // `grok` reached over SSH — that its OSC 52 clipboard writes are being
-    // intercepted here and copied to the real local clipboard. The inner grok
-    // reads this (see `agent_tui_pager_render::clipboard::osc52_sink_active`) to
-    // *trust* OSC 52 even when it can't detect an OSC-52-capable terminal,
-    // which is the usual SSH case (only `TERM` propagates, so Apple Terminal /
-    // unknown brands look incapable and the inner grok would otherwise report
-    // "Copy failed" despite the copy actually working).
-    //
-    // `CommandBuilder::new` inherits the full parent environment; `env` overlays
-    // these two without clearing it. The canonical `GROK_OSC52_SINK` is
-    // inherited by local children; the `LC_`-prefixed alias rides the default
-    // OpenSSH env forwarding (`SendEnv LANG LC_*` on the client,
-    // `AcceptEnv LANG LC_*` on the server) so the signal survives the SSH hop.
-    cmd.env("GROK_OSC52_SINK", "1");
-    cmd.env("LC_GROK_OSC52_SINK", "1");
+    apply_wrap_child_env(&mut cmd, crate::theme::system_appearance::detect_desktop());
 
-    // Spawn child in the PTY slave.
+    // Not session-scoped: this is the wrapped process itself.
+    #[allow(clippy::disallowed_methods)]
     let mut child = pair.slave.spawn_command(cmd)?;
     // Drop the slave so we get EOF when child exits.
     drop(pair.slave);
@@ -846,5 +818,46 @@ mod tests {
         }
         assert!(output.is_empty(), "request OSC must be fully consumed");
         assert_eq!(*calls.borrow(), 1);
+    }
+
+    fn env_str(cmd: &portable_pty::CommandBuilder, key: &str) -> Option<String> {
+        cmd.get_env(key)
+            .and_then(|value| value.to_str().map(str::to_owned))
+    }
+
+    #[test]
+    fn apply_wrap_child_env_dark_overrides_parent_light_on_both_names() {
+        let mut cmd = portable_pty::CommandBuilder::new("true");
+        cmd.env("GROK_APPEARANCE", "light");
+        cmd.env("LC_GROK_APPEARANCE", "light");
+        apply_wrap_child_env(&mut cmd, Some(SystemAppearance::Dark));
+        assert_eq!(env_str(&cmd, "GROK_APPEARANCE").as_deref(), Some("dark"));
+        assert_eq!(env_str(&cmd, "LC_GROK_APPEARANCE").as_deref(), Some("dark"));
+        assert_eq!(env_str(&cmd, "GROK_OSC52_SINK").as_deref(), Some("1"));
+        assert_eq!(env_str(&cmd, "LC_GROK_OSC52_SINK").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn apply_wrap_child_env_light_overrides_parent_dark_on_both_names() {
+        let mut cmd = portable_pty::CommandBuilder::new("true");
+        cmd.env("GROK_APPEARANCE", "dark");
+        cmd.env("LC_GROK_APPEARANCE", "dark");
+        apply_wrap_child_env(&mut cmd, Some(SystemAppearance::Light));
+        assert_eq!(env_str(&cmd, "GROK_APPEARANCE").as_deref(), Some("light"));
+        assert_eq!(
+            env_str(&cmd, "LC_GROK_APPEARANCE").as_deref(),
+            Some("light")
+        );
+    }
+
+    #[test]
+    fn apply_wrap_child_env_none_does_not_stamp_from_parent_snapshot() {
+        let mut cmd = portable_pty::CommandBuilder::new("true");
+        cmd.env("GROK_APPEARANCE", "dark");
+        cmd.env_remove("LC_GROK_APPEARANCE");
+        apply_wrap_child_env(&mut cmd, None);
+        assert_eq!(env_str(&cmd, "GROK_APPEARANCE").as_deref(), Some("dark"));
+        assert_eq!(env_str(&cmd, "LC_GROK_APPEARANCE"), None);
+        assert_eq!(env_str(&cmd, "GROK_OSC52_SINK").as_deref(), Some("1"));
     }
 }

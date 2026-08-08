@@ -67,7 +67,7 @@ impl agent_tui_tool_runtime::Tool for SchedulerListTool {
     ) -> agent_tui_tool_types::ToolDescription {
         agent_tui_tool_types::ToolDescription::new(
             "scheduler_list",
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
 

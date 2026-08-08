@@ -438,6 +438,230 @@ fn deny_globs_block_read_write_rename() {
     );
 }
 
+/// Hard-linked registry file must refuse sandbox startup (writable alias).
+#[test]
+fn hardlinked_hooks_paths_refuses_startup() {
+    if skip_if_enforcement_unavailable() {
+        return;
+    }
+    let (home, grok, workspace, _ch, _cg, _cw) = fixture_homes("hook-hl");
+    fs::create_dir_all(grok.join("hooks")).unwrap();
+    let reg = grok.join("hooks-paths");
+    let alias = grok.join("hooks-paths-alias");
+    fs::write(&reg, b"").unwrap();
+    fs::hard_link(&reg, &alias).unwrap();
+
+    let (status, stderr) =
+        run_hook_write_deny_scenario(&home, &grok, &workspace, "hook_write_deny");
+    assert!(
+        !status.success(),
+        "hard-linked hooks-paths must refuse startup\nstderr: {stderr}"
+    );
+    // Plan/materialization path should surface hard-link or identity failure.
+    assert!(
+        stderr.contains("hard-link")
+            || stderr.contains("HardLink")
+            || stderr.contains("hook write-deny")
+            || stderr.contains("nlink"),
+        "expected hard-link refusal signal\nstderr: {stderr}"
+    );
+}
+
+/// Workspace profile: Grok-owned direct hook sources are write-denied but readable;
+/// create / overwrite / unlink / rename / mkdir fail; absolute hooks-paths
+/// targets are denied; parent rename is blocked; Grok/CWD/temp siblings stay writable.
+#[test]
+fn workspace_protects_direct_hook_sources() {
+    if skip_if_enforcement_unavailable() {
+        return;
+    }
+
+    let (home, grok, workspace, _ch, _cg, _cw) = fixture_homes("hook");
+
+    fs::create_dir_all(grok.join("hooks")).expect("mkdir hooks");
+    fs::write(grok.join("hooks").join("keep.json"), r#"{"keep-me":true}"#)
+        .expect("write keep.json");
+    let dynamic = grok.join("sessions").join("extra-hooks");
+    fs::create_dir_all(&dynamic).expect("mkdir dynamic hooks target");
+    fs::write(dynamic.join("x.json"), r#"{"x":1}"#).expect("write dynamic hook");
+    // Configured target under workspace (absolute) for grant-root ancestor pins.
+    let ws_hooks = workspace.join("extra-parent").join("vendor-hooks");
+    fs::create_dir_all(&ws_hooks).expect("mkdir ws vendor hooks");
+    fs::write(ws_hooks.join("x.json"), r#"{"x":1}"#).expect("write ws hook");
+    fs::write(
+        grok.join("hooks-paths"),
+        format!("{}\n{}\n", dynamic.display(), ws_hooks.display()),
+    )
+    .expect("write hooks-paths");
+
+    let (status, stderr) =
+        run_hook_write_deny_scenario(&home, &grok, &workspace, "hook_write_deny");
+    assert!(
+        status.success(),
+        "hook write-deny e2e failed: {status}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("OK: hook write-deny e2e passed"),
+        "missing pass marker\nstderr: {stderr}"
+    );
+    for needle in [
+        "OK: hooks readable",
+        "OK: hooks file write denied",
+        "OK: hooks-paths write denied",
+        "OK: dynamic target write denied",
+        "OK: hooks-paths unlink denied",
+        "OK: hooks rename denied",
+        "OK: hooks nested dir mkdir denied",
+        "OK: parent rename denied",
+        "OK: sessions sibling writable",
+        "OK: workspace parent rename denied",
+        "OK: workspace sibling under parent writable",
+        "OK: grok runtime sibling writable",
+        "OK: workspace sibling writable",
+        "OK: temp sibling writable",
+    ] {
+        assert!(
+            stderr.contains(needle),
+            "expected '{needle}'\nstderr: {stderr}"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    assert!(
+        stderr.contains("OK: nested userns did not rewrite hooks"),
+        "expected nested userns check\nstderr: {stderr}"
+    );
+}
+
+/// Hard-linked or symlinked discovery JSON under hooks/ must refuse startup.
+#[test]
+fn hardlinked_hooks_json_refuses_startup() {
+    if skip_if_enforcement_unavailable() {
+        return;
+    }
+    let (home, grok, workspace, _ch, _cg, _cw) = fixture_homes("hook-json-hl");
+    fs::create_dir_all(grok.join("hooks")).unwrap();
+    fs::write(grok.join("hooks-paths"), b"").unwrap();
+    let active = grok.join("hooks").join("active.json");
+    let alias = grok.join("hooks").join("active-alias.json");
+    fs::write(&active, r#"{"hooks":{}}"#).unwrap();
+    fs::hard_link(&active, &alias).unwrap();
+
+    let (status, stderr) =
+        run_hook_write_deny_scenario(&home, &grok, &workspace, "hook_write_deny");
+    assert!(
+        !status.success(),
+        "hard-linked hooks JSON must refuse startup\nstderr: {stderr}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn symlinked_hooks_json_refuses_startup() {
+    if skip_if_enforcement_unavailable() {
+        return;
+    }
+    let (home, grok, workspace, _ch, _cg, _cw) = fixture_homes("hook-json-sym");
+    fs::create_dir_all(grok.join("hooks")).unwrap();
+    fs::write(grok.join("hooks-paths"), b"").unwrap();
+    let real = grok.join("real-active.json");
+    let active = grok.join("hooks").join("active.json");
+    fs::write(&real, r#"{"hooks":{}}"#).unwrap();
+    std::os::unix::fs::symlink(&real, &active).unwrap();
+
+    let (status, stderr) =
+        run_hook_write_deny_scenario(&home, &grok, &workspace, "hook_write_deny");
+    assert!(
+        !status.success(),
+        "symlinked hooks JSON must refuse startup\nstderr: {stderr}"
+    );
+}
+
+/// First-run: missing fixed slots are created as real Grok state before apply,
+/// then write-denied. Parent asserts post-exit host tree is valid (no vendor stubs).
+#[test]
+fn workspace_protects_direct_hook_sources_first_run() {
+    if skip_if_enforcement_unavailable() {
+        return;
+    }
+
+    let (home, grok, workspace, _ch, _cg, _cw) = fixture_homes("hook-fr");
+    // Intentionally leave hooks/ and hooks-paths absent (first-run ensure path).
+
+    let (status, stderr) =
+        run_hook_write_deny_scenario(&home, &grok, &workspace, "hook_write_deny_first_run");
+    assert!(
+        status.success(),
+        "hook write-deny first-run e2e failed: {status}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("OK: hook write-deny e2e passed"),
+        "missing pass marker\nstderr: {stderr}"
+    );
+    for needle in [
+        "OK: first-run Grok hook slots denied",
+        "OK: hooks-paths (first-run) write denied",
+        "OK: hooks nested (first-run) mkdir denied",
+        "OK: hooks nested file (first-run) write denied",
+        "OK: grok runtime sibling writable",
+        "OK: workspace sibling writable",
+        "OK: temp sibling writable",
+    ] {
+        assert!(
+            stderr.contains(needle),
+            "expected '{needle}'\nstderr: {stderr}"
+        );
+    }
+
+    // Post-exit host: Grok slots exist and are valid; no vendor artifacts.
+    assert!(
+        grok.join("hooks").is_dir(),
+        "post-exit: hooks dir must exist as a real directory"
+    );
+    assert!(
+        grok.join("hooks-paths").is_file(),
+        "post-exit: hooks-paths must exist as a real file"
+    );
+    assert_eq!(
+        fs::read(grok.join("hooks-paths")).expect("read hooks-paths"),
+        b"",
+        "post-exit: first-run hooks-paths must be empty"
+    );
+    assert!(
+        !home.join(".claude").exists(),
+        "post-exit: must not create ~/.claude"
+    );
+    assert!(
+        !home.join(".cursor").exists(),
+        "post-exit: must not create ~/.cursor"
+    );
+}
+
+/// Marker spoof in an isolated subprocess (no env-mutating unit test).
+#[test]
+fn hook_write_deny_refuses_marker_spoof() {
+    // Always runnable on Linux unit path via soft-skip only when not requiring
+    // kernel enforcement — marker spoof only needs the verify API.
+    #[cfg(not(target_os = "linux"))]
+    {}
+    #[cfg(target_os = "linux")]
+    {
+        let (home, grok, workspace, _ch, _cg, _cw) = fixture_homes("hook-spoof");
+        fs::create_dir_all(grok.join("hooks")).unwrap();
+        fs::write(grok.join("hooks").join("x.json"), b"{}").unwrap();
+        fs::write(grok.join("hooks-paths"), b"").unwrap();
+        let (status, stderr) =
+            run_hook_write_deny_scenario(&home, &grok, &workspace, "hook_write_deny_marker_spoof");
+        assert!(
+            status.success(),
+            "marker spoof e2e failed: {status}\nstderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("OK: marker spoof refused"),
+            "expected spoof refusal\nstderr: {stderr}"
+        );
+    }
+}
+
 struct TempDirGuard(std::path::PathBuf);
 
 impl Drop for TempDirGuard {

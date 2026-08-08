@@ -2,7 +2,7 @@
 use super::*;
 use crate::session::info::Info;
 use crate::session::persistence::default_model_id;
-use crate::session::storage::{CopySessionOptions, SessionUpdate};
+use crate::session::storage::SessionUpdate;
 use crate::tools::todo::TodoState;
 use agent_client_protocol as acp;
 use tempfile::TempDir;
@@ -1020,13 +1020,9 @@ async fn test_load_prompts_only_robust_to_malformed_lines() {
         "malformed line should not drop surrounding valid prompts"
     );
 }
-/// Scale test: a large synthetic session with many turns and interleaved
-/// tool calls is extracted correctly and without panicking.
-///
-/// This serves as both a correctness regression test at realistic scale and
-/// a documented validation point for the load-path memory improvement: the
-/// selective parser avoids allocating full `acp::SessionNotification` objects
-/// for the many non-user-chunk updates that dominate a real session file.
+/// A large synthetic session with interleaved tool calls extracts
+/// correctly; the selective parser never allocates full notifications
+/// for the non-user updates that dominate a real file.
 #[tokio::test]
 async fn test_load_prompts_only_large_session() {
     let temp_dir = TempDir::new().unwrap();
@@ -1857,6 +1853,8 @@ fn write_test_summary(
         agent_name: None,
         sandbox_profile: None,
         reasoning_effort: None,
+        last_turn_summary: None,
+        last_turn_summary_prompt_id: None,
     };
     let json = serde_json::to_vec_pretty(&summary).unwrap();
     std::fs::write(session_dir.join("summary.json"), json).unwrap();

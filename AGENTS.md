@@ -99,4 +99,5 @@ cargo build --profile release-dist -p agent-tui-bin --features release-dist
 | Users (install) | README, user-guide `01-getting-started.md` |
 | Fork semantics | FORK.md |
 | Maintainers (ship) | RELEASING.md |
+| Maintainers (upstream port) | `scripts/upstream-sync/`, `suggested/workflows/sync-upstream-into-agent-tui.md`, skill `sync-upstream-monorepo` |
 | Agents (this file) | AGENTS.md |

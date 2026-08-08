@@ -277,17 +277,15 @@ impl HubHandle {
                 }
             });
         }
-        if config.ready_file.is_some() || config.diag.is_some() {
-            let publisher = Arc::new(ReadyPublisher {
-                ready_file: config.ready_file.clone(),
-                diag: config.diag.clone(),
-            });
-            let on_connect = Arc::clone(&publisher);
-            let on_disconnect = Arc::clone(&publisher);
+        if let Some(diag) = config.diag.clone() {
+            let on_connect = diag.clone();
+            let on_disconnect = diag.clone();
+            let on_terminal_close = diag.clone();
             server_builder = server_builder
-                .on_connect(move || on_connect.connected())
-                .on_disconnect(move || on_disconnect.disconnected())
-                .on_reconnect_settled(move || publisher.connected());
+                .on_connect(move || on_connect.set_connected())
+                .on_disconnect(move || on_disconnect.set_disconnected())
+                .on_terminal_close(move |code| on_terminal_close.set_terminal_close(code))
+                .on_reconnect_settled(move || diag.set_connected());
         }
         if let Some(ref id) = config.server_id {
             server_builder = server_builder.server_id(parse_server_id(id)?);
@@ -1087,6 +1085,9 @@ mod tests {
             block_waited: false,
             explicitly_killed: false,
             owner_session_id: None,
+            description: None,
+            is_backgrounded: false,
+            output_total_bytes: 0,
         })
     }
     fn started_id(n: &ToolNotification) -> &str {

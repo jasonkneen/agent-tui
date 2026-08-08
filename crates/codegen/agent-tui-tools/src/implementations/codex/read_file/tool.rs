@@ -31,6 +31,7 @@ pub struct CodexReadFileInput {
 
     /// The line number to start reading from. Must be 1 or greater.
     #[serde(default = "defaults::offset")]
+    #[schemars(range(min = 1))]
     pub offset: usize,
 
     /// The maximum number of lines to return.
@@ -158,7 +159,7 @@ impl agent_tui_tool_runtime::Tool for CodexReadFileTool {
     ) -> agent_tui_tool_types::ToolDescription {
         agent_tui_tool_types::ToolDescription::new(
             "read_file",
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
 

@@ -1,14 +1,22 @@
 [package]
 license = "Apache-2.0"
 name = "agent-tui-shell"
-version = "0.1.220-alpha.4"
+version = "1.0.0"
 edition.workspace = true
 
 [features]
 default = []
-unstable = []
+dhat-heap = ["dep:dhat"]
+# Session synthesis + in-process e2e harness (`session::testkit`) for soak,
+# load, and bench tests. Off by default; the tests/benches that use it declare
+# it via `required-features`.
+test-support = []
+# Local Computer Hub workspace_server (own/attach + crash-restart). Requires
+local-workspace = []
 default-bazel = [
-    ]
+    "local-workspace",
+    "test-support",
+]
 
 [dependencies]
 dunce = { workspace = true }
@@ -107,6 +115,7 @@ arc-swap = { workspace = true }
 infer = "0.15"
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp"] }
 moka = { workspace = true, features = ["future"] }
+dhat = { workspace = true, optional = true }
 base64 = { workspace = true }
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 sha2 = { workspace = true }
@@ -130,12 +139,14 @@ agent-tui-interjection-core = { workspace = true }
 agent-tui-sandbox = { path = "../agent-tui-sandbox", default-features = false }
 agent-tui-chat-state = { path = "../agent-tui-chat-state" }
 agent-tui-compaction = { path = "../../common/agent-tui-compaction" }
+agent-tui-extra-ca = { workspace = true }
 agent-tui-sampler = { path = "../agent-tui-sampler" }
 agent-tui-sqlite-journal = { workspace = true }
 agent-tui-token-estimation = { workspace = true }
 agent-tui-sampling-types = { path = "../agent-tui-sampling-types" }
 agent-tui-tools = { path = "../agent-tui-tools" }
 agent-tui-tty-utils = { workspace = true }
+agent-tui-workflow = { path = "../agent-tui-workflow" }
 agent-tui-system-power = { workspace = true }
 agent-tui-workspace = { workspace = true }
 agent-tui-subagent-resolution = { path = "../agent-tui-subagent-resolution" }
@@ -182,22 +193,22 @@ windows = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+# Pre-main unified-log redirect (`test_support::redirect_unified_log_for_tests`).
+ctor = { workspace = true }
 filetime = { workspace = true }
+pretty_assertions = { workspace = true }
 tempfile = { workspace = true }
 agent-tui-memory = { workspace = true, features = ["test-support"] }
 agent-tui-workspace = { workspace = true, features = ["test-support"] }
-# Feature-unification applies the signing seam to the lib when building tests, so
-# integration tests can inject a throwaway trusted key; production builds exclude
-# dev-deps and compile the seam out.
 agent-tui-config = { workspace = true, features = [] }
-# Ed25519 signing for the managed-config signature tests.
 ring = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 rsa = { workspace = true }
 semver = { workspace = true }
 serial_test = { workspace = true }
-# Test-only builds expose the cpu_profile test seams to this crate's test targets.
+# Test-only builds expose `env::EnvVarGuard` and the cpu_profile test seams to
+# this crate's test targets.
 agent-tui-shell-base = { workspace = true, features = ["test-support"] }
 agent-tui-test-support = { workspace = true, features = [] }
 agent-tui-test-utils = { workspace = true }
@@ -212,6 +223,39 @@ workspace = true
 [[bench]]
 name = "session_list"
 harness = false
+
+[[bench]]
+name = "fork_copy"
+harness = false
+required-features = ["test-support"]
+
+[[bench]]
+name = "skills_watcher_startup"
+harness = false
+
+[[test]]
+name = "test_leader_soak"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_session_load_memory"
+required-features = ["test-support"]
+
+[[test]]
+name = "test_fork_copy_memory"
+required-features = ["test-support"]
+
+[[test]]
+name = "session_fork_replay_memory"
+required-features = ["test-support"]
+
+[[test]]
+name = "session_load_perf"
+required-features = ["test-support"]
+
+[[test]]
+name = "testkit_synth_roundtrip"
+required-features = ["test-support"]
 
 [lints]
 workspace = true

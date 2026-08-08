@@ -329,7 +329,7 @@ impl agent_tui_tool_runtime::Tool for AskUserQuestionTool {
     ) -> agent_tui_tool_types::ToolDescription {
         agent_tui_tool_types::ToolDescription::new(
             "ask_user_question",
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
 

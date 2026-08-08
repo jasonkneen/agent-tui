@@ -11,6 +11,7 @@ reqwest-middleware = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 agent-tui-auth = { workspace = true, features = ["middleware"] }
+agent-tui-extra-ca = { workspace = true }
 agent-tui-sampler = { path = "../agent-tui-sampler" }
 agent-tui-telemetry = { workspace = true }
 agent-tui-version = { workspace = true }

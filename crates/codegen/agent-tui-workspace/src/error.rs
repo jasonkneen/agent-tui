@@ -56,14 +56,13 @@ pub enum WorkspaceError {
     /// An error from the server connection or tool server.
     #[error("hub error: {0}")]
     HubError(String),
-
-    /// Deploy-service error tagged with its gRPC status class; see
-    /// [`DeployError`] for how the class crosses the workspace RPC boundary.
-    ///
-    /// [`DeployError`]: agent_tui_workspace_types::rpc::deploy::DeployError
-    #[error("deploy error: {message}")]
-    DeployError {
-        kind: agent_tui_workspace_types::rpc::deploy::DeployError,
+    #[error("unknown workspace method: {0}")]
+    UnknownMethod(String),
+    #[error("workspace archive export failed: {0}")]
+    ExportArchiveLimitExceeded(String),
+    #[error("github export error: {message}")]
+    ExportGithub {
+        kind: agent_tui_workspace_types::rpc::export_github::ExportGithubError,
         message: String,
     },
 
@@ -81,6 +80,32 @@ pub enum WorkspaceError {
     #[error("toolset externally owned (local bind), mutation refused: {0}")]
     ToolsetExternallyOwned(String),
 }
-
+impl WorkspaceError {
+    /// Low-cardinality `error_kind` metric label: the variant name in
+    /// snake_case; `DeployError` reports its per-kind `wire_code()`.
+    pub fn metric_kind(&self) -> &'static str {
+        match self {
+            Self::ParentSessionNotFound(_) => "parent_session_not_found",
+            Self::SessionNotFound(_) => "session_not_found",
+            Self::SessionAlreadyExists(_) => "session_already_exists",
+            Self::EmptyAgentId => "empty_agent_id",
+            Self::CannotDropMainSession => "cannot_drop_main_session",
+            Self::Finalize(_) => "finalize",
+            Self::CapabilityWidening { .. } => "capability_widening",
+            Self::Unauthorized { .. } => "unauthorized",
+            Self::TurnActive(_) => "turn_active",
+            Self::MaxDepthExceeded { .. } => "max_depth_exceeded",
+            Self::JoinError(_) => "join_error",
+            Self::InvalidHunkAction(_) => "invalid_hunk_action",
+            Self::HunkActionFailed(_) => "hunk_action_failed",
+            Self::HubError(_) => "hub_error",
+            Self::UnknownMethod(_) => "unknown_method",
+            Self::ExportArchiveLimitExceeded(_) => "export_archive_limit_exceeded",
+            Self::ExportGithub { kind, .. } => kind.wire_code(),
+            Self::ShuttingDown => "shutting_down",
+            Self::ToolsetExternallyOwned(_) => "toolset_externally_owned",
+        }
+    }
+}
 /// Convenience alias for the workspace's primary `Result` type.
 pub type WorkspaceResult<T> = Result<T, WorkspaceError>;

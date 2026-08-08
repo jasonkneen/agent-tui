@@ -6,24 +6,38 @@
 use std::collections::HashMap;
 use std::process::Command;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::host::HostOs;
 
+pub mod da2;
 pub mod embedded_editor;
 pub mod hyperlinks;
 pub mod image;
 pub mod keyboard;
+pub mod kitty_keyboard;
 pub mod overlay;
 pub(crate) mod probe;
+pub mod term_version;
+pub mod tmux;
+pub mod tmux_probe;
 pub mod xtversion;
+
+pub use tmux::{passthrough_available, should_wrap_osc11, tmux_passthrough, tmux_passthrough_str};
 
 pub use embedded_editor::{EmbeddedEditor, embedded_editor_from_env};
 pub use hyperlinks::{
     HyperlinkCapabilities, Osc8Support, SchemeFilter, SetDefaultCursor, SetPointerCursor,
     hyperlink_capabilities,
 };
-pub use keyboard::{KeyboardCapabilities, ModifierDelivery, ModifierFate, keyboard_capabilities};
+pub use keyboard::{
+    KeyboardCapabilities, ModifierDelivery, ModifierFate, keyboard_capabilities,
+    keyboard_capabilities_for_host,
+};
+pub use kitty_keyboard::{
+    kitty_event_types_withheld, kitty_flags_pushed, kitty_releases_reported,
+    negotiated_kitty_flags, set_pushed_kitty_flags, take_kitty_flags_pushed,
+};
+pub use term_version::{TermVersion, TermVersionSource};
 
 #[cfg(test)]
 mod test;
@@ -571,6 +585,14 @@ impl TerminalContext {
         }
     }
 
+    /// The best available terminal version and the source that reported it.
+    ///
+    /// Not pure: the DA2 arm reads process-global probe state, so env-precedence
+    /// tests hold only while no reply has been recorded in the process.
+    pub fn term_version(&self) -> (String, TermVersionSource) {
+        term_version::best_term_version(da2::detected(), self.env_term_version.as_ref())
+    }
+
     /// Extract a flat snapshot of terminal details for telemetry.
     pub fn telemetry_snapshot(&self) -> agent_tui_telemetry::events::TerminalTelemetry {
         let os = crate::host::HostOs::current();
@@ -590,6 +612,9 @@ impl TerminalContext {
             enter_modifier_fate: kb.enter_modifier.to_string(),
             tmux_version: self.tmux_version_or_na().to_owned(),
             xtversion: xtversion::detected().unwrap_or("").to_owned(),
+            term_version,
+            term_version_source: term_version_source.to_string(),
+            kitty_event_types_withheld: kitty_event_types_withheld(),
             hyperlink_osc8: self.hyperlink_capabilities().osc8.to_string(),
             hyperlink_skip_reason: self.hyperlink_skip_reason().unwrap_or("none").to_owned(),
             clipboard_route: route.to_string(),
@@ -607,12 +632,16 @@ impl TerminalContext {
             Some(v) if self.brand == TerminalName::Unknown => format!("Unknown (XTVERSION: {v})"),
             _ => self.brand.to_string(),
         };
+        // Raw and unlabeled by design: no provenance, and no rewrite of DA2's
+        // library version into an Alacritty release number.
+        let (term_version, _source) = self.term_version();
         FeedbackTerminalInfo {
             brand,
             multiplexer: self.multiplexer.to_string(),
             is_ssh: self.is_ssh,
             is_byobu: self.is_byobu(),
             term_var: self.term_var_or_na().to_owned(),
+            term_version: (!term_version.is_empty()).then_some(term_version),
             tmux_version: if self.is_tmux_backed() {
                 self.tmux_version.clone()
             } else {

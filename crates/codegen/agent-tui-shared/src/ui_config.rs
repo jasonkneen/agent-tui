@@ -39,6 +39,18 @@ pub struct UiConfig {
     /// Written by the pager's appearance persist module.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_timestamps: Option<bool>,
+    /// Timeline sidebar (per-turn tick rail in place of the scrollbar).
+    /// `None` = off (client default; opt-in). Written by the pager's settings modal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_timeline: Option<bool>,
+    /// Snap a just-sent prompt to the viewport top. `None` = on (default).
+    /// Written by the pager's settings modal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_flip_on_send: Option<bool>,
+    /// Ask before rewinding conversation history. `None` = on (default).
+    /// Written by the pager's settings modal / rewind "Yes, and don't ask again".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_before_rewind: Option<bool>,
     /// Theme to use when the OS is in dark mode. Written by the pager's theme persist module.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_dark_theme: Option<String>,
@@ -239,6 +251,9 @@ impl Default for UiConfig {
             approval_mode: None,
             default_selected_permission: None,
             show_timestamps: None,
+            show_timeline: None,
+            page_flip_on_send: None,
+            confirm_before_rewind: None,
             auto_dark_theme: None,
             auto_light_theme: None,
             scroll_speed: None,
@@ -269,6 +284,40 @@ impl Default for UiConfig {
 }
 
 impl UiConfig {
+    /// The single source of truth for the timeline-sidebar default (opt-in).
+    /// Flip this one line to change the default everywhere.
+    ///
+    // TODO: migrate the other boolean UI settings (show_timestamps,
+    // simple_mode, show_thinking_blocks, …) to the same const + resolver
+    // pattern. They currently duplicate their default literal across
+    // cache.rs / config.rs / defs.rs / setters.rs / registry.rs and rely on
+    // the registry drift-guard test to catch mismatches.
+    pub const SHOW_TIMELINE_DEFAULT: bool = false;
+
+    /// Resolved timeline-sidebar setting: the configured value, or
+    /// [`Self::SHOW_TIMELINE_DEFAULT`] when unset. The one place the default
+    /// is applied — every layer (cache, appearance config, settings modal)
+    /// reads through here so they cannot drift.
+    pub fn show_timeline_enabled(&self) -> bool {
+        self.show_timeline.unwrap_or(Self::SHOW_TIMELINE_DEFAULT)
+    }
+
+    /// Default for [`Self::page_flip_on_send`] when unset.
+    pub const PAGE_FLIP_ON_SEND_DEFAULT: bool = true;
+
+    pub fn page_flip_on_send_enabled(&self) -> bool {
+        self.page_flip_on_send
+            .unwrap_or(Self::PAGE_FLIP_ON_SEND_DEFAULT)
+    }
+
+    /// Default for [`Self::confirm_before_rewind`] when unset.
+    pub const CONFIRM_BEFORE_REWIND_DEFAULT: bool = true;
+
+    pub fn confirm_before_rewind_enabled(&self) -> bool {
+        self.confirm_before_rewind
+            .unwrap_or(Self::CONFIRM_BEFORE_REWIND_DEFAULT)
+    }
+
     /// True when the highlight should not timer-dismiss (`hold` / `word_select`,
     /// or legacy duration 0).
     pub fn keep_text_selection_enabled(&self) -> bool {
@@ -282,6 +331,26 @@ impl UiConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn page_flip_on_send_defaults_on() {
+        assert!(UiConfig::default().page_flip_on_send_enabled());
+        let off = UiConfig {
+            page_flip_on_send: Some(false),
+            ..Default::default()
+        };
+        assert!(!off.page_flip_on_send_enabled());
+    }
+
+    #[test]
+    fn confirm_before_rewind_defaults_on() {
+        assert!(UiConfig::default().confirm_before_rewind_enabled());
+        let off = UiConfig {
+            confirm_before_rewind: Some(false),
+            ..Default::default()
+        };
+        assert!(!off.confirm_before_rewind_enabled());
+    }
 
     #[test]
     fn keep_text_selection_enabled_precedence() {

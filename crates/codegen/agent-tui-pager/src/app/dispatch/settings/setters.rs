@@ -848,6 +848,110 @@ pub(in crate::app::dispatch) fn set_timestamps(app: &mut AppView, new: bool) -> 
     }]
 }
 
+/// State-only mutation for `show_timeline`. Mirrors `set_timestamps_inner`.
+pub(super) fn set_timeline_inner(app: &mut AppView, new: bool) {
+    app.current_ui.show_timeline = Some(new);
+    if app.appearance.show_timeline == new {
+        crate::appearance::cache::set_show_timeline(new);
+        return;
+    }
+    let mut config = app.appearance.clone();
+    config.show_timeline = new;
+    app.set_appearance(config);
+    crate::appearance::cache::set_show_timeline(new);
+}
+
+pub(in crate::app::dispatch) fn set_timeline(app: &mut AppView, new: bool) -> Vec<Effect> {
+    // Gate on the displayed state (`appearance.show_timeline`, what the rail
+    // renders from and what `/timeline` toggles against) — not the separately
+    // hydrated `current_ui`, which could disagree and make the toggle no-op.
+    let prev = app.appearance.show_timeline;
+    // Idempotency gate.
+    if prev == new {
+        return vec![];
+    }
+    set_timeline_inner(app, new);
+    refresh_open_settings_modals(app);
+    tracing::info!(target: "settings", key = "show_timeline", value = new, "setting changed");
+    app.show_toast(&save_success_toast("Timeline sidebar", new));
+    vec![Effect::PersistSetting {
+        key: "show_timeline",
+        value: crate::settings::SettingValue::Bool(new),
+        rollback_value: crate::settings::SettingValue::Bool(prev),
+    }]
+}
+
+pub(super) fn set_page_flip_on_send_inner(app: &mut AppView, new: bool) {
+    app.current_ui.page_flip_on_send = Some(new);
+    crate::appearance::cache::set_page_flip_on_send(new);
+}
+
+/// SHARED: cache + `[ui].page_flip_on_send` via `Effect::PersistSetting`.
+pub(in crate::app::dispatch) fn set_page_flip_on_send(app: &mut AppView, new: bool) -> Vec<Effect> {
+    let prev = crate::appearance::cache::load_page_flip_on_send();
+    if prev == new {
+        return vec![];
+    }
+    set_page_flip_on_send_inner(app, new);
+    refresh_open_settings_modals(app);
+    tracing::info!(target: "settings", key = "page_flip_on_send", value = new, "setting changed");
+    app.show_toast(&save_success_toast("Snap prompt to top on send", new));
+    vec![Effect::PersistSetting {
+        key: "page_flip_on_send",
+        value: crate::settings::SettingValue::Bool(new),
+        rollback_value: crate::settings::SettingValue::Bool(prev),
+    }]
+}
+
+pub(in crate::app::dispatch) fn set_confirm_before_rewind_inner(app: &mut AppView, new: bool) {
+    app.current_ui.confirm_before_rewind = Some(new);
+}
+
+/// SHARED: `[ui].confirm_before_rewind` via `Effect::PersistSetting`.
+pub(in crate::app::dispatch) fn set_confirm_before_rewind(
+    app: &mut AppView,
+    new: bool,
+) -> Vec<Effect> {
+    let prev = app.current_ui.confirm_before_rewind_enabled();
+    if prev == new {
+        return vec![];
+    }
+    set_confirm_before_rewind_inner(app, new);
+    refresh_open_settings_modals(app);
+    tracing::info!(target: "settings", key = "confirm_before_rewind", value = new, "setting changed");
+    app.show_toast(&save_success_toast("Confirm before rewind", new));
+    vec![Effect::PersistSetting {
+        key: "confirm_before_rewind",
+        value: crate::settings::SettingValue::Bool(new),
+        rollback_value: crate::settings::SettingValue::Bool(prev),
+    }]
+}
+
+pub(super) fn set_combine_queued_prompts_inner(app: &mut AppView, new: bool) {
+    app.current_ui.combine_queued_prompts = Some(new);
+    crate::appearance::cache::set_combine_queued_prompts(new);
+}
+
+/// SHARED: cache + `[ui].combine_queued_prompts` via `Effect::PersistSetting`.
+pub(in crate::app::dispatch) fn set_combine_queued_prompts(
+    app: &mut AppView,
+    new: bool,
+) -> Vec<Effect> {
+    let prev = crate::appearance::cache::load_combine_queued_prompts();
+    if prev == new {
+        return vec![];
+    }
+    set_combine_queued_prompts_inner(app, new);
+    refresh_open_settings_modals(app);
+    tracing::info!(target: "settings", key = "combine_queued_prompts", value = new, "setting changed");
+    app.show_toast(&save_success_toast("Combine queued prompts", new));
+    vec![Effect::PersistSetting {
+        key: "combine_queued_prompts",
+        value: crate::settings::SettingValue::Bool(new),
+        rollback_value: crate::settings::SettingValue::Bool(prev),
+    }]
+}
+
 /// State-only mutation for `simple_mode`.
 ///
 /// Propagates to every agent's `input_mode` so the toggle takes
@@ -1632,7 +1736,11 @@ pub(in crate::app::dispatch) fn set_default_model(
         // No session id yet — stash for
         // `EventLoop::on_session_created` to apply once the session
         // id materialises. Mirrors `Action::SwitchModel` line 586.
-        agent.session.deferred_model_switch = Some((new_id, None));
+        agent.session.deferred_model_switch = Some(crate::app::agent::DeferredModelSwitch {
+            model_id: new_id,
+            effort: None,
+            prev_model_id: prev_id,
+        });
     }
     effects
 }

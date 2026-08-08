@@ -476,6 +476,7 @@ impl ToolHarnessBuilder {
             self.on_reconnect.clone(),
             None, // on_disconnect (unused for harness connections)
             None, // on_connect (unused for harness connections)
+            None, // on_terminal_close (unused for harness connections)
             None,
             None,
             None,
@@ -2936,5 +2937,381 @@ mod tests {
             result: Value::Null,
         };
         assert!(harness.try_send_hook_reply(reply).is_err());
+    }
+
+    // --- discovery / teardown lifecycle (connection-leak regression) ---
+
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    use axum::Router;
+    use axum::extract::WebSocketUpgrade;
+    use axum::extract::ws::{Message, WebSocket};
+    use axum::response::IntoResponse;
+    use axum::routing::get;
+    use serde_json::json;
+    use tokio::net::TcpListener;
+
+    use crate::auth::AuthCredential;
+    use crate::pool::HubConnectionPool;
+
+    async fn spawn_discovery_mock_hub() -> SocketAddr {
+        let app = Router::new().route("/v1/tools", get(discovery_ws_upgrade));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app.into_make_service()).await;
+        });
+        tokio::task::yield_now().await;
+        addr
+    }
+
+    async fn discovery_ws_upgrade(ws: WebSocketUpgrade) -> impl IntoResponse {
+        ws.on_upgrade(discovery_handle_socket)
+    }
+
+    async fn discovery_handle_socket(mut socket: WebSocket) {
+        let _ = socket.recv().await;
+        let ack = json!({
+            "connection_id": "discovery-mock",
+            "user_id": "test",
+            "computer_hub_version": "test",
+            "supported_protocol_versions": ["1.0.0"],
+        });
+        let _ = socket.send(Message::Text(ack.to_string().into())).await;
+        // Ignore WS Ping/Pong/Close: keepalive fires immediately after hello.
+        while let Some(Ok(msg)) = socket.recv().await {
+            let Message::Text(text) = msg else { continue };
+            let Ok(value) = serde_json::from_str::<Value>(text.as_ref()) else {
+                continue;
+            };
+            let method = value.get("method").and_then(Value::as_str).unwrap_or("");
+            let id = value.get("id").cloned().unwrap_or(Value::Null);
+            match method {
+                "session_open" => {
+                    let resp = json!({ "jsonrpc": "2.0", "id": id, "result": {} });
+                    let _ = socket.send(Message::Text(resp.to_string().into())).await;
+                }
+                "tools.list" => {
+                    let resp = json!({ "jsonrpc": "2.0", "id": id, "result": { "tools": [] } });
+                    let _ = socket.send(Message::Text(resp.to_string().into())).await;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    async fn build_connected_harness(
+        session: &str,
+    ) -> (ToolHarness, Arc<HubConnectionPool>, Arc<HubConnection>) {
+        let addr = spawn_discovery_mock_hub().await;
+        let url = Url::parse(&format!("ws://{addr}/v1/tools")).expect("valid url");
+        let pool = HubConnectionPool::new();
+        let harness = ToolHarnessBuilder::default()
+            .pool(pool.clone())
+            .url(url)
+            .auth(AuthCredential::bearer("ignored"))
+            .session(SessionId::new(session).expect("valid"))
+            .build()
+            .await
+            .expect("build harness");
+        let conn = harness.connection().expect("connected").clone();
+        (harness, pool, conn)
+    }
+
+    async fn poll_until(mut pred: impl FnMut() -> bool, label: &str) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if pred() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("timed out waiting for: {label}");
+    }
+
+    #[tokio::test]
+    async fn discovery_task_exits_when_inbox_closes_after_drop() {
+        let (harness, _pool, conn) = build_connected_harness("weak-exit-eof").await;
+        harness.start_tool_discovery().await;
+        assert!(harness.discovery_task_started_for_tests());
+
+        // Steal the JoinHandle before Drop aborts it so we can observe exit.
+        let handle = harness
+            .inner
+            .discovery_handle
+            .lock()
+            .take()
+            .expect("discovery handle installed");
+
+        drop(harness);
+        poll_until(
+            || conn.bound_session_count() == 0,
+            "session untracked after harness drop",
+        )
+        .await;
+
+        // Last-borrower unregister closes the demux inbox → event rx EOF.
+        let join = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        assert!(
+            join.is_ok(),
+            "discovery task must complete once harness strong refs are gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_task_exits_on_weak_upgrade_failure() {
+        let (harness, _pool, conn) = build_connected_harness("weak-upgrade-exit").await;
+        let session = harness.session().clone();
+        harness.start_tool_discovery().await;
+        assert!(harness.discovery_task_started_for_tests());
+
+        // Steal handle so Drop's abort cannot complete the task for us.
+        let handle = harness
+            .inner
+            .discovery_handle
+            .lock()
+            .take()
+            .expect("discovery handle installed");
+
+        // Extra session track so Drop is not last → does not unregister inbox.
+        // Discovery keeps waiting on a live rx with only a dead Weak.
+        conn.track_session(session.clone());
+        drop(harness);
+        assert_eq!(
+            conn.bound_session_count(),
+            1,
+            "peer track keeps the session binding (and demux inbox) alive"
+        );
+
+        // Force the upgrade-failure branch (not EOF): deliver a notification
+        // while no strong ToolHarnessInner remains.
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "session_id": session.as_str(),
+            "method": "tools_changed",
+            "params": {
+                "session_id": session.as_str(),
+                "added": [],
+                "removed": [],
+            }
+        });
+        let outcome = conn.demux().route(frame);
+        assert!(
+            matches!(outcome, crate::demux::RouteOutcome::Session),
+            "notification must reach the still-registered session inbox, got {outcome:?}"
+        );
+
+        let join = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        assert!(
+            join.is_ok(),
+            "discovery task must exit via weak.upgrade() == None on a post-drop notification"
+        );
+
+        let _ = conn.untrack_session(&session);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn inner_drop_teardown_runs_under_racing_clones() {
+        let (harness, pool, conn) = build_connected_harness("race-drop").await;
+        harness.start_tool_discovery().await;
+
+        // Peer track: a double-untrack regression would zero this out.
+        let peer_session = SessionId::new("race-drop-peer").expect("valid");
+        conn.track_session(peer_session.clone());
+        assert_eq!(conn.bound_session_count(), 2);
+
+        let n = 16;
+        let barrier = Arc::new(tokio::sync::Barrier::new(n));
+        let mut handles = Vec::with_capacity(n);
+        for _ in 0..n {
+            let clone = harness.clone();
+            let barrier = barrier.clone();
+            handles.push(tokio::spawn(async move {
+                barrier.wait().await;
+                drop(clone);
+            }));
+        }
+        drop(harness);
+        for h in handles {
+            h.await.expect("join dropper");
+        }
+
+        poll_until(
+            || conn.bound_session_count() == 1,
+            "harness session untracked; peer track remains",
+        )
+        .await;
+        assert_eq!(
+            conn.untrack_session(&peer_session),
+            Some(0),
+            "peer track must still be exactly 1 after racing drops (no double-untrack)"
+        );
+
+        let weak = Arc::downgrade(&conn);
+        drop(conn);
+        poll_until(
+            || pool.sweep_idle(Duration::ZERO) == 1 || weak.upgrade().is_none(),
+            "connection becomes pool-evictable",
+        )
+        .await;
+        // Either sweep already took it, or a second sweep is a no-op once gone.
+        let _ = pool.sweep_idle(Duration::ZERO);
+        assert!(
+            weak.upgrade().is_none(),
+            "connection must be fully released after racing clone drops"
+        );
+    }
+
+    #[tokio::test]
+    async fn transient_inner_upgrade_does_not_skip_teardown() {
+        let (harness, pool, conn) = build_connected_harness("transient-upgrade").await;
+        harness.start_tool_discovery().await;
+
+        // Hold a transient strong Arc of the inner (simulates discovery
+        // upgrade mid-notification) while dropping every ToolHarness.
+        let transient = harness.inner.clone();
+        drop(harness);
+
+        // Wrapper Drop sees strong_count > 1 and skips; cleanup must still
+        // run when the transient ref drops (ToolHarnessInner::Drop).
+        assert_eq!(
+            conn.bound_session_count(),
+            1,
+            "session still tracked while transient inner Arc is held"
+        );
+        drop(transient);
+
+        poll_until(
+            || conn.bound_session_count() == 0,
+            "session untracked after transient inner drop",
+        )
+        .await;
+
+        let weak = Arc::downgrade(&conn);
+        drop(conn);
+        poll_until(
+            || {
+                let _ = pool.sweep_idle(Duration::ZERO);
+                weak.upgrade().is_none()
+            },
+            "connection released after transient upgrade race",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn same_session_rebind_replaces_prior_inbox() {
+        let addr = spawn_discovery_mock_hub().await;
+        let url = Url::parse(&format!("ws://{addr}/v1/tools")).expect("valid url");
+        let pool = HubConnectionPool::new();
+        let session = SessionId::new("rebind-session").expect("valid");
+        let cred = AuthCredential::bearer("ignored");
+
+        let first = ToolHarnessBuilder::default()
+            .pool(pool.clone())
+            .url(url.clone())
+            .auth(cred.clone())
+            .session(session.clone())
+            .build()
+            .await
+            .expect("first harness");
+        first.start_tool_discovery().await;
+        let first_handle = first
+            .inner
+            .discovery_handle
+            .lock()
+            .take()
+            .expect("first discovery handle");
+
+        let second = ToolHarnessBuilder::default()
+            .pool(pool.clone())
+            .url(url)
+            .auth(cred)
+            .session(session)
+            .build()
+            .await
+            .expect("second harness");
+        second.start_tool_discovery().await;
+        assert!(second.discovery_task_started_for_tests());
+
+        // register_session_inbox replaces the prior sender → first rx EOFs.
+        let join = tokio::time::timeout(Duration::from_secs(5), first_handle).await;
+        assert!(
+            join.is_ok(),
+            "first discovery task must exit when second harness rebinds the inbox"
+        );
+
+        // Last-borrower gate: dropping first must not unregister second's inbox.
+        let conn = second.connection().expect("connected").clone();
+        let second_session = second.session().clone();
+        drop(first);
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "session_id": second_session.as_str(),
+            "method": "tools_changed",
+            "params": {
+                "session_id": second_session.as_str(),
+                "added": [],
+                "removed": [],
+            }
+        });
+        let outcome = conn.demux().route(frame);
+        assert!(
+            matches!(outcome, crate::demux::RouteOutcome::Session),
+            "second's demux inbox must remain after first drop, got {outcome:?}"
+        );
+        assert!(
+            !second
+                .inner
+                .discovery_handle
+                .lock()
+                .as_ref()
+                .expect("second discovery handle still installed")
+                .is_finished(),
+            "second discovery must survive first harness drop"
+        );
+
+        drop(second);
+        poll_until(
+            || conn.bound_session_count() == 0,
+            "session fully released after last harness drop",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_unregisters_session_inbox() {
+        let (harness, pool, conn) = build_connected_harness("shutdown-inbox").await;
+        let session = harness.session().clone();
+        harness.start_tool_discovery().await;
+        assert_eq!(conn.bound_session_count(), 1);
+
+        harness.shutdown().await.expect("shutdown");
+        assert_eq!(conn.bound_session_count(), 0);
+
+        let frame = json!({
+            "jsonrpc": "2.0",
+            "session_id": session.as_str(),
+            "method": "tools_changed",
+            "params": {
+                "session_id": session.as_str(),
+                "added": [],
+                "removed": [],
+            }
+        });
+        let outcome = conn.demux().route(frame);
+        assert!(
+            !matches!(outcome, crate::demux::RouteOutcome::Session),
+            "shutdown must unregister the demux inbox, got {outcome:?}"
+        );
+
+        let weak = Arc::downgrade(&conn);
+        drop(harness);
+        drop(conn);
+        assert_eq!(pool.sweep_idle(Duration::ZERO), 1);
+        assert!(weak.upgrade().is_none());
     }
 }

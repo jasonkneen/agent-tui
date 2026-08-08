@@ -20,7 +20,8 @@ use crate::agent::config::{Config as AgentConfig, ModelEntry};
 use crate::agent::init::{bootstrap, exit_on_config_error};
 use crate::agent::models::{ModelFetchAuth, prefetch_models_blocking};
 use crate::agent::mvp_agent::MvpAgent;
-use crate::auth::{AuthManager, AuthMode, GrokAuth, run_auth_flow};
+use crate::auth::{AuthManager, AuthMode, GrokAuth, GrokComConfig, run_auth_flow};
+use crate::leader::protocol::InternalMethod;
 use crate::util::grok_home;
 use dirs;
 
@@ -215,27 +216,12 @@ fn spawn_agent_local(
     handle_io
 }
 
-/// Build a newline-terminated JSON-RPC request line for an internal
-/// `x.ai/...` extension method, for injection into the agent's inbound ACP
-/// stream by the leader's own watcher tasks (config hot-reload, skills).
-///
-/// The wire method is written **`_`-prefixed** (`_x.ai/internal/...`):
-/// `agent-client-protocol`'s inbound decoder routes a non-built-in method to
-/// `ext_method` only when it carries the `_` extension prefix and rejects
-/// bare custom methods with `-32601 method_not_found`. These injections were
-/// historically sent un-prefixed, so every watcher-driven hot-reload
-/// (models, skills, MCP servers) was silently rejected at decode — the
-/// watcher-side "change detected" logs fired but the reload handlers never
-/// ran. Keep `method` here as the un-prefixed name; the prefix is a wire
-/// detail added in one place.
-fn internal_reload_request_line(id: &str, method: &str, params: serde_json::Value) -> String {
-    let msg = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": format!("_{method}"),
-        "params": params,
-    });
-    format!("{}\n", msg)
+fn internal_reload_request_line(
+    id: &str,
+    method: InternalMethod,
+    params: serde_json::Value,
+) -> String {
+    crate::leader::protocol::internal_request_line(id, method, params)
 }
 
 /// Start a skills file watcher and wire it to inject `x.ai/internal/reload_skills`
@@ -258,14 +244,26 @@ where
         skills_paths,
     )?;
     let skills_tx = acp_incoming_tx.clone();
-    tokio::spawn(async move {
-        while skills_rx.recv().await.is_some() {
-            info!("Skill directory changed on disk, reloading skills for all sessions");
-            let line = internal_reload_request_line(
-                "skills-reload",
-                "x.ai/internal/reload_skills",
-                serde_json::json!({}),
-            );
+    let task = tokio::spawn(async move {
+        while let Some(change) = skills_rx.recv().await {
+            let created_discovery_dir = watcher.refresh_new_discovery_dirs();
+            let (id, method) = match change {
+                crate::config::watcher::DiscoveryChange::Skills if !created_discovery_dir => {
+                    info!("Skill directory changed on disk, reloading skills for all sessions");
+                    ("skills-reload", InternalMethod::ReloadSkills)
+                }
+                crate::config::watcher::DiscoveryChange::Skills => {
+                    info!("Discovery directory created on disk, reloading skills and workflows");
+                    ("skills-reload", InternalMethod::ReloadSkills)
+                }
+                crate::config::watcher::DiscoveryChange::Workflows => {
+                    info!(
+                        "Workflow directory changed on disk, re-advertising commands for all sessions"
+                    );
+                    ("workflows-reload", InternalMethod::ReloadWorkflows)
+                }
+            };
+            let line = internal_reload_request_line(id, method, serde_json::json!({}));
             let mut tx = skills_tx.lock().await;
             if let Err(e) = tx.write_all(line.as_bytes()).await {
                 warn!(
@@ -292,6 +290,22 @@ pub async fn run_stdio_agent(
     memory_config: Option<crate::config::MemoryConfig>,
 ) -> anyhow::Result<()> {
     register_fs_watch_runtime();
+    // A stdio agent is a protocol child speaking over pipes inherited from
+    // whoever spawned it (grok-desktop, IDE clients, the agent SDKs, a parent
+    // agent's subagent harness) — it is useless without that parent. stdin
+    // EOF already triggers shutdown below, but an agent wedged mid-turn (or
+    // under thread exhaustion) may never read stdin again; bind to parent
+    // death (Linux `PR_SET_PDEATHSIG(SIGTERM)`, no-op elsewhere) so the
+    // kernel reaps it instead of leaving an orphan accumulating pid slots on
+    // shared hosts. The leader entrypoint intentionally does NOT do this —
+    // it is designed to outlive its clients.
+    if let Err(error) = agent_tui_tty_utils::kill_current_process_on_parent_death() {
+        tracing::warn!(
+            %error,
+            "failed to bind to parent death; agent will not die with its \
+             parent — stdin EOF remains the only cleanup"
+        );
+    }
     // Stamp binary version into unified log entries so zombie processes
     // are identifiable by version in diagnostic logs.
     agent_tui_telemetry::unified_log::set_version(agent_tui_version::VERSION);
@@ -382,6 +396,7 @@ pub async fn run_stdio_agent(
 
             // Restore managed policy right before bootstrap reads it (no stale window after prefetch).
             crate::managed_config::ensure_managed_policy_present(&auth_manager).await;
+            apply_otel_config(&auth_manager, &agent_config.grok_com_config);
             let handle_io = spawn_agent_local(
                 agent_config,
                 auth_manager,
@@ -411,24 +426,6 @@ pub async fn run_headless(
     reauthenticate: bool,
     memory_config: Option<crate::config::MemoryConfig>,
 ) -> anyhow::Result<()> {
-    run_headless_inner(agent_config, reauthenticate, false, memory_config).await
-}
-
-/// Run the headless agent without opening any browser windows.
-/// If no cached credentials exist, returns an error instead of starting OAuth flow.
-pub async fn run_headless_no_browser(
-    agent_config: &AgentConfig,
-    memory_config: Option<crate::config::MemoryConfig>,
-) -> anyhow::Result<()> {
-    run_headless_inner(agent_config, false, true, memory_config).await
-}
-
-async fn run_headless_inner(
-    agent_config: &AgentConfig,
-    reauthenticate: bool,
-    no_browser: bool,
-    memory_config: Option<crate::config::MemoryConfig>,
-) -> anyhow::Result<()> {
     register_fs_watch_runtime();
     agent_tui_telemetry::unified_log::set_version(agent_tui_version::VERSION);
     // `grok agent [headless]` serves non-TUI automation; stamp proxy requests
@@ -453,17 +450,7 @@ async fn run_headless_inner(
     agent_config.mode = crate::agent::config::AgentMode::Headless;
 
     let ctx = &agent_config.grok_com_config;
-    let (mut auth, did_browser_flow) = if no_browser {
-        // No-browser mode: only use cached credentials, skip OAuth flow
-        let auth_manager = agent_config.create_auth_manager();
-        match auth_manager.current() {
-            Some(auth) => (auth, false),
-            None if auth_manager.is_expired() => {
-                anyhow::bail!("Session expired. Please run 'grok login' to re-authenticate.")
-            }
-            None => anyhow::bail!("No cached credentials found. Run `grok login`."),
-        }
-    } else if reauthenticate {
+    let (mut auth, did_browser_flow) = if reauthenticate {
         let auth_manager = Arc::new(AuthManager::new(&grok_home::grok_home(), ctx.clone()));
         run_auth_flow(
             &auth_manager,
@@ -549,7 +536,7 @@ async fn run_headless_inner(
 
     // Create first-connection callback for headless-specific behavior
     let on_first_connect: Box<dyn FnOnce() + Send + 'static> = Box::new(move || {
-        if !did_browser_flow && !no_browser {
+        if !did_browser_flow {
             // Print to stderr (not logger) so user sees it
             eprintln!();
             eprintln!(
@@ -886,7 +873,90 @@ fn spawn_leader_relay(
         *agent_to_ws_tx.lock() = Some(tx);
         *slot_for_task.borrow_mut() = Some(handle);
     });
-    slot
+}
+
+/// Everything needed to arm the leader's grok.com relay *after* startup.
+///
+/// A leader that boots without auth used to disable the relay forever — the
+/// decision was made once in [`run_leader`] and never revisited. On devboxes
+/// that turned a transient mint-provider outage at provision time into a
+/// permanently invisible box: the external auth provider succeeded minutes
+/// later and the config watcher hot-reloaded the token into the leader, but
+/// the relay never connected, the agent never registered, and tooling
+/// reported the (healthy) box as "not found online" for its whole lifetime.
+///
+/// These parts are captured in the no-auth startup path and consumed by the
+/// config-update loop on the first relay-eligible
+/// [`ConfigUpdate::Auth`](crate::config::reloader::ConfigUpdate::Auth).
+struct DeferredRelayArm {
+    relay_on_demand: bool,
+    relay_demand_rx: tokio::sync::watch::Receiver<bool>,
+    ws_to_agent_tx: mpsc::UnboundedSender<String>,
+    agent_to_ws_tx: Rc<Mutex<Option<mpsc::UnboundedSender<String>>>>,
+    cancel: tokio_util::sync::CancellationToken,
+    /// Shared with [`run_leader`]'s shutdown path, which drains it to stop
+    /// the relay explicitly.
+    slot: Rc<std::cell::RefCell<Option<crate::agent::relay::RelayHandle>>>,
+    grok_com_config: crate::auth::GrokComConfig,
+    alpha_test_key: Option<String>,
+}
+
+impl DeferredRelayArm {
+    /// Arm the relay for a hot-reloaded session if it is relay-eligible.
+    ///
+    /// Consumes the parts and returns `None` when the relay was armed.
+    /// Returns `Some(self)` when the session is not relay-eligible (BYOK /
+    /// non-x.ai issuer — see
+    /// [`RelayConfig::for_session`](crate::agent::relay::RelayConfig::for_session))
+    /// so a later eligible token can still arm.
+    ///
+    /// Must be called within a `LocalSet` (delegates to
+    /// [`spawn_leader_relay`]).
+    fn arm_if_eligible(self, session: &GrokAuth, auth_manager: &Arc<AuthManager>) -> Option<Self> {
+        let Some(relay_config) = crate::agent::relay::RelayConfig::for_session(
+            session,
+            &self.grok_com_config,
+            self.alpha_test_key.clone(),
+            Some(auth_manager.clone()),
+        ) else {
+            return Some(self);
+        };
+        info!("Relay-eligible auth token appeared after startup — arming grok.com relay");
+        spawn_leader_relay(
+            self.slot,
+            relay_config,
+            self.relay_on_demand,
+            self.relay_demand_rx,
+            self.ws_to_agent_tx,
+            self.agent_to_ws_tx,
+            self.cancel,
+        );
+        None
+    }
+}
+
+/// Close the external-OTEL gate before telemetry init; see
+/// [`crate::agent::otel_gate`].
+pub fn suppress_otel() {
+    crate::agent::otel_gate::suppress();
+}
+
+/// Startup external-OTEL gate for an in-process (embedded) agent. Mirrors the
+/// leader startup gate so the pager process is fail-closed by construction at
+/// the agent boundary.
+pub fn apply_otel_config(auth_manager: &AuthManager, grok_com_config: &GrokComConfig) {
+    suppress_otel();
+    // Session presence is disk-based (valid or expired), not refresh success: an
+    // expired session the refresher will renew still has a remote policy, so it
+    // must keep the gate closed.
+    let has_session = auth_manager.current().is_some() || auth_manager.read_disk_auth().is_some();
+    if crate::agent::otel_gate::should_open_at_startup(crate::agent::otel_gate::StartupGate {
+        channel: crate::agent::otel_gate::resolved_policy_channel(),
+        has_session,
+        session_pending: crate::agent::otel_gate::is_session_pending(has_session, grok_com_config),
+    }) {
+        crate::agent::otel_gate::open_at_startup();
+    }
 }
 
 /// Run the agent in leader mode, accepting IPC connections from multiple clients.
@@ -1143,33 +1213,38 @@ pub async fn run_leader(
     // ── Phase 6b: Legacy devbox auth migration ─────────────────────────────
     let auth: Option<GrokAuth> = migrate_devbox_auth_if_legacy(auth, &agent_config).await;
 
-    let auth_for_prefetch: Option<GrokAuth> = auth.clone();
-    let endpoints_for_prefetch = agent_config.endpoints.clone();
-    let fetch_auth_for_prefetch = ModelFetchAuth::resolve(&endpoints_for_prefetch, auth.is_some());
-    // The shared pair helper owns the remote_fetch gate for both halves, so a
-    // disabled knob cannot block leader readiness on settings retries.
-    let (prefetched_models, remote_settings) = tokio::task::spawn_blocking(move || {
-        crate::agent::models::prefetch_models_and_settings_blocking(
-            &endpoints_for_prefetch,
-            auth_for_prefetch.as_ref(),
-            fetch_auth_for_prefetch,
-        )
-    })
-    .await
-    .unwrap_or((None, None));
+    // A session-less leader that can still mint one (auth provider / devbox) will
+    // acquire a grok.com session post-readiness whose fleet policy governs
+    // external OTEL; see the background cold-mint below.
+    // Disk presence, not the is_xai-filtered no-mint result: an enterprise
+    // session has remote policy and must keep the gate closed.
+    let has_session = auth.is_some()
+        || agent_config
+            .create_auth_manager()
+            .read_disk_auth()
+            .is_some();
+    let session_pending =
+        crate::agent::otel_gate::is_session_pending(has_session, &agent_config.grok_com_config);
+    let policy_channel =
+        crate::agent::otel_gate::policy_channel_for(&agent_config.endpoints.proxy_url());
+    if crate::agent::otel_gate::should_open_at_startup(crate::agent::otel_gate::StartupGate {
+        channel: policy_channel,
+        has_session,
+        session_pending,
+    }) {
+        info!(
+            channel = ?policy_channel,
+            has_session,
+            session_pending,
+            "Opening external-OTEL gate at startup: no fleet policy is pending for this leader"
+        );
+        crate::agent::otel_gate::open_at_startup();
+    }
 
-    // Process-wide image normalize cache: off by default, toggled here from
-    // `RemoteSettings.image_normalize_cache_enabled` once at startup.
-    let image_normalize_cache_enabled = remote_settings
-        .as_ref()
-        .and_then(|r| r.image_normalize_cache_enabled)
-        .unwrap_or(false);
-    crate::session::normalize_cache::NormalizeCache::global()
-        .set_enabled(image_normalize_cache_enabled);
-    tracing::debug!(
-        enabled = image_normalize_cache_enabled,
-        "image normalize cache toggle resolved from remote settings"
-    );
+    // Non-blocking boot: nothing is prefetched; the catalog and remote settings
+    // stream in after readiness via the background refreshes below.
+    let prefetched_models: Option<_> = None;
+    let remote_settings: Option<_> = None;
 
     // ── Phase 7: Signal readiness ─────────────────────────────────────────────
     //
@@ -1503,7 +1578,7 @@ pub async fn run_leader(
                             models_manager_for_config.on_auth_changed().await;
                             let line = internal_reload_request_line(
                                 "config-auth-reloaded",
-                                "x.ai/internal/reload_all_mcp_servers",
+                                InternalMethod::ReloadAllMcpServers,
                                 serde_json::json!({}),
                             );
                             let mut tx = acp_tx_for_config.lock().await;
@@ -1515,7 +1590,7 @@ pub async fn run_leader(
                             auth_manager_for_config.clear_in_memory();
                             let line = internal_reload_request_line(
                                 "config-auth-cleared",
-                                "x.ai/internal/auth_cleared",
+                                InternalMethod::AuthCleared,
                                 serde_json::json!({}),
                             );
                             let mut tx = acp_tx_for_config.lock().await;
@@ -1534,7 +1609,7 @@ pub async fn run_leader(
                             info!("MCP server config change detected — reloading active sessions");
                             let line = internal_reload_request_line(
                                 "config-reload-mcp",
-                                "x.ai/internal/reload_all_mcp_servers",
+                                InternalMethod::ReloadAllMcpServers,
                                 serde_json::json!({}),
                             );
                             let mut tx = acp_tx_for_config.lock().await;
@@ -1557,7 +1632,7 @@ pub async fn run_leader(
                             );
                             let line = internal_reload_request_line(
                                 "config-reload-project-mcp",
-                                "x.ai/internal/reload_project_mcp_servers",
+                                InternalMethod::ReloadProjectMcpServers,
                                 serde_json::json!({ "cwd": cwd.to_string_lossy() }),
                             );
                             let mut tx = acp_tx_for_config.lock().await;
@@ -1572,7 +1647,7 @@ pub async fn run_leader(
                             info!("Model config change detected — reloading agent model list");
                             let line = internal_reload_request_line(
                                 "config-reload-models",
-                                "x.ai/internal/reload_models",
+                                InternalMethod::ReloadModels,
                                 serde_json::json!({}),
                             );
                             let mut tx = acp_tx_for_config.lock().await;
@@ -1598,7 +1673,7 @@ pub async fn run_leader(
                             info!("Models cache change detected — reloading agent model catalog");
                             let line = internal_reload_request_line(
                                 "config-reload-models-cache",
-                                "x.ai/internal/reload_models_cache",
+                                InternalMethod::ReloadModelsCache,
                                 serde_json::json!({}),
                             );
                             let mut tx = acp_tx_for_config.lock().await;
@@ -1809,6 +1884,80 @@ mod tests {
             .expect("x.ai OIDC session must be relay-eligible")
     }
 
+    /// The embedded startup gate (every pager `--no-leader` / fallback path) must be
+    /// fail-closed by construction: a session user stays closed until the agent
+    /// resolves settings, even when an env API key is also present (the key must
+    /// not bypass the session's remote policy).
+    #[test]
+    #[serial_test::serial]
+    fn embedded_otel_gate_keeps_a_session_user_fail_closed() {
+        use crate::agent::auth_method::{LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR};
+        use agent_tui_telemetry::external::{
+            is_settings_gate_open, mark_external_otel_settings_resolved,
+        };
+
+        unsafe fn set_or_clear(key: &str, value: Option<std::ffi::OsString>) {
+            match value {
+                Some(v) => unsafe { std::env::set_var(key, v) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
+
+        /// Restores the api-key env and reopens the gate on drop so no state leaks.
+        struct Restore {
+            key: Option<std::ffi::OsString>,
+            legacy: Option<std::ffi::OsString>,
+            proxy: Option<std::ffi::OsString>,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                // SAFETY: serialized by `#[serial]`.
+                unsafe {
+                    set_or_clear(XAI_API_KEY_ENV_VAR, self.key.take());
+                    set_or_clear(LEGACY_XAI_API_KEY_ENV_VAR, self.legacy.take());
+                    set_or_clear(PROXY_ENV_VAR, self.proxy.take());
+                }
+                mark_external_otel_settings_resolved();
+            }
+        }
+
+        const PROXY_ENV_VAR: &str = "GROK_CLI_CHAT_PROXY_BASE_URL";
+        let _restore = Restore {
+            key: std::env::var_os(XAI_API_KEY_ENV_VAR),
+            legacy: std::env::var_os(LEGACY_XAI_API_KEY_ENV_VAR),
+            proxy: std::env::var_os(PROXY_ENV_VAR),
+        };
+        let cfg = GrokComConfig::default();
+
+        // SAFETY: serialized by `#[serial]`.
+        unsafe {
+            std::env::set_var(XAI_API_KEY_ENV_VAR, "test-key");
+            std::env::remove_var(LEGACY_XAI_API_KEY_ENV_VAR);
+            std::env::remove_var(PROXY_ENV_VAR);
+        }
+
+        let session = GrokAuth {
+            // Far-future expiry so `current()` accepts it regardless of clock skew
+            // or a leaked `GROK_AUTH_EARLY_INVALIDATION_SECS` buffer; the gate reads
+            // session presence via `current()`, which filters expired tokens.
+            expires_at: chrono::DateTime::from_timestamp(9_999_999_999, 0),
+            auth_mode: AuthMode::Oidc,
+            oidc_issuer: Some(crate::auth::XAI_OAUTH2_ISSUER.to_string()),
+            ..GrokAuth::test_default()
+        };
+        let with_session = {
+            let dir = tempfile::tempdir().unwrap();
+            let am = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
+            am.hot_swap(session);
+            am
+        };
+        apply_otel_config(&with_session, &cfg);
+        assert!(
+            !is_settings_gate_open(),
+            "a session user must boot fail-closed even with an env key set"
+        );
+    }
+
     /// Wait until at least one relay connection is accepted, or panic.
     async fn wait_for_connection(count: &Arc<AtomicU32>, context: &str) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -1907,17 +2056,169 @@ mod tests {
         cancel.cancel();
     }
 
-    /// The watcher-injected internal reload requests must carry the ACP
-    /// wire-level `_` extension prefix. `agent-client-protocol`'s inbound
-    /// decoder routes non-built-in methods to `ext_method` only when
-    /// `_`-prefixed and rejects bare custom methods with `-32601`, so an
-    /// un-prefixed injection means every config-driven hot-reload silently
-    /// dies at decode (watcher logs fire, handlers never run).
+    /// Regression test for the "leader booted without auth is invisible
+    /// forever" bug: a leader that starts with no session (e.g. a devbox
+    /// whose initial mint hit a transient provider outage) must arm the
+    /// relay when a relay-eligible token is later hot-reloaded — and must
+    /// hand the parts back (not consume them) for a non-eligible token, so
+    /// a later eligible one can still arm.
+    #[tokio::test]
+    async fn deferred_arm_connects_relay_when_auth_appears() {
+        let (addr, count) = spawn_mock_relay_server().await;
+        let cancel = CancellationToken::new();
+        let (ws_to_agent_tx, _ws_to_agent_rx) = mpsc::unbounded_channel();
+        let agent_to_ws_tx: Rc<Mutex<Option<mpsc::UnboundedSender<String>>>> =
+            Rc::new(Mutex::new(None));
+        let (_demand_tx, demand_rx) = watch::channel(false);
+        let slot = Rc::new(std::cell::RefCell::new(None));
+
+        let grok_com_config = crate::auth::GrokComConfig {
+            grok_ws_url: format!("ws://{addr}"),
+            grok_ws_origin: format!("http://{addr}"),
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let auth_manager = Arc::new(AuthManager::new(tmp.path(), grok_com_config.clone()));
+
+        let arm = DeferredRelayArm {
+            relay_on_demand: false, // bare leader: eager once armed
+            relay_demand_rx: demand_rx,
+            ws_to_agent_tx,
+            agent_to_ws_tx: agent_to_ws_tx.clone(),
+            cancel: cancel.clone(),
+            slot: slot.clone(),
+            grok_com_config,
+            alpha_test_key: None,
+        };
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                // A non-relay-eligible token (no x.ai issuer) must not arm
+                // and must hand the parts back.
+                let ineligible = GrokAuth::test_default();
+                let arm = arm
+                    .arm_if_eligible(&ineligible, &auth_manager)
+                    .expect("non-eligible token must hand the parts back");
+                assert!(slot.borrow().is_none(), "no handle parked yet");
+                assert_eq!(
+                    count.load(Ordering::SeqCst),
+                    0,
+                    "non-eligible token must not connect the relay"
+                );
+
+                // A relay-eligible x.ai OIDC token arms the relay eagerly.
+                let eligible = GrokAuth {
+                    auth_mode: AuthMode::Oidc,
+                    oidc_issuer: Some(crate::auth::XAI_OAUTH2_ISSUER.to_string()),
+                    ..GrokAuth::test_default()
+                };
+                assert!(
+                    arm.arm_if_eligible(&eligible, &auth_manager).is_none(),
+                    "eligible token must consume the arm parts"
+                );
+                assert!(
+                    slot.borrow().is_some(),
+                    "handle must be parked in the shared shutdown slot"
+                );
+                assert!(
+                    agent_to_ws_tx.lock().is_some(),
+                    "outbound relay sender must be installed"
+                );
+                wait_for_connection(&count, "deferred arm after auth hot-reload").await;
+            })
+            .await;
+        cancel.cancel();
+    }
+
+    /// End-to-end for the merge reconciliation: a background cold-mint persists
+    /// a relay-eligible session to auth.json, the config watcher emits
+    /// `ConfigUpdate::Auth`, and that arms the deferred relay.
+    #[tokio::test]
+    async fn cold_mint_auth_write_arms_deferred_relay() {
+        use crate::config::reloader::{ConfigReloader, ConfigUpdate, hash_auth_key};
+
+        let (addr, _count) = spawn_mock_relay_server().await;
+        let grok_com_config = crate::auth::GrokComConfig {
+            grok_ws_url: format!("ws://{addr}"),
+            grok_ws_origin: format!("http://{addr}"),
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let scope = "https://test.example.com".to_string();
+        let session = GrokAuth {
+            auth_mode: AuthMode::Oidc,
+            oidc_issuer: Some(crate::auth::XAI_OAUTH2_ISSUER.to_string()),
+            ..GrokAuth::test_default()
+        };
+        let mut store = std::collections::BTreeMap::new();
+        store.insert(scope.clone(), session);
+        std::fs::write(
+            tmp.path().join("auth.json"),
+            serde_json::to_string_pretty(&store).unwrap(),
+        )
+        .unwrap();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut reloader = ConfigReloader::new(
+            tmp.path().to_path_buf(),
+            hash_auth_key("sessionless-boot"),
+            toml::Value::Table(Default::default()),
+            scope,
+            None,
+            tx,
+            false,
+            false,
+        );
+        reloader.reload_auth().unwrap();
+        let ConfigUpdate::Auth(minted) = rx
+            .try_recv()
+            .expect("cold-mint auth.json write must emit ConfigUpdate::Auth")
+        else {
+            panic!("expected ConfigUpdate::Auth");
+        };
+
+        let auth_manager = Arc::new(AuthManager::new(tmp.path(), grok_com_config.clone()));
+        let (ws_to_agent_tx, _ws_to_agent_rx) = mpsc::unbounded_channel();
+        let agent_to_ws_tx: Rc<Mutex<Option<mpsc::UnboundedSender<String>>>> =
+            Rc::new(Mutex::new(None));
+        let agent_to_ws_tx_probe = agent_to_ws_tx.clone();
+        let (_demand_tx, demand_rx) = watch::channel(false);
+        let slot = Rc::new(std::cell::RefCell::new(None));
+        let cancel = CancellationToken::new();
+        let arm = DeferredRelayArm {
+            relay_on_demand: false,
+            relay_demand_rx: demand_rx,
+            ws_to_agent_tx,
+            agent_to_ws_tx,
+            cancel: cancel.clone(),
+            slot: slot.clone(),
+            grok_com_config,
+            alpha_test_key: None,
+        };
+
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                assert!(
+                    arm.arm_if_eligible(&minted, &auth_manager).is_none(),
+                    "a cold-minted relay-eligible session must arm the relay"
+                );
+                assert!(slot.borrow().is_some(), "relay handle must be parked");
+                assert!(
+                    agent_to_ws_tx_probe.lock().is_some(),
+                    "outbound relay sender must be installed"
+                );
+            })
+            .await;
+        cancel.cancel();
+    }
+
     #[test]
-    fn internal_reload_request_line_uses_wire_ext_prefix() {
+    fn internal_reload_request_line_carries_id_params_and_newline() {
         let line = internal_reload_request_line(
             "config-reload-models",
-            "x.ai/internal/reload_models",
+            InternalMethod::ReloadModels,
             serde_json::json!({}),
         );
         assert!(line.ends_with('\n'), "must be a newline-terminated line");
@@ -1933,7 +2234,7 @@ mod tests {
         // Params must pass through verbatim (project-MCP reload carries cwd).
         let line = internal_reload_request_line(
             "config-reload-project-mcp",
-            "x.ai/internal/reload_project_mcp_servers",
+            InternalMethod::ReloadProjectMcpServers,
             serde_json::json!({ "cwd": "/repo/x" }),
         );
         let msg: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
@@ -1941,7 +2242,7 @@ mod tests {
 
         let line = internal_reload_request_line(
             "config-auth-cleared",
-            "x.ai/internal/auth_cleared",
+            InternalMethod::AuthCleared,
             serde_json::json!({}),
         );
         let msg: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
@@ -2262,7 +2563,7 @@ mod tests {
         let cancel_for_actor = cancel.clone();
         let actor = tokio::spawn(async move {
             while let Some(cmd) = cmd_rx.recv().await {
-                if matches!(cmd, crate::session::SessionCommand::Shutdown) {
+                if matches!(cmd, crate::session::SessionCommand::Shutdown(_)) {
                     assert!(
                         !cancel_for_actor.is_cancelled(),
                         "session flush must happen BEFORE the leader is cancelled"

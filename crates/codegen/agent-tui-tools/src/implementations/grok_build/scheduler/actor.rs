@@ -181,10 +181,31 @@ impl SchedulerActor {
             fired_ids.push(task_id);
         }
 
-        let mut res = self.resources.lock().await;
-        let state = res.get_or_default::<State<SchedulerState>>();
-        state.tasks.retain(|t| !fired_ids.contains(&t.id));
-        drop(res);
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let request = SubagentRequest {
+            id: subagent_id.clone(),
+            prompt: framed_prompt,
+            description,
+            subagent_type: "general-purpose".to_string(),
+            parent_session_id,
+            parent_prompt_id: None,
+            resume_from,
+            cwd: None,
+            runtime_overrides: SubagentRuntimeOverrides {
+                completion_output_cap: Some(LOOP_COMPLETION_OUTPUT_CAP),
+                spawn_depth: Some(0),
+                loop_task_id: Some(task_id.to_string()),
+                ..Default::default()
+            },
+            run_in_background: true,
+            surface_completion: true,
+            await_to_completion: false,
+            fork_context: false,
+            owner: SubagentOwner::Task,
+            // A child of the actor's token, so shutdown cancels a fire the
+            // coordinator still has queued at the concurrent limit.
+            cancel_token: self.cancel_token.child_token(),
+        };
 
         for task_id in fired_ids {
             self.notification_handle

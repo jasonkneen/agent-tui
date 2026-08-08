@@ -1,47 +1,50 @@
 # Terminal Support and Troubleshooting
 
-Agent TUI runs as a full-screen TUI. To draw the interface, it relies on terminal escape sequences for color, clipboard, mouse, and full-screen control. Some terminals, multiplexers, and SSH sessions handle these sequences differently.
+Grok Build runs as a full-screen TUI. It relies on terminal support for color,
+clipboard, keyboard input, mouse input, and full-screen display. Terminals,
+multiplexers, containers, and SSH sessions can handle these features differently.
 
-## Quick Fixes
+## Diagnose and Fix Terminal Problems
 
-### Truecolor / Washed-out or wrong colors
+Run `/doctor` in Grok to check the current session and see available fixes. If
+Grok cannot start, run `grok doctor` in your shell. Use `grok doctor --json`
+for a machine-readable report.
 
-```bash
-# Add to ~/.zshrc or ~/.bashrc
-export COLORTERM=truecolor
-```
+Doctor checks the terminal, multiplexer, color support, keyboard and newline
+behavior, clipboard routes, and microphone availability when audio capture is
+included. The in-app command can also check live session details such as
+notification focus tracking and sandbox profile conflicts.
 
-Inside tmux or over SSH, also add to your tmux config:
+A report can contain issues or recommendations and still exit successfully.
+`grok doctor --json` reports the same color capability when piped. Microphone
+checks do not start recording, so Doctor cannot detect macOS permission failures
+that appear only as silence during capture.
 
-```tmux
-# ~/.tmux.conf or ~/.byobu/.tmux.conf
-set -g default-terminal "tmux-256color"
-set -as terminal-features ",*:RGB"
-```
+`/terminal-setup`, `/terminal-check`, and `/terminal-info` remain aliases for
+`/doctor`.
 
-### Recommended tmux settings (clipboard + passthrough)
+When Doctor finds an explicit unhealthy tmux setting, `/doctor fix` lists the
+available automatic fixes. Apply one named fix at a time, for example
+`/doctor fix tmux-clipboard` or `grok doctor fix dcs-passthrough --yes`.
+Doctor can persist these four tmux options:
 
-```tmux
-set -g set-clipboard on
-set -g allow-passthrough on
-```
+- `terminal.tmux-clipboard` — `set -g set-clipboard on`
+- `terminal.dcs-passthrough` — `set -wg allow-passthrough on`
+- `terminal.tmux-extended-keys` — `set -g extended-keys on`
+- `terminal.tmux-truecolor` — `set -as terminal-features ",*:RGB"`
 
-After editing, run:
+A tmux fix edits only the persistent config on the computer hosting the affected
+tmux server, including remote sessions. Plain tmux uses the real
+`$HOME/.tmux.conf`; Byobu-tmux uses its effective `BYOBU_CONFIG_DIR` and refuses
+to guess if that directory is unavailable or unsafe. Grok preserves the file's
+line endings and mode, makes a backup when changing an existing file, and
+refuses conflicting or ambiguous direct assignments.
 
-```bash
-tmux source-file ~/.tmux.conf
-# or detach and reattach
-```
-
-### Live diagnostics inside Agent TUI
-
-Run this slash command:
-
-```
-/terminal-setup
-```
-
-The command reports the terminal, multiplexer, **color level**, **available themes**, and clipboard routes Agent TUI detected, then lists any issues and how to fix them. When color is below truecolor, it explains how to unlock the truecolor-only themes (TokyoNight, RosePineMoon, OscuraMidnight) — or notes that Terminal.app is inherently 256-color. The aliases `/terminal-check` and `/terminal-info` run the same command.
+Grok deliberately does **not** run `tmux source-file` or change the live tmux
+server. Reload with the exact command shown after apply, or detach and reattach,
+then run `/doctor` again. Until reload, the live finding is expected to remain.
+The conservative config scan checks direct global assignments only; review
+sourced files, conditionals, plugins, and generated tmux setup yourself.
 
 ---
 
@@ -86,9 +89,17 @@ Detection has these limitations:
 
 Agent TUI writes to the clipboard through up to three routes, which match the **Clipboard routes** section of `/terminal-setup`:
 
-- **native** — Agent TUI always writes to the native OS clipboard first.
-- **tmux buffer** — inside tmux, Agent TUI also writes to the tmux paste buffer (`tmux load-buffer`).
-- **OSC 52** — Agent TUI emits the OSC 52 escape sequence so the outer terminal updates its clipboard. Agent TUI always emits OSC 52 inside tmux. Outside tmux, it emits OSC 52 on Linux, over SSH, or in a container without a display.
+Inside tmux there are two separate questions: what color Grok emits, and what
+color survives the multiplexer. The `color` line answers the first. For the
+second, when the attached client is not marked `RGB`, tmux rewrites every
+24-bit color to the nearest color the outer terminal's terminfo advertises,
+which can be as few as eight. Themes then look washed out even though `color`
+reads `truecolor`. Doctor reports this as `terminal.tmux-truecolor`. Reload
+your tmux config and then detach and reattach: the server reads the new option
+only on reload, and a client fixes its color depth only at attach, so neither
+step alone changes anything.
+
+### Clipboard problems
 
 **Linux Wayland**: on compositors that support the data-control protocol (GNOME 48+, KDE, Sway, Hyprland — the `data-control` line in `/terminal-setup` shows `yes`) copies work even if the terminal loses focus mid-copy. On older compositors (GNOME 46/47), keep the terminal focused until the copy toast confirms, and install the `wl-clipboard` package (provides `wl-copy`) for the most reliable route — Agent TUI shows a startup warning when this applies. If data-control misbehaves on your compositor, set `GROK_CLIPBOARD_NO_DATA_CONTROL=1` to stop Agent TUI from speaking that protocol entirely — copies then go through the CLI tools (`wl-copy`/`xclip`).
 

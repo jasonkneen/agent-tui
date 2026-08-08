@@ -51,17 +51,23 @@ pub(super) fn task_model_override_error(
     name = "subagent.handle_request",
     skip_all,
     fields(
-        subagent_id = %request.id,
+        subagent_id = %run.request.id,
         parent_session_id = %ctx.parent_session_id,
-        subagent_type = %request.subagent_type,
+        subagent_type = %run.request.subagent_type,
     )
 )]
-pub(crate) async fn handle_subagent_request(
-    mut request: SubagentRequest,
+pub(crate) async fn run_shell_child(
+    run: grok_build::task::coordinator::ChildRunRequest<ShellChildRuntime>,
     mut ctx: SubagentSpawnContext,
-    coordinator: &std::cell::RefCell<SubagentCoordinator>,
     gateway: &GatewaySender,
-) {
+) -> ChildRunOutput<ShellCompletionData> {
+    let grok_build::task::coordinator::ChildRunRequest {
+        mut request,
+        cancellation: cancel_token,
+        reporter,
+        queued_for,
+        session_running,
+    } = run;
     let start = std::time::Instant::now();
     let mut parent_wait_guard = (!request.run_in_background)
         .then(|| crate::tools::tool_context::BlockingWaitGuard::enter(
@@ -717,20 +723,10 @@ pub(crate) async fn handle_subagent_request(
             return;
         }
     };
-    let child_cwd = resolve_child_cwd(
-        worktree_path.as_deref(),
-        override_cwd,
-        &ctx.parent_cwd,
-    );
-    let cwd_outside_parent = match (
-        dunce::canonicalize(&child_cwd),
-        dunce::canonicalize(&ctx.parent_cwd),
-    ) {
-        (Ok(child), Ok(parent)) => !child.starts_with(&parent),
-        _ => child_cwd != ctx.parent_cwd,
-    };
+    let child_cwd = resolve_child_cwd(worktree_path.as_deref(), override_cwd, &ctx.parent_cwd);
+    let covered_by_parent = agent_tui_fsnotify::watch_root_covers(&ctx.parent_cwd, &child_cwd);
     let subagent_fs_watch = FsWatchCapabilities {
-        hunk_tracking: ctx.hunk_tracking_enabled && cwd_outside_parent,
+        hunk_tracking: ctx.hunk_tracking_enabled && !covered_by_parent,
         ..FsWatchCapabilities::none()
     };
     let child_cwd_abs = agent_tui_paths::AbsPathBuf::new(child_cwd)
@@ -752,6 +748,7 @@ pub(crate) async fn handle_subagent_request(
     tool_ctx.monitor_event_buffer = Some(MonitorEventBuffer::default());
     tool_ctx.subagent_depth = ctx.parent_depth + 1;
     tool_ctx.lsp = ctx.lsp.clone();
+    tool_ctx.process_scope = ctx.process_scope.clone();
     let parent_traceparent = agent_tui_file_utils::trace_context::current_traceparent();
     let tracker_child_cwd = child_session_info.cwd.clone();
     let tracker_model_id = effective_model_id.0.to_string();
@@ -1024,6 +1021,10 @@ pub(crate) async fn handle_subagent_request(
         subagent_id: request.id.clone(),
         parent_session_id: request.parent_session_id.clone(),
         subagent_type: request.subagent_type.clone(),
+        owner: telemetry_owner_kind(&request),
+        workflow_run_id: request.owner.workflow_run_id().map(str::to_string),
+        queued_ms: queued_for.map(|queued| u64::try_from(queued.as_millis()).unwrap_or(u64::MAX)),
+        session_running: u32::try_from(session_running).unwrap_or(u32::MAX),
         persona: request.runtime_overrides.persona.clone(),
         fork_context: matches!(context_source, InitialContextSource::Forked),
         resume_from: request.resume_from.clone(),
@@ -1054,138 +1055,62 @@ pub(crate) async fn handle_subagent_request(
             crate::agent::auth_method::new_shared_auth_method_id(
                 Some(ctx.auth_method_id.clone()),
             ),
-            Some(ctx.auth_manager.clone()),
-            attribution_callback,
-            tool_ctx,
-            agent_mcp_servers,
-            vec![],
-            Default::default(),
-            parent_mcp_pool,
-            Vec::new(),
-            true,
-            false,
-            None,
-            persistence,
-            forked_conversation,
-            None,
-            None,
-            initial_child_tokens,
-            crate::session::StartupHints {
-                inherited_prefix_len: Some(inherited_prefix_len),
-                is_subagent: true,
-                parent_session_id: Some(ctx.parent_session_id.clone()),
-                subagent_type: Some(request.subagent_type.clone()),
-                preserve_inherited_system: verbatim_mirror_fork,
-                ..Default::default()
-            },
-            agent_tui_workspace::permission::ClientType::Generic,
-            ctx.resolve_auto_compact_threshold_percent(&subagent_model_id),
-            agent_tui_agent::DEFAULT_SYSTEM_PROMPT_LABEL.to_string(),
-            agent_tui_chat_state::CompactionMode::Summary,
-            ctx.resolve_compaction_verbatim_input(),
-            false,
-            None,
-            None,
-            std::sync::Arc::new(
-                parking_lot::Mutex::new(
-                    agent_tui_workspace::file_system::CodebaseIndexManager::new(),
-                ),
-            ),
-            false,
-            subagent_fs_watch,
-            None,
-            None,
-            None,
-            None,
-            false,
-            false,
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            definition,
-            subagent_session_default_agent_profile,
-            if inherit_skills {
-                ctx.parent_skills_config.clone()
-            } else {
-                agent_tui_agent::prompt::skills::SkillsConfig::default()
-            },
-            if inherit_skills { ctx.parent_skills.take() } else { None },
-            ctx.parent_compat,
-            false,
-            None,
-            None,
-            None,
-            None,
-            if verbatim_mirror_fork {
-                None
-            } else if let Some(scope) = agent_memory_scope {
-                ctx.memory_config
-                    .as_ref()
-                    .map(|mc| {
-                        let mut c = mc.clone();
-                        let resolved = scope
-                            .resolve_dir(&agent_name_for_memory, &ctx.parent_cwd);
-                        c.enabled = true;
-                        c.root_dir_override = Some(resolved.path);
-                        c.flat_memory_root = resolved.is_project_scoped;
-                        c
-                    })
-            } else {
-                ctx.memory_config.clone()
-            },
-            false,
-            Default::default(),
-            ctx.managed_mcp_state.clone(),
-            None,
-            ctx.managed_mcp_proxy_base_url.clone(),
-            effective_model_id,
-            ctx.yolo_mode
-                || matches!(
-                    agent_permission_mode,
-                    agent_tui_agent::config::PermissionMode::BypassPermissions
-                ),
-            false,
-            None,
-            ctx.inference_idle_timeout_secs,
-            None,
-            ctx.web_search_sampling_config.clone(),
-            ctx.web_fetch_config.clone(),
-            ctx.image_gen_config.clone(),
-            ctx.video_gen_config.clone(),
-            ctx.app_builder_deployer_config.clone(),
-            ctx.write_file_enabled,
-            ctx.goal_enabled,
-            true,
-            ctx.ask_user_question_enabled,
-            ctx.client_hooks.clone(),
-            None,
-            std::collections::HashMap::new(),
-            ctx.persona_io_summaries.clone(),
-            agent_tui_agent::prompt::context::PromptAudience::Subagent,
-            effective_runtime.role_prompt.clone(),
-            None,
-            ctx.disable_web_search,
-            ctx.backend_tools_enabled,
-            ctx.respect_gitignore,
-            ctx.path_not_found_hints,
-            ctx.resolve_tool_params_json(),
-            ctx.plugin_registry.clone(),
-            None,
-            ctx.models_manager.clone(),
-            parent_traceparent,
-            ctx.permission_handle.clone(),
-            ctx.api_key_provider.clone(),
-            ctx.image_description_model.clone(),
-            ctx.hook_registry.clone(),
-            ctx.workspace_ops.clone(),
-            vec![],
-            ctx.todo_gate,
-            std::mem::take(&mut ctx.remote_settings),
-            std::mem::take(&mut ctx.laziness_debug_log),
-            ctx.parent_terminal_backend.clone(),
-            ctx.parent_scheduler_handle.clone(),
-            subagent_max_turns,
-            forked_tool_override,
-        )
-        .await;
+        false,
+        None,
+        ctx.inference_idle_timeout_secs,
+        None,
+        ctx.web_search_sampling_config.clone(),
+        ctx.web_fetch_config.clone(),
+        ctx.image_gen_config.clone(),
+        ctx.video_gen_config.clone(),
+        ctx.app_builder_deployer_config.clone(),
+        ctx.write_file_enabled,
+        ctx.goal_enabled,
+        ctx.background_workflows_enabled,
+        true,
+        ctx.subagents_max_depth,
+        ctx.workflow_max_concurrent_agents,
+        ctx.ask_user_question_enabled,
+        ctx.client_hooks.clone(),
+        None,
+        std::collections::HashMap::new(),
+        Vec::new(),
+        agent_tui_agent::prompt::context::PromptAudience::Subagent,
+        effective_runtime.role_prompt.clone(),
+        None,
+        ctx.disable_web_search,
+        ctx.backend_tools_enabled,
+        ctx.respect_gitignore,
+        ctx.path_not_found_hints,
+        ctx.resolve_tool_params_json(),
+        ctx.plugin_registry.clone(),
+        None,
+        ctx.models_manager.clone(),
+        parent_traceparent,
+        ctx.permission_handle.clone(),
+        ctx.api_key_provider.clone(),
+        ctx.image_description_model.clone(),
+        ctx.hook_registry.clone(),
+        ctx.workspace_ops.clone(),
+        vec![],
+        ctx.todo_gate,
+        std::mem::take(&mut ctx.remote_settings),
+        std::mem::take(&mut ctx.laziness_debug_log),
+        ctx.parent_terminal_backend.clone(),
+        if request.owner.is_workflow() {
+            None
+        } else {
+            ctx.parent_scheduler_handle.clone()
+        },
+        subagent_max_turns,
+        if verbatim_mirror_fork && !request.owner.is_workflow() {
+            std::mem::take(&mut ctx.parent_tool_definitions)
+        } else {
+            None
+        },
+        false,
+    )
+    .await;
     let (child_handle, mut permission_rx, _system_prompt, child_thread) = match spawn_result {
         Ok(r) => r,
         Err(e) => {
@@ -1838,6 +1763,8 @@ pub(crate) async fn handle_subagent_request(
     agent_tui_telemetry::session_ctx::log_event(agent_tui_telemetry::events::SubagentCompleted {
         subagent_id: request.id.clone(),
         parent_session_id: request.parent_session_id.clone(),
+        owner: telemetry_owner_kind(&request),
+        workflow_run_id: request.owner.workflow_run_id().map(str::to_string),
         outcome,
         duration_ms: result.duration_ms,
         tool_calls: result.tool_calls,
@@ -1888,7 +1815,11 @@ pub(crate) async fn handle_subagent_request(
         }
         (None, None) => {}
     }
-    let _ = child_handle.cmd_tx.send(SessionCommand::Shutdown);
+    let _ = child_handle.cmd_tx.send(SessionCommand::Shutdown(
+        crate::session::ShutdownKind::Graceful,
+    ));
+    ctx.workspace_ops
+        .end_local_session(child_session_id.0.as_ref());
     let mut disposed_snapshot_ref: Option<String> = None;
     let mut worktree_removed = false;
     if let Some(ref wt_path) = worktree_path {

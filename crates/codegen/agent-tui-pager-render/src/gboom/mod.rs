@@ -103,6 +103,8 @@ impl GboomState {
         // On terminals that report key releases (Kitty keyboard protocol),
         // latch keys on press/release so the player can move and turn at
         // once; otherwise fall back to the repeat-bridging timer model.
+        // Deliberately `kitty_flags_pushed`, not `kitty_releases_reported`: the
+        // game pushes its own REPORT_ALL_KEYS layer over a downgraded base.
         game.set_release_aware(crate::terminal::kitty_flags_pushed());
         Self {
             game,
@@ -239,10 +241,8 @@ impl GboomState {
         }
         let in_region = self.in_mouse_region(mouse.column, mouse.row);
         match mouse.kind {
-            MouseEventKind::Down(MouseButton::Left) => {
-                if in_region {
-                    self.game.queue_fire();
-                }
+            MouseEventKind::Down(MouseButton::Left) if in_region => {
+                self.game.queue_fire();
             }
             MouseEventKind::Moved | MouseEventKind::Drag(_) => {
                 if !in_region {

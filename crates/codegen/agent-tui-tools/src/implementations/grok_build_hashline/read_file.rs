@@ -84,7 +84,7 @@ Anchors are valid only for the file state at read time — after any edit,
 use the fresh anchors returned by ${{ tools.by_kind.edit }} or re-read the file.${%- endif %}
 
 Usage:
-- The file_path parameter must be an absolute path, not a relative path
+- The ${{ params.read.target_file }} parameter accepts either a relative path in the workspace or an absolute path
 - By default reads up to {max_lines_read} lines from the beginning
 - Optionally specify offset and limit for large files
 - Can read images (PNG, JPG, etc.) and PDF files (each page rendered as an image; use `pages` parameter for PDFs with more than 10 pages, max 20 per call)
@@ -153,7 +153,7 @@ impl agent_tui_tool_runtime::Tool for HashlineReadTool {
     ) -> agent_tui_tool_types::ToolDescription {
         agent_tui_tool_types::ToolDescription::new(
             "hashline_read",
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
 

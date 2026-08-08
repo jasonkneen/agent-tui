@@ -56,10 +56,12 @@ fn auth_error() -> agent_tui_sampler::SamplingErrorInfo {
         status_code: Some(401),
         is_retryable: false,
         retry_after_secs: None,
+        should_retry: None,
         model_metadata: None,
         empty_response_context: None,
         doom_loop_triggers: None,
         doom_loop_aborted_at_chunk: None,
+        credential: agent_tui_sampling_types::SentCredential::Unknown,
     }
 }
 
@@ -196,7 +198,13 @@ async fn sampler_401_recovery_returns_refresh_and_retry() {
             let (actor, _rx) = make_actor_with_auth_manager(Some(am)).await;
             let result = actor.handle_sampling_failure(auth_error()).await;
             assert!(
-                matches!(result, Ok(SamplerFailureRecovery::RefreshAuthAndResubmit)),
+                matches!(
+                    result,
+                    Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
+                        store: RecoveredStore::SessionToken,
+                        ..
+                    })
+                ),
                 "session-based auth with a working refresher must return RefreshAuthAndResubmit"
             );
             assert!(called.load(Ordering::SeqCst), "refresher must be invoked");
@@ -321,8 +329,12 @@ async fn proactive_refresh_makes_per_turn_refresh_a_cache_hit() {
             let cancel = tokio_util::sync::CancellationToken::new();
             am.start_proactive_refresh(cancel.clone());
 
-            // Wait for proactive task to fire.
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            // Wait for the proactive task to fire; its first pass runs after
+            // PROACTIVE_MIN_SLEEP, so the window must exceed the floor.
+            tokio::time::sleep(
+                crate::auth::manager::PROACTIVE_MIN_SLEEP + std::time::Duration::from_millis(1000),
+            )
+            .await;
             assert!(
                 call_count.load(Ordering::SeqCst) >= 1,
                 "proactive task must have fired"
@@ -363,10 +375,12 @@ fn model_not_found_error() -> agent_tui_sampler::SamplingErrorInfo {
             status_code: Some(404),
             is_retryable: false,
             retry_after_secs: None,
+            should_retry: None,
             model_metadata: None,
             empty_response_context: None,
             doom_loop_triggers: None,
             doom_loop_aborted_at_chunk: None,
+            credential: agent_tui_sampling_types::SentCredential::Unknown,
         }
 }
 
@@ -398,12 +412,22 @@ async fn legacy_auth_hint_on_404_model_not_found() {
                 "404 with WebLogin must include deprecation message, got: {msg}"
             );
             assert!(
+                msg.contains("grok update"),
+                "hint must mention `grok update` before re-login, got: {msg}"
+            );
+            assert!(
                 msg.contains("grok logout"),
                 "hint must mention `grok logout`, got: {msg}"
             );
             assert!(
                 msg.contains("grok login"),
                 "hint must mention `grok login`, got: {msg}"
+            );
+            let update_at = msg.find("grok update").expect("grok update");
+            let logout_at = msg.find("grok logout").expect("grok logout");
+            assert!(
+                update_at < logout_at,
+                "update must come before logout, got: {msg}"
             );
             assert!(
                 msg.contains("Version:"),
@@ -430,10 +454,12 @@ fn unauthorized_401_error() -> agent_tui_sampler::SamplingErrorInfo {
             status_code: Some(401),
             is_retryable: false,
             retry_after_secs: None,
+            should_retry: None,
             model_metadata: None,
             empty_response_context: None,
             doom_loop_triggers: None,
             doom_loop_aborted_at_chunk: None,
+            credential: agent_tui_sampling_types::SentCredential::Unknown,
         }
 }
 
@@ -467,12 +493,22 @@ async fn legacy_auth_hint_on_401_unauthorized() {
                 "401 with WebLogin must include deprecation message, got: {msg}"
             );
             assert!(
+                msg.contains("grok update"),
+                "hint must mention `grok update` before re-login, got: {msg}"
+            );
+            assert!(
                 msg.contains("grok logout"),
                 "hint must mention `grok logout`, got: {msg}"
             );
             assert!(
                 msg.contains("grok login"),
                 "hint must mention `grok login`, got: {msg}"
+            );
+            let update_at = msg.find("grok update").expect("grok update");
+            let logout_at = msg.find("grok logout").expect("grok logout");
+            assert!(
+                update_at < logout_at,
+                "update must come before logout, got: {msg}"
             );
         })
         .await;
@@ -616,7 +652,10 @@ async fn sampler_401_session_method_with_stale_api_key_auth_type_still_recovers(
             let result = actor.handle_sampling_failure(auth_error()).await;
 
             assert!(
-                matches!(result, Ok(SamplerFailureRecovery::RefreshAuthAndResubmit)),
+                matches!(
+                    result,
+                    Ok(SamplerFailureRecovery::RefreshAuthAndResubmit { .. })
+                ),
                 "session-based method must recover even when auth_type transiently reads ApiKey"
             );
             assert!(
@@ -650,7 +689,10 @@ async fn sampler_401_oidc_method_with_stale_api_key_auth_type_still_recovers() {
             let result = actor.handle_sampling_failure(auth_error()).await;
 
             assert!(
-                matches!(result, Ok(SamplerFailureRecovery::RefreshAuthAndResubmit)),
+                matches!(
+                    result,
+                    Ok(SamplerFailureRecovery::RefreshAuthAndResubmit { .. })
+                ),
                 "oidc method must recover even when auth_type transiently reads ApiKey"
             );
             assert!(
@@ -962,6 +1004,343 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                 actor.model_auth_facts.borrow().is_none(),
                 "a model switch must invalidate the per-model BYOK memo so the next \
                  reconstruct recomputes under the current config"
+            );
+        })
+        .await;
+}
+
+use crate::auth::test_counting_provider as counting_provider;
+
+/// Seed the per-model memo so `model_auth_provider` resolves without a
+/// config load.
+async fn seed_provider_memo(actor: &Arc<SessionActor>, provider: crate::auth::AuthProviderRef) {
+    let model = actor
+        .chat_state_handle
+        .get_sampling_config()
+        .await
+        .map(|c| c.model)
+        .unwrap_or_default();
+    actor
+        .model_auth_memo
+        .replace(Some(crate::session::acp_session::ModelAuthMemo {
+            model_id: model,
+            facts: crate::agent::config::ModelAuthFacts {
+                byok: crate::agent::auth_method::ModelByok::Byok,
+                auth_scheme: Default::default(),
+            },
+            provider: Some(provider),
+        }));
+}
+
+/// Regression: switching from a provider-backed model to a first-party model
+/// must drop the minted provider token from the chat credentials, so it can
+/// never ride a later request to `api.x.ai`. Mirrors the forward direction in
+/// `set_session_model_invalidates_byok_memo_for_same_model_id`.
+#[tokio::test(flavor = "current_thread")]
+async fn switch_to_first_party_model_drops_minted_provider_token() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = counting_provider("hall-pass", dir.path());
+            let token = provider.ensure_fresh_token(None).await.rotated().unwrap();
+            assert_eq!(token, "tok-1");
+
+            let (actor, _rx) =
+                make_actor_with_auth_and_credentials(None, agent_tui_chat_state::AuthType::ApiKey, token)
+                    .await;
+            seed_provider_memo(&actor, provider).await;
+
+            let model = actor
+                .chat_state_handle
+                .get_sampling_config()
+                .await
+                .map(|c| c.model)
+                .unwrap_or_default();
+
+            let cfg = agent_tui_sampler::SamplerConfig {
+                api_key: Some("session-jwt".to_string()),
+                base_url: "https://api.x.ai/v1".to_string(),
+                model,
+                max_completion_tokens: None,
+                temperature: None,
+                top_p: None,
+                api_backend: crate::sampling::ApiBackend::ChatCompletions,
+                auth_scheme: Default::default(),
+                extra_headers: Default::default(),
+                query_params: Default::default(),
+                env_http_headers: Default::default(),
+                context_window: 256_000,
+                client_version: None,
+                force_http1: false,
+                max_retries: None,
+                stream_tool_calls: false,
+                idle_timeout_secs: None,
+                client_identifier: None,
+                reasoning_effort: None,
+                deployment_id: None,
+                user_id: None,
+                origin_client: None,
+                attribution_callback: None,
+                bearer_resolver: None,
+                supports_backend_search: false,
+                compactions_remaining: None,
+                compaction_at_tokens: None,
+                doom_loop_recovery: None,
+                header_injector: None,
+            };
+            let _ = actor
+                .handle_set_session_model(cfg, false, false, true, 85)
+                .await;
+
+            let creds = actor.chat_state_handle.get_credentials().await;
+            assert_eq!(
+                creds.api_key.as_deref(),
+                Some("session-jwt"),
+                "switching to a first-party model must install the session credential, \
+                 not the minted provider token"
+            );
+        })
+        .await;
+}
+
+/// Arm 4c: a 401 on a provider-backed model re-mints once and resubmits.
+#[tokio::test(flavor = "current_thread")]
+async fn sampler_401_on_provider_model_remints_and_resubmits() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = counting_provider("test-4c-recover", dir.path());
+            let token = provider.ensure_fresh_token(None).await.rotated().unwrap();
+            assert_eq!(token, "tok-1");
+
+            let (actor, _rx) =
+                make_actor_with_auth_and_credentials(None, agent_tui_chat_state::AuthType::ApiKey, token)
+                    .await;
+            seed_provider_memo(&actor, provider).await;
+            crate::auth::test_backdate_provider_mint(
+                "test-4c-recover",
+                std::time::Duration::from_secs(60),
+            );
+
+            let result = actor.handle_sampling_failure(auth_error()).await;
+            assert!(
+                matches!(
+                    result,
+                    Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
+                        store: RecoveredStore::AuthProvider,
+                        ..
+                    })
+                ),
+                "provider 401 must re-mint and resubmit via the provider store"
+            );
+            let creds = actor.chat_state_handle.get_credentials().await;
+            assert_eq!(
+                creds.api_key.as_deref(),
+                Some("tok-2"),
+                "chat-state credentials must carry the re-minted token"
+            );
+        })
+        .await;
+}
+
+/// Arm 4c also fires for a bare 401 that did not classify as `Auth`-kind.
+#[tokio::test(flavor = "current_thread")]
+async fn sampler_non_auth_kind_401_on_provider_model_still_recovers() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = counting_provider("test-4c-non-auth-kind", dir.path());
+            let token = provider.ensure_fresh_token(None).await.rotated().unwrap();
+
+            let (actor, _rx) =
+                make_actor_with_auth_and_credentials(None, agent_tui_chat_state::AuthType::ApiKey, token)
+                    .await;
+            seed_provider_memo(&actor, provider).await;
+            crate::auth::test_backdate_provider_mint(
+                "test-4c-non-auth-kind",
+                std::time::Duration::from_secs(60),
+            );
+
+            let mut error = auth_error();
+            error.kind = agent_tui_sampler::SamplingErrorKind::Api;
+            let result = actor.handle_sampling_failure(error).await;
+            assert!(
+                matches!(
+                    result,
+                    Ok(SamplerFailureRecovery::RefreshAuthAndResubmit { .. })
+                ),
+                "a non-Auth-kind 401 on a provider model must still recover via 4c"
+            );
+            let creds = actor.chat_state_handle.get_credentials().await;
+            assert_eq!(creds.api_key.as_deref(), Some("tok-2"));
+        })
+        .await;
+}
+
+/// A 401 on a request that went out with no key mints instead of
+/// recovering.
+#[tokio::test(flavor = "current_thread")]
+async fn sampler_401_with_no_key_on_provider_model_mints_and_resubmits() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = counting_provider("test-4c-no-key", dir.path());
+
+            let (actor, _rx) = make_actor_with_auth_and_credentials(
+                None,
+                agent_tui_chat_state::AuthType::ApiKey,
+                "placeholder".to_string(),
+            )
+            .await;
+            let mut creds = actor.chat_state_handle.get_credentials().await;
+            creds.api_key = None;
+            actor.chat_state_handle.update_credentials(creds);
+            seed_provider_memo(&actor, provider).await;
+
+            let result = actor.handle_sampling_failure(auth_error()).await;
+            assert!(
+                matches!(
+                    result,
+                    Ok(SamplerFailureRecovery::RefreshAuthAndResubmit { .. })
+                ),
+                "an unauthenticated 401 on a provider model must mint and resubmit"
+            );
+            let creds = actor.chat_state_handle.get_credentials().await;
+            assert_eq!(creds.api_key.as_deref(), Some("tok-1"));
+        })
+        .await;
+}
+
+/// A provider model's 401 goes through the provider, never the session
+/// refresher (4a/4b vs 4c exclusivity). The actor uses a session-based method,
+/// so the gate would be active for a non-BYOK model; the BYOK memo is what
+/// shadows it, which is the invariant under test.
+#[tokio::test(flavor = "current_thread")]
+async fn sampler_401_on_provider_model_never_refreshes_session() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = counting_provider("test-4c-exclusive", dir.path());
+            let token = provider.ensure_fresh_token(None).await.rotated().unwrap();
+
+            let called = Arc::new(AtomicBool::new(false));
+            let refresher: Arc<dyn crate::auth::refresh::TokenRefresher> =
+                Arc::new(AlwaysSucceedRefresher {
+                    called: called.clone(),
+                });
+            let (_dir, am) = auth_manager_with_refresher(refresher);
+            let (actor, _rx) = make_actor_with_method_and_credentials(
+                Some(am),
+                "cached_token",
+                agent_tui_chat_state::AuthType::SessionToken,
+                token,
+            )
+            .await;
+            seed_provider_memo(&actor, provider).await;
+            crate::auth::test_backdate_provider_mint(
+                "test-4c-exclusive",
+                std::time::Duration::from_secs(60),
+            );
+
+            let result = actor.handle_sampling_failure(auth_error()).await;
+            assert!(
+                matches!(
+                    result,
+                    Ok(SamplerFailureRecovery::RefreshAuthAndResubmit { .. })
+                ),
+                "the provider arm must recover"
+            );
+            assert!(
+                !called.load(Ordering::SeqCst),
+                "session refresh must never fire for a provider-backed model"
+            );
+            let creds = actor.chat_state_handle.get_credentials().await;
+            assert_eq!(creds.api_key.as_deref(), Some("tok-2"));
+        })
+        .await;
+}
+
+/// The pre-turn mirror of the exclusivity test: a cold cache mints the
+/// provider token into chat-state, and the session refresher never fires. The
+/// actor uses a session-based method, so the gate would be active for a
+/// non-BYOK model; the BYOK memo is what keeps the refresher silent.
+#[tokio::test(flavor = "current_thread")]
+async fn pre_turn_on_provider_model_never_installs_session_token() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = counting_provider("test-preturn-exclusive", dir.path());
+
+            let called = Arc::new(AtomicBool::new(false));
+            let refresher: Arc<dyn crate::auth::refresh::TokenRefresher> =
+                Arc::new(AlwaysSucceedRefresher {
+                    called: called.clone(),
+                });
+            let (_dir, am) = auth_manager_with_refresher(refresher);
+            let (actor, _rx) = make_actor_with_method_and_credentials(
+                Some(am),
+                "cached_token",
+                agent_tui_chat_state::AuthType::SessionToken,
+                "placeholder".to_string(),
+            )
+            .await;
+            // Cold cache: no key on the wire yet.
+            let mut creds = actor.chat_state_handle.get_credentials().await;
+            creds.api_key = None;
+            actor.chat_state_handle.update_credentials(creds);
+            seed_provider_memo(&actor, provider).await;
+
+            actor.refresh_token_if_expired().await;
+
+            let creds = actor.chat_state_handle.get_credentials().await;
+            assert_eq!(
+                creds.api_key.as_deref(),
+                Some("tok-1"),
+                "the cold pre-turn hook must mint the provider token"
+            );
+            assert!(
+                !called.load(Ordering::SeqCst),
+                "the session refresher must never fire for a provider-backed model"
+            );
+        })
+        .await;
+}
+
+/// A token rejected moments after mint surfaces the 401 (fresh-mint
+/// guard).
+#[tokio::test(flavor = "current_thread")]
+async fn sampler_401_on_fresh_provider_token_surfaces_error() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let dir = tempfile::tempdir().unwrap();
+            let provider = counting_provider("test-4c-guard", dir.path());
+            let token = provider.ensure_fresh_token(None).await.rotated().unwrap();
+
+            let (actor, _rx) = make_actor_with_auth_and_credentials(
+                None,
+                agent_tui_chat_state::AuthType::ApiKey,
+                token.clone(),
+            )
+            .await;
+            seed_provider_memo(&actor, provider).await;
+
+            let result = actor.handle_sampling_failure(auth_error()).await;
+            assert!(
+                result.is_err(),
+                "a fresh-minted rejected token must surface the 401, not loop"
+            );
+            let creds = actor.chat_state_handle.get_credentials().await;
+            assert_eq!(
+                creds.api_key.as_deref(),
+                Some(token.as_str()),
+                "credentials must be unchanged when the guard blocks the re-mint"
             );
         })
         .await;

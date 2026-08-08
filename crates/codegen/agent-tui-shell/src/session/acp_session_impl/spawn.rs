@@ -1,5 +1,10 @@
 //! Session bring-up concern for `acp_session`: `spawn_session_actor`, the
 //! per-session OS thread (`SessionThread` / `spawn_session_on_thread`), and
+//!
+//! Chat+local `own` supervisor (`gateway_bridge::local_workspace_supervisor`) is
+//! started in `session/new` *before* handshake stamp and stored on `MvpAgent`
+//! (not `SessionActor`). Crash-restart issues
+//! `BridgeCommand::UpdateComputerSessions` through the bridge slot seeded here.
 //! the MCP auto-restart wiring (`SessionRestartActions`).
 #![allow(clippy::items_after_test_module)]
 use super::*;
@@ -161,6 +166,8 @@ pub(crate) async fn spawn_session_actor(
     write_file_enabled: bool,
     goal_enabled: bool,
     subagents_enabled: bool,
+    subagents_max_depth: u32,
+    workflow_max_concurrent_agents: usize,
     ask_user_question_enabled: bool,
     client_hooks: crate::extensions::hooks::ClientHooks,
     prompt_display_cwd: Option<String>,
@@ -194,6 +201,7 @@ pub(crate) async fn spawn_session_actor(
     >,
     max_turns: Option<usize>,
     forked_tool_override: Option<Vec<ToolSpec>>,
+    is_chat_kind: bool,
 ) -> Result<
     (
         SessionHandle,
@@ -327,6 +335,9 @@ pub(crate) async fn spawn_session_actor(
         .filter(|item| matches!(item, ConversationItem::User(_)))
         .count();
     let initial_conversation_len = conversation.len();
+    let initial_last_recap_main_turn = crate::session::helpers::session_recap::load_recap_watermark(
+        &crate::session::persistence::session_dir(&session_info),
+    );
     let initial_user_count = initial_prompt_index.saturating_sub(1) as u32;
     let initial_assistant_count = conversation
         .iter()
@@ -453,13 +464,10 @@ pub(crate) async fn spawn_session_actor(
         pending_notifications: Vec::new(),
         notifications_suppressed: false,
         rewindable: false,
+        front_message_committed: false,
         nudges_used_this_session: 0,
     });
-    let mcp_strategy = match std::env::var("MCP_INIT_STRATEGY") {
-        Ok(v) if !v.trim().is_empty() => McpInitStrategy::from(v),
-        _ if startup_hints.non_interactive => McpInitStrategy::Blocking,
-        _ => McpInitStrategy::Progressive,
-    };
+    let mcp_strategy = startup_hints.resolve_mcp_strategy();
     let file_state_tracker = Arc::new(match rewind_points_path {
         Some(path) => FileStateTracker::with_lazy_source(path),
         None => FileStateTracker::new(),
@@ -503,8 +511,9 @@ pub(crate) async fn spawn_session_actor(
         };
         Arc::new(parking_lot::Mutex::new(tracker))
     };
-    let current_prompt_mode = Arc::new(parking_lot::Mutex::new(PromptMode::Agent));
-    let turn_prompt_mode = Arc::new(parking_lot::Mutex::new(PromptMode::Agent));
+    let restored_prompt_mode = plan_mode.lock().session_prompt_mode();
+    let current_prompt_mode = Arc::new(parking_lot::Mutex::new(restored_prompt_mode));
+    let turn_prompt_mode = Arc::new(parking_lot::Mutex::new(restored_prompt_mode));
     let task_output_tool_name = Arc::new(std::sync::OnceLock::new());
     let read_tool_name = Arc::new(std::sync::OnceLock::new());
     let queue_exit_reminder_on_approved_exit = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -547,17 +556,34 @@ pub(crate) async fn spawn_session_actor(
         }
     };
     let terminal_backend: std::sync::Arc<dyn agent_tui_tools::computer::types::TerminalBackend> =
-        if let Some(parent_tb) = parent_terminal_backend.filter(|_| startup_hints.is_subagent) {
-            parent_tb
-        } else if client_terminal_capable && tool_context.gateway.is_some() {
-            std::sync::Arc::new(crate::terminal::AcpTerminalAdapter::new(
-                tool_context.gateway.clone().unwrap(),
-                tool_context.session_id.clone().unwrap(),
-            )) as std::sync::Arc<dyn agent_tui_tools::computer::types::TerminalBackend>
-        } else {
-            let backend: std::sync::Arc<dyn agent_tui_tools::computer::types::TerminalBackend> =
-                std::sync::Arc::new(LocalTerminalBackend::new_local(resolve_search_shadows()));
-            backend
+        match terminal_backend_kind {
+            TerminalBackendKind::ReuseParent => parent_terminal_backend
+                .expect("ReuseParent is only selected when a parent backend is present"),
+            TerminalBackendKind::AcpClient => {
+                std::sync::Arc::new(crate::terminal::AcpTerminalAdapter::new(
+                    tool_context.gateway.clone().unwrap(),
+                    tool_context.session_id.clone().unwrap(),
+                ))
+                    as std::sync::Arc<dyn agent_tui_tools::computer::types::TerminalBackend>
+            }
+            TerminalBackendKind::LocalPersistent => {
+                std::sync::Arc::new(LocalTerminalBackend::new_local_with_persistent_shell(
+                    resolve_search_shadows(),
+                    resolve_policy(),
+                    tool_context.process_scope.clone(),
+                ))
+            }
+            TerminalBackendKind::LocalNonPersistent => {
+                let login_shell_capture = crate::util::config::resolve_login_shell_capture(
+                    remote_settings.as_ref().and_then(|r| r.login_shell_capture),
+                );
+                std::sync::Arc::new(LocalTerminalBackend::new_local_with_login_shell_capture(
+                    resolve_search_shadows(),
+                    login_shell_capture,
+                    resolve_policy(),
+                    tool_context.process_scope.clone(),
+                ))
+            }
         };
     let fs_backend: std::sync::Arc<dyn agent_tui_tools::computer::types::AsyncFileSystem> =
         if client_fs_capable && tool_context.gateway.is_some() {
@@ -575,47 +601,8 @@ pub(crate) async fn spawn_session_actor(
         };
     let bridge_state_path =
         crate::session::persistence::session_dir(&session_info).join("tool_state.json");
-    let initial_agent_type = Some(agent_definition.name.clone());
-    let harness_metrics = if telemetry_enabled || agent_tui_telemetry::external::is_active() {
-        let plugin_names = plugin_registry
-            .as_ref()
-            .map(|reg| {
-                reg.active_plugins()
-                    .iter()
-                    .map(|p| p.name.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        Some(super::telemetry::SessionHarnessMetrics {
-            session_id: session_info.id.0.to_string(),
-            client_identifier: session_client_identifier.clone(),
-            model_id: session_model_id.0.to_string(),
-            agent_name: agent_definition.name.clone(),
-            permission_mode: if session_yolo_mode {
-                agent_tui_telemetry::enums::PermissionMode::AlwaysApprove
-            } else if session_auto_mode
-                && crate::util::config::auto_permission_mode_enabled_from_disk()
-            {
-                agent_tui_telemetry::enums::PermissionMode::Auto
-            } else {
-                agent_tui_telemetry::enums::PermissionMode::Ask
-            },
-            mcp_server_names: mcp_servers
-                .iter()
-                .map(|s| mcp_server_name(s).to_owned())
-                .collect(),
-            lsp_server_names: tool_context.lsp_server_names.clone(),
-            memory_enabled: memory_config.is_some(),
-            auto_update,
-            cwd: tool_context.cwd.as_str().to_owned(),
-            skills_config: skills_config.clone(),
-            compat,
-            plugin_registry: plugin_registry.clone(),
-            plugin_names,
-        })
-    } else {
-        None
-    };
+    let initial_agent_name = agent_definition.name.clone();
+    let initial_agent_type = Some(initial_agent_name.clone());
     let compaction_policy = agent_tui_agent::CompactionPolicy {
         auto_compact_threshold_percent: auto_compact_threshold_percent as u32,
         compact_model: None,
@@ -876,6 +863,54 @@ pub(crate) async fn spawn_session_actor(
             );
             e
         })?;
+    agent
+        .tool_bridge()
+        .update_resource(task_completion_reservations.clone())
+        .await;
+    agent
+        .tool_bridge()
+        .update_resource(task_wake_suppressed)
+        .await;
+    let harness_metrics = if telemetry_enabled || agent_tui_telemetry::external::is_active() {
+        let plugin_names = plugin_registry
+            .as_ref()
+            .map(|reg| {
+                reg.active_plugins()
+                    .iter()
+                    .map(|p| p.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(super::telemetry::SessionHarnessMetrics {
+            session_id: session_info.id.0.to_string(),
+            client_identifier: session_client_identifier.clone(),
+            model_id: session_model_id.0.to_string(),
+            agent_name: initial_agent_name,
+            permission_mode: if session_yolo_mode {
+                agent_tui_telemetry::enums::PermissionMode::AlwaysApprove
+            } else if session_auto_mode
+                && crate::util::config::auto_permission_mode_enabled_from_disk()
+            {
+                agent_tui_telemetry::enums::PermissionMode::Auto
+            } else {
+                agent_tui_telemetry::enums::PermissionMode::Ask
+            },
+            mcp_server_names: mcp_servers
+                .iter()
+                .map(|s| mcp_server_name(s).to_owned())
+                .collect(),
+            lsp_server_names: tool_context.lsp_server_names.clone(),
+            memory_enabled: memory_config.is_some(),
+            auto_update,
+            cwd: tool_context.cwd.as_str().to_owned(),
+            skill_names: agent.tool_bridge().skill_discovery_snapshot_names().await,
+            compat,
+            plugin_registry: plugin_registry.clone(),
+            plugin_names,
+        })
+    } else {
+        None
+    };
     let resolved_task_output =
         agent_tui_tools::reminders::task_completion::resolve_task_output_tool_name(
             agent.tool_bridge(),
@@ -1074,6 +1109,228 @@ pub(crate) async fn spawn_session_actor(
     let (goal_update_tx, goal_update_rx) = tokio::sync::mpsc::unbounded_channel::<
         agent_tui_tools::implementations::grok_build::update_goal::UpdateGoalEnvelope,
     >();
+    crate::session::workflow::registry::warm_builtin_cache();
+    let workflow_session_dir = crate::session::persistence::session_dir(&session_info);
+    let (workflow_store, workflow_snapshots) =
+        crate::session::workflow::store::WorkflowRunStore::from_restored(
+            Some(workflow_session_dir.clone()),
+            persistence.tx.clone(),
+            persisted_workflow_runs,
+        );
+    let workflow_tracker = Arc::new(parking_lot::Mutex::new(
+        crate::session::workflow::tracker::WorkflowTracker::from_snapshot(workflow_snapshots),
+    ));
+    let workflow_notify = crate::session::workflow::notify::WorkflowNotifySender::new(
+        session_info.id.clone(),
+        gateway.clone(),
+        persistence.tx.clone(),
+        workflow_store.clone(),
+    );
+    for state in workflow_tracker.lock().snapshot() {
+        workflow_notify.emit(&state, state.elapsed_ms_floor, 0);
+    }
+    let workflow_manager = Arc::new(tokio::sync::Mutex::new(
+        crate::session::workflow::manager::WorkflowManager::new(
+            session_info.id.0.to_string(),
+            Some(workflow_session_dir),
+            std::path::PathBuf::from(session_info.cwd.as_str()),
+            workflow_tracker.clone(),
+            workflow_store,
+            workflow_notify,
+            tool_context.subagent_event_tx.clone().unwrap_or_else(|| {
+                tracing::warn!(
+                    "workflow manager: no subagent coordinator; agent() spawns will fail"
+                );
+                tokio::sync::mpsc::unbounded_channel().0
+            }),
+            Arc::new(|name: &str, fields: &serde_json::Value, replayed: bool| {
+                if !replayed {
+                    tracing::info!(event = name, %fields, "workflow telemetry");
+                }
+            }),
+            cmd_tx.clone(),
+            std::collections::HashMap::new(),
+            workflow_max_concurrent_agents,
+        ),
+    ));
+    let (workflow_launch_tx, mut workflow_launch_rx) = tokio::sync::mpsc::unbounded_channel::<
+        agent_tui_tools::implementations::grok_build::workflow::WorkflowLaunchEnvelope,
+    >();
+    {
+        let manager = workflow_manager.clone();
+        let launch_cwd = std::path::PathBuf::from(session_info.cwd.as_str());
+        let launch_session_dir = crate::session::persistence::session_dir(&session_info);
+        tokio::spawn(async move {
+            use crate::session::workflow::registry;
+            use agent_tui_tools::implementations::grok_build::workflow::WorkflowLaunchAck;
+            while let Some((req, ack)) = workflow_launch_rx.recv().await {
+                if !background_workflows_enabled {
+                    let _ = ack.send(WorkflowLaunchAck::Rejected {
+                        code: "workflows_disabled",
+                        detail: "Background workflows are disabled for this session \
+                                 ([workflows] enabled = false / GROK_WORKFLOWS=0 / remote flag)."
+                            .into(),
+                    });
+                    continue;
+                }
+                let input = req.input;
+                if let Err(detail) = input.validate() {
+                    let _ = ack.send(WorkflowLaunchAck::Rejected {
+                        code: "workflow_invalid_input",
+                        detail,
+                    });
+                    continue;
+                }
+                if input.resume_from_run_id.is_some()
+                    && (input.name.is_some()
+                        || input.script.is_some()
+                        || input.script_path.is_some())
+                {
+                    let _ = ack
+                        .send(WorkflowLaunchAck::Rejected {
+                            code: "workflow_invalid_source",
+                            detail: "resume uses the original immutable script and args; launch edited source as a new run"
+                                .into(),
+                        });
+                    continue;
+                }
+                let registry_snapshot = registry::WorkflowRegistry::scan(Some(&launch_cwd));
+                let resolved = if let Some(name) = input.name.as_deref() {
+                    registry_snapshot.resolve_by_name(name)
+                } else if let Some(script) = input.script.clone() {
+                    registry::resolve_inline(script)
+                } else if let Some(path) = input.script_path.as_deref() {
+                    registry::resolve_by_path(
+                        std::path::Path::new(path),
+                        &launch_cwd,
+                        Some(&launch_session_dir),
+                    )
+                } else if input.resume_from_run_id.is_some() {
+                    match manager
+                        .lock()
+                        .await
+                        .script_copy_for(input.resume_from_run_id.as_deref().unwrap())
+                    {
+                        Some(script) => registry::resolve_inline(script),
+                        None => {
+                            let _ = ack.send(WorkflowLaunchAck::Rejected {
+                                code: "workflow_resume_unknown_run",
+                                detail: "no persisted script for that run id".into(),
+                            });
+                            continue;
+                        }
+                    }
+                } else {
+                    let _ = ack.send(WorkflowLaunchAck::Rejected {
+                        code: "workflow_invalid_source",
+                        detail: "provide one of name / script / script_path".into(),
+                    });
+                    continue;
+                };
+                let resolved = match resolved {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let code = "workflow_resolve_failed";
+                        let _ = ack.send(WorkflowLaunchAck::Rejected {
+                            code,
+                            detail: e.to_string(),
+                        });
+                        continue;
+                    }
+                };
+                if input.validate_only {
+                    let script = resolved.script.clone();
+                    let probe_args = input.args.clone();
+                    let agent_budget = input
+                        .agent_budget
+                        .unwrap_or(agent_tui_workflow::DEFAULT_AGENT_BUDGET);
+                    tokio::spawn(async move {
+                        let verdict = tokio::task::spawn_blocking(move || {
+                            agent_tui_workflow::validate_script_with_agent_budget(
+                                &script,
+                                probe_args,
+                                agent_budget,
+                            )
+                        })
+                        .await;
+                        let msg = match verdict {
+                            Ok(Ok(report)) => WorkflowLaunchAck::Validated {
+                                name: report.name,
+                                phases: report.phases,
+                                summary: report.outcome_summary,
+                            },
+                            Ok(Err(e)) => WorkflowLaunchAck::Rejected {
+                                code: "workflow_validation_failed",
+                                detail: e.to_string(),
+                            },
+                            Err(e) => WorkflowLaunchAck::Rejected {
+                                code: "workflow_validation_failed",
+                                detail: format!("validator panicked: {e}"),
+                            },
+                        };
+                        let _ = ack.send(msg);
+                    });
+                    continue;
+                }
+                let definition_name = resolved.meta.name.clone();
+                let args = match (&input.args, &input.resume_from_run_id) {
+                    (Some(a), _) => a.clone(),
+                    (None, Some(rid)) => manager.lock().await.args_copy_for(rid),
+                    (None, None) => serde_json::Value::Null,
+                };
+                let objective = args
+                    .get("objective")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| resolved.meta.description.clone());
+                let spec = crate::session::workflow::manager::LaunchSpec {
+                    objective,
+                    args,
+                    agent_budget: input.agent_budget,
+                    resume_run_id: input.resume_from_run_id.clone(),
+                };
+                let launch_outcome = {
+                    let mut mgr = manager.lock().await;
+                    let result = mgr.launch(resolved, spec);
+                    let script_path = result
+                        .as_ref()
+                        .ok()
+                        .and_then(|(run_id, _)| mgr.script_copy_path(run_id))
+                        .map(|p| p.display().to_string());
+                    (result, script_path)
+                };
+                match launch_outcome {
+                    (Ok((run_id, outcome_rx)), script_path) => {
+                        let display_name = manager
+                            .lock()
+                            .await
+                            .tracker()
+                            .lock()
+                            .get(&run_id)
+                            .map(|run| run.name.clone())
+                            .unwrap_or(definition_name);
+                        let _ = ack.send(WorkflowLaunchAck::Started {
+                            task_id: run_id.clone(),
+                            run_id: run_id.clone(),
+                            name: display_name,
+                            script_path,
+                        });
+                        tokio::spawn(async move {
+                            if let Ok(outcome) = outcome_rx.await {
+                                tracing::info!(run_id, ?outcome, "background workflow finished");
+                            }
+                        });
+                    }
+                    (Err(e), _) => {
+                        let _ = ack.send(WorkflowLaunchAck::Rejected {
+                            code: "workflow_launch_failed",
+                            detail: e.to_string(),
+                        });
+                    }
+                }
+            }
+        });
+    }
     let obs_bridge = {
         let sid = agent_tui_tool_protocol::SessionId::new(&*session_info.id.0)
             .unwrap_or_else(|_| agent_tui_tool_protocol::SessionId::new("unknown").expect("valid"));
@@ -1119,17 +1376,19 @@ pub(crate) async fn spawn_session_actor(
         model_auth_facts: std::cell::RefCell::new(None),
         attribution_callback,
         auth_manager,
+        is_chat_kind,
         state,
         notifications: NotificationSender {
             gateway: gateway.clone(),
             gateway_enabled: gateway_enabled.clone(),
             persistence_tx: persistence.tx.clone(),
+            disk_full: persistence.subscribe_disk_full(),
         },
         permissions,
         tool_context,
         deny_read_globs,
         mcp_state: mcp_state.clone(),
-        mcp_strategy,
+        mcp_strategy: std::cell::Cell::new(mcp_strategy),
         initial_client_mcp_servers: initial_client_mcp_servers.clone(),
         chat_state_handle,
         current_prompt_id: current_prompt_id.clone(),
@@ -1142,6 +1401,8 @@ pub(crate) async fn spawn_session_actor(
         doom_loop_turn_tally: Default::default(),
         file_state_tracker,
         rewind_pending_prompt: std::sync::Mutex::new(None),
+        delivery_tools: std::cell::RefCell::new(startup_hints.delivery_tools.clone()),
+        attach_non_interactive: std::cell::Cell::new(startup_hints.non_interactive),
         startup_hints,
         forked_tool_override,
         compaction: super::compaction_config::CompactionConfig {
@@ -1155,6 +1416,7 @@ pub(crate) async fn spawn_session_actor(
             verbatim_input: compaction_verbatim_input,
             prefire: crate::session::compaction_config::PrefireState::default(),
             prefix_released: std::sync::atomic::AtomicBool::new(false),
+            cancel: Default::default(),
         },
         memory: super::memory_state::SessionMemory {
             flush_config: memory_config.as_ref().map_or_else(
@@ -1229,7 +1491,7 @@ pub(crate) async fn spawn_session_actor(
         queue_exit_reminder_on_approved_exit,
         active_skill: parking_lot::Mutex::new(None),
         current_prompt_mode: current_prompt_mode.clone(),
-        turn_start_prompt_mode: parking_lot::Mutex::new(PromptMode::Agent),
+        turn_start_prompt_mode: parking_lot::Mutex::new(restored_prompt_mode),
         turn_prompt_mode: turn_prompt_mode.clone(),
         plan_mode: plan_mode.clone(),
         goal_enabled,
@@ -1303,9 +1565,12 @@ pub(crate) async fn spawn_session_actor(
         ),
         observability_bridge: obs_bridge,
         current_turn_number: std::cell::Cell::new(0),
-        last_recap_main_turn: std::cell::Cell::new(0),
+        last_recap_main_turn: std::cell::Cell::new(initial_last_recap_main_turn),
         recap_in_flight: std::cell::Cell::new(false),
         recap_epoch: std::cell::Cell::new(0),
+        turn_summary_task: std::cell::RefCell::new(None),
+        turn_summary_generation: std::cell::Cell::new(0),
+        turn_summary_enabled: effective_config.is_turn_summary_enabled(),
         session_turn_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         streaming_turn_capture: parking_lot::Mutex::new(StreamingTurnCapture::default()),
         turn_stream_drained: parking_lot::Mutex::new(None),
@@ -1739,6 +2004,8 @@ pub(crate) async fn spawn_session_on_thread(
     write_file_enabled: bool,
     goal_enabled: bool,
     subagents_enabled: bool,
+    subagents_max_depth: u32,
+    workflow_max_concurrent_agents: usize,
     ask_user_question_enabled: bool,
     client_hooks: crate::extensions::hooks::ClientHooks,
     prompt_display_cwd: Option<String>,
@@ -1773,6 +2040,7 @@ pub(crate) async fn spawn_session_on_thread(
     >,
     max_turns: Option<usize>,
     forked_tool_override: Option<Vec<ToolSpec>>,
+    is_chat_kind: bool,
 ) -> Result<
     (
         SessionHandle,
@@ -1901,6 +2169,8 @@ pub(crate) async fn spawn_session_on_thread(
                         write_file_enabled,
                         goal_enabled,
                         subagents_enabled,
+                        subagents_max_depth,
+                        workflow_max_concurrent_agents,
                         ask_user_question_enabled,
                         client_hooks,
                         prompt_display_cwd,
@@ -1930,6 +2200,7 @@ pub(crate) async fn spawn_session_on_thread(
                         parent_scheduler_handle,
                         max_turns,
                         forked_tool_override,
+                        is_chat_kind,
                     )
                     .await
                     {

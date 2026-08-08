@@ -7,8 +7,6 @@ description = "Shared prompt-queue wire types for agent-tui-shell and agent-tui-
 
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
-
-[dev-dependencies]
 serde_json = { workspace = true }
 
 [lints]

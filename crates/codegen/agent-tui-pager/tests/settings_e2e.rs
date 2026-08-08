@@ -30,6 +30,10 @@ use agent_tui_shell::agent::config::UiConfig;
 const ALL_SETTINGS_EXERCISED: &[&str] = &[
     "compact_mode",
     "show_timestamps",
+    "show_timeline",
+    "page_flip_on_send",
+    "confirm_before_rewind",
+    "combine_queued_prompts",
     "simple_mode",
     "vim_mode",
     "remember_tool_approvals",
@@ -201,6 +205,24 @@ fn assert_set_bool_action(outcome: SettingsKeyOutcome, key: &str, expected: bool
         ("show_timestamps", Action::SetTimestamps(b)) => {
             assert_eq!(b, expected, "SetTimestamps value differs from expected")
         }
+        ("show_timeline", Action::SetTimeline(b)) => {
+            assert_eq!(b, expected, "SetTimeline value differs from expected")
+        }
+        ("page_flip_on_send", Action::SetPageFlipOnSend(b)) => {
+            assert_eq!(b, expected, "SetPageFlipOnSend value differs from expected")
+        }
+        ("confirm_before_rewind", Action::SetConfirmBeforeRewind(b)) => {
+            assert_eq!(
+                b, expected,
+                "SetConfirmBeforeRewind value differs from expected"
+            )
+        }
+        ("combine_queued_prompts", Action::SetCombineQueuedPrompts(b)) => {
+            assert_eq!(
+                b, expected,
+                "SetCombineQueuedPrompts value differs from expected"
+            )
+        }
         ("simple_mode", Action::SetSimpleMode(b)) => {
             assert_eq!(b, expected, "SetSimpleMode value differs from expected")
         }
@@ -350,6 +372,43 @@ fn space_on_show_timestamps_dispatches_typed_setter() {
     navigate_to(&mut s, "show_timestamps");
     let outcome = handle_settings_key(&mut s, &press(KeyCode::Char(' ')));
     assert_set_bool_action(outcome, "show_timestamps", false);
+}
+
+#[test]
+fn space_on_show_timeline_dispatches_typed_setter() {
+    let mut s = make_state();
+    navigate_to(&mut s, "show_timeline");
+    let outcome = handle_settings_key(&mut s, &press(KeyCode::Char(' ')));
+    // Toggling flips the default; derived so it follows SHOW_TIMELINE_DEFAULT.
+    let default_on = UiConfig::default().show_timeline_enabled();
+    assert_set_bool_action(outcome, "show_timeline", !default_on);
+}
+
+#[test]
+fn space_on_page_flip_on_send_dispatches_typed_setter() {
+    let mut s = make_state();
+    navigate_to(&mut s, "page_flip_on_send");
+    let outcome = handle_settings_key(&mut s, &press(KeyCode::Char(' ')));
+    let default_on = UiConfig::default().page_flip_on_send_enabled();
+    assert_set_bool_action(outcome, "page_flip_on_send", !default_on);
+}
+
+#[test]
+fn space_on_confirm_before_rewind_dispatches_typed_setter() {
+    let mut s = make_state();
+    navigate_to(&mut s, "confirm_before_rewind");
+    let outcome = handle_settings_key(&mut s, &press(KeyCode::Char(' ')));
+    let default_on = UiConfig::default().confirm_before_rewind_enabled();
+    assert_set_bool_action(outcome, "confirm_before_rewind", !default_on);
+}
+
+#[test]
+fn space_on_combine_queued_prompts_dispatches_typed_setter() {
+    let mut s = make_state();
+    navigate_to(&mut s, "combine_queued_prompts");
+    let outcome = handle_settings_key(&mut s, &press(KeyCode::Char(' ')));
+    let default_on = UiConfig::default().combine_queued_prompts.unwrap_or(false);
+    assert_set_bool_action(outcome, "combine_queued_prompts", !default_on);
 }
 
 #[test]
@@ -570,6 +629,67 @@ fn mouse_click_on_show_timestamps_two_stage_select_then_toggle() {
     assert_set_bool_action(outcome, "show_timestamps", false);
 }
 
+/// Value-column click toggles `show_timeline` in one click.
+#[test]
+fn mouse_click_on_show_timeline_indicator_toggles_in_one_click() {
+    let mut s = make_state();
+    synth_rects(&mut s);
+    let row_y = row_idx_for(&s, "show_timeline") as u16;
+    let outcome = handle_settings_mouse(
+        &mut s,
+        MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        72,
+        row_y,
+    );
+    let default_on = UiConfig::default().show_timeline_enabled();
+    assert_set_bool_action(outcome, "show_timeline", !default_on);
+}
+
+#[test]
+fn mouse_click_on_page_flip_on_send_indicator_toggles_in_one_click() {
+    let mut s = make_state();
+    synth_rects(&mut s);
+    let row_y = row_idx_for(&s, "page_flip_on_send") as u16;
+    let outcome = handle_settings_mouse(
+        &mut s,
+        MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        72,
+        row_y,
+    );
+    let default_on = UiConfig::default().page_flip_on_send_enabled();
+    assert_set_bool_action(outcome, "page_flip_on_send", !default_on);
+}
+
+#[test]
+fn mouse_click_on_combine_queued_prompts_indicator_toggles_in_one_click() {
+    let mut s = make_state();
+    synth_rects(&mut s);
+    let row_y = row_idx_for(&s, "combine_queued_prompts") as u16;
+    let outcome = handle_settings_mouse(
+        &mut s,
+        MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        72,
+        row_y,
+    );
+    let default_on = UiConfig::default().combine_queued_prompts.unwrap_or(false);
+    assert_set_bool_action(outcome, "combine_queued_prompts", !default_on);
+}
+
+#[test]
+fn mouse_click_on_confirm_before_rewind_indicator_toggles_in_one_click() {
+    let mut s = make_state();
+    synth_rects(&mut s);
+    let row_y = row_idx_for(&s, "confirm_before_rewind") as u16;
+    let outcome = handle_settings_mouse(
+        &mut s,
+        MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        72,
+        row_y,
+    );
+    let default_on = UiConfig::default().confirm_before_rewind_enabled();
+    assert_set_bool_action(outcome, "confirm_before_rewind", !default_on);
+}
+
 /// Value-column click toggles `remember_tool_approvals` in one click.
 #[test]
 fn mouse_click_on_remember_tool_approvals_indicator_toggles_in_one_click() {
@@ -747,6 +867,9 @@ fn slash_enters_filter_mode_and_chars_go_to_query_no_action_leak() {
             }
             SettingsKeyOutcome::ActionPair(a, b) => {
                 panic!("filter mode leaked ActionPair({a:?}, {b:?}) for char {c:?}");
+            }
+            SettingsKeyOutcome::ActionThenClose(a) => {
+                panic!("filter mode leaked ActionThenClose({a:?}) for char {c:?}");
             }
             SettingsKeyOutcome::Close => {
                 panic!("filter mode unexpectedly closed on char {c:?}");
@@ -1554,6 +1677,9 @@ fn registry_kind_membership_through_pr_14() {
             "respect_manual_folds",
             "show_thinking_blocks",
             "show_timestamps",
+            "page_flip_on_send",
+            "confirm_before_rewind",
+            "combine_queued_prompts",
             "simple_mode",
             "vim_mode",
             "remember_tool_approvals",
@@ -1694,6 +1820,10 @@ fn defaults_round_trip_through_registry() {
         match key {
             "compact_mode" => SettingValue::Bool(false),
             "show_timestamps" => SettingValue::Bool(true),
+            "show_timeline" => SettingValue::Bool(false),
+            "page_flip_on_send" => SettingValue::Bool(true),
+            "confirm_before_rewind" => SettingValue::Bool(true),
+            "combine_queued_prompts" => SettingValue::Bool(false),
             "simple_mode" => SettingValue::Bool(true),
             "vim_mode" => SettingValue::Bool(false),
             "remember_tool_approvals" => SettingValue::Bool(false),
@@ -1789,6 +1919,10 @@ fn settings_value_payload_matches_kind() {
         match outcome {
             SettingsKeyOutcome::Action(Action::SetCompactMode(_))
             | SettingsKeyOutcome::Action(Action::SetTimestamps(_))
+            | SettingsKeyOutcome::Action(Action::SetTimeline(_))
+            | SettingsKeyOutcome::Action(Action::SetPageFlipOnSend(_))
+            | SettingsKeyOutcome::Action(Action::SetConfirmBeforeRewind(_))
+            | SettingsKeyOutcome::Action(Action::SetCombineQueuedPrompts(_))
             | SettingsKeyOutcome::Action(Action::SetSimpleMode(_))
             | SettingsKeyOutcome::Action(Action::SetMultilineMode(_))
             | SettingsKeyOutcome::Action(Action::SetVimMode(_))
@@ -5003,51 +5137,23 @@ fn default_selected_permission_mouse_click_on_indicator_opens_picker_in_one_clic
     }
 }
 
-/// The `/privacy` slash command's argument parser
-/// is case-insensitive and supports a deliberately-pared-down list of
-/// unambiguous-semantic aliases. The unit-level coverage lives in the
-/// slash command module; this e2e test pins the integration contract
-/// (the parser is reachable from the slash command and produces the
-/// expected `Action`).
-///
-/// Ambiguous aliases
-/// (`on/off/true/false/enable/disable`) were DROPPED because they
-/// could be read either as "turn on privacy" (=opt-out) or "turn on
-/// sharing" (=opt-in). For a privacy-critical setting we err on the
-/// side of explicit, unambiguous arguments. The test below verifies
-/// both the accept list AND the reject list.
+/// `/privacy` takes no arguments: it opens the settings page and nothing
+/// else. The alias parser it used to carry (`opt-in`, `share`, `out`, …) is
+/// gone — a one-word prompt alias could flip a privacy preference with none
+/// of the disclosure copy in front of the user, and the ambiguous forms
+/// (`on`/`off`) risked landing on the opposite of the intent.
 #[test]
-fn pr9_privacy_slash_command_parses_aliases() {
-    use agent_tui_pager::slash::commands::privacy::parse_privacy_arg;
+fn pr9_privacy_slash_command_takes_no_arguments() {
+    use agent_tui_pager::slash::commands::builtin_commands;
+    use agent_tui_pager::slash::registry::CommandRegistry;
 
-    // Canonical names.
-    assert_eq!(parse_privacy_arg("opt-in"), Some(true));
-    assert_eq!(parse_privacy_arg("opt-out"), Some(false));
-
-    // Case-insensitive (sample).
-    assert_eq!(parse_privacy_arg("Opt-In"), Some(true));
-    assert_eq!(parse_privacy_arg("OPT-OUT"), Some(false));
-
-    // Unambiguous-semantic aliases (pruned list).
-    assert_eq!(parse_privacy_arg("in"), Some(true));
-    assert_eq!(parse_privacy_arg("out"), Some(false));
-    assert_eq!(parse_privacy_arg("share"), Some(true));
-    assert_eq!(parse_privacy_arg("private"), Some(false));
-
-    // Ambiguous aliases MUST be rejected. `/privacy on`
-    // could be read as "turn on privacy" (=opt-out, the OPPOSITE of
-    // what an earlier mapping returned). For a privacy
-    // setting, ambiguity = silent data-exfiltration risk.
-    for ambiguous in &["on", "off", "true", "false", "enable", "disable"] {
-        assert_eq!(
-            parse_privacy_arg(ambiguous),
-            None,
-            "ambiguous alias `{ambiguous}` MUST be rejected (PR 9 R1, Security Issue 10)",
-        );
-    }
-
-    // Unknown.
-    assert_eq!(parse_privacy_arg("maybe"), None);
+    let reg = CommandRegistry::new(builtin_commands());
+    let cmd = reg.get("privacy").expect("/privacy must be registered");
+    assert!(
+        !cmd.takes_args(),
+        "/privacy must not advertise an argument slot"
+    );
+    assert_eq!(cmd.usage(), "/privacy");
 }
 
 // ---------------------------------------------------------------------------

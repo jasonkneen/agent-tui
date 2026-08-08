@@ -27,6 +27,8 @@ pub async fn list_available_models(agent_config: &AgentConfig) -> Result<()> {
     println!();
 
     let cancel = CancellationToken::new();
+    // A utility command is not a startup: latch so nothing records or mirrors.
+    agent_tui_telemetry::startup::clear();
     let spawned = crate::acp::spawn::spawn_grok_shell(agent_config.clone(), &cancel, None).await?;
     // Declared after `spawned` so unwind/abort drops this guard first and
     // signals cancellation while the spawned-agent owner is still alive.

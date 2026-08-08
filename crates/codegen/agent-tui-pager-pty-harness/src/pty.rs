@@ -67,6 +67,10 @@ impl PtyController {
         }
         apply_child_env(&mut cmd, env);
 
+        // portable-pty calls setsid on Unix. Windows Job enrollment is a
+        // best-effort post-spawn attachment, so a very short-lived descendant
+        // may escape before enrollment; diagnostics preserve that downgrade.
+        #[allow(clippy::disallowed_methods)]
         let child = pair.slave.spawn_command(cmd)?;
         // Drop the slave so we get EOF when the child exits.
         drop(pair.slave);
@@ -211,6 +215,108 @@ impl Drop for PtyController {
     }
 }
 
+#[cfg(unix)]
+#[derive(Debug, Eq, PartialEq)]
+enum ExitObservation {
+    Running,
+    Exited,
+    StatusAlreadyConsumed,
+}
+
+#[cfg(unix)]
+fn observe_exit_before_reap(
+    observation: io::Result<bool>,
+    exit_observed: bool,
+    portable_kill_may_have_reaped: bool,
+) -> io::Result<ExitObservation> {
+    match observation {
+        Ok(false) => Ok(ExitObservation::Running),
+        Ok(true) => Ok(ExitObservation::Exited),
+        Err(error)
+            if error.raw_os_error() == Some(libc::ECHILD)
+                && (exit_observed || portable_kill_may_have_reaped) =>
+        {
+            Ok(ExitObservation::StatusAlreadyConsumed)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(unix)]
+fn recover_consumed_status(status: io::Result<Option<ExitStatus>>) -> io::Result<ExitStatus> {
+    status?.ok_or_else(|| io::Error::other("PTY child status was consumed without being cached"))
+}
+
+/// Typed result of polling a PTY child's lifecycle.
+///
+/// Only [`Self::Running`] means the process is live. [`Self::PendingStatus`]
+/// means exit was already observed, descendants were cleaned, and the PID was
+/// hidden, but portable-pty has not yet yielded the final status.
+#[must_use = "PTY exit state and poll errors must be handled explicitly"]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PtyExitPoll<T> {
+    /// The child exited and its cached terminal status is available.
+    Exited(T),
+    /// The child is non-running, but its portable-pty status is not yet available.
+    PendingStatus,
+    /// The child is still live.
+    Running,
+}
+
+fn classify_exit_poll<T, E>(
+    poll: std::result::Result<Option<T>, E>,
+    exit_observed: bool,
+) -> std::result::Result<PtyExitPoll<T>, E> {
+    match poll {
+        Ok(Some(status)) => Ok(PtyExitPoll::Exited(status)),
+        Ok(None) if exit_observed => Ok(PtyExitPoll::PendingStatus),
+        Ok(None) => Ok(PtyExitPoll::Running),
+        Err(error) => Err(error),
+    }
+}
+
+fn resolve_wait_poll<T, E>(
+    poll: std::result::Result<PtyExitPoll<T>, E>,
+    deadline_reached: bool,
+) -> std::result::Result<Option<PtyExitPoll<T>>, E> {
+    match poll? {
+        PtyExitPoll::Running if !deadline_reached => Ok(None),
+        state => Ok(Some(state)),
+    }
+}
+
+fn is_quit_complete<T, E>(
+    poll: std::result::Result<PtyExitPoll<T>, E>,
+) -> std::result::Result<bool, E> {
+    match poll? {
+        PtyExitPoll::Exited(_) | PtyExitPoll::PendingStatus => Ok(true),
+        PtyExitPoll::Running => Ok(false),
+    }
+}
+
+fn cache_exit_status(
+    exit_status: &mut Option<ExitStatus>,
+    exit_observed: &mut bool,
+    spawn_pid: &mut Option<u32>,
+    status: ExitStatus,
+) {
+    *exit_status = Some(status);
+    *exit_observed = true;
+    *spawn_pid = None;
+}
+
+const CLIPBOARD_SINK_ENV_VARS: &[&str] = &["GROK_OSC52_SINK", "LC_GROK_OSC52_SINK"];
+
+/// Host / wrap appearance hints that would make `theme=auto` non-deterministic
+/// in PTY tests (layout depends on the resolved palette).
+const APPEARANCE_ENV_VARS: &[&str] = &[
+    "GROK_APPEARANCE",
+    "LC_GROK_APPEARANCE",
+    "GROK_THEME",
+    "LC_GROK_THEME",
+    "COLORFGBG",
+];
+
 /// Host terminal identity markers stripped from the child environment.
 ///
 /// The pager's terminal detection
@@ -288,6 +394,15 @@ fn apply_child_env(cmd: &mut CommandBuilder, env: &[(&str, &str)]) {
     for ssh_var in ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "SSH_AUTH_SOCK"] {
         cmd.env_remove(ssh_var);
     }
+    // A harness launched under `grok wrap` must not silently confirm clipboard
+    // delivery for no-sink scenarios. Explicit sink tests re-inject a marker
+    // through `env` after this hygiene pass.
+    for sink_var in CLIPBOARD_SINK_ENV_VARS {
+        cmd.env_remove(sink_var);
+    }
+    for appearance_var in APPEARANCE_ENV_VARS {
+        cmd.env_remove(appearance_var);
+    }
     // Neutralize parent-terminal identity bleed: agent hosts often export
     // TERM_PROGRAM=ghostty/iTerm/etc. (and mux/editor markers) which make
     // the child pager adopt that host's key/modifier/clipboard quirks even
@@ -345,7 +460,14 @@ mod tests {
         for color_var in ["NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE"] {
             cmd.env(color_var, "polluted");
         }
-        // Unrelated vars must survive the hygiene pass untouched.
+        for sink_var in CLIPBOARD_SINK_ENV_VARS {
+            cmd.env(sink_var, "polluted");
+        }
+        for appearance_var in APPEARANCE_ENV_VARS {
+            cmd.env(appearance_var, "polluted");
+        }
+        // Sandboxed launches remove unrelated inherited variables before
+        // re-applying the baseline and explicit overrides.
         cmd.env("GROK_SCROLL_LOG", "/tmp/scroll.jsonl");
 
         apply_child_env(&mut cmd, &[]);
@@ -366,6 +488,18 @@ mod tests {
             assert!(
                 cmd.get_env(color_var).is_none(),
                 "color override {color_var} leaked into the child env"
+            );
+        }
+        for sink_var in CLIPBOARD_SINK_ENV_VARS {
+            assert!(
+                cmd.get_env(sink_var).is_none(),
+                "clipboard sink marker {sink_var} leaked into the child env"
+            );
+        }
+        for appearance_var in APPEARANCE_ENV_VARS {
+            assert!(
+                cmd.get_env(appearance_var).is_none(),
+                "appearance hint {appearance_var} leaked into the child env"
             );
         }
         assert_eq!(

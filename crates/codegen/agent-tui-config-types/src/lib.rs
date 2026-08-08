@@ -36,8 +36,9 @@ pub struct CampaignOverride {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct DoomLoopRecoverySettings {
-    /// Send the `x-grok-doom-loop-check` header and parse the reported
-    /// triggers. `Some(false)` is a kill-switch; absent ⇒ client default (off).
+    /// Send the `x-grok-doom-loop-check` header, parse the reported
+    /// triggers, and resample confident loops. `Some(false)` is a
+    /// kill-switch; absent ⇒ client default (ON).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     /// Highest `tail_repetition` threshold considered confident (clamped to
@@ -50,6 +51,120 @@ pub struct DoomLoopRecoverySettings {
     /// default (2).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_retries: Option<u32>,
+}
+/// Per-kind age policy for auto-GC: seconds or never.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorktreeKindMaxAge {
+    Secs(u64),
+    Never,
+}
+impl Serialize for WorktreeKindMaxAge {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Secs(n) => serializer.serialize_u64(*n),
+            Self::Never => serializer.serialize_str("never"),
+        }
+    }
+}
+impl<'de> Deserialize<'de> for WorktreeKindMaxAge {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = WorktreeKindMaxAge;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("u64 seconds or \"never\"")
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                Ok(WorktreeKindMaxAge::Secs(v))
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+                u64::try_from(v)
+                    .map(WorktreeKindMaxAge::Secs)
+                    .map_err(E::custom)
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                if v.eq_ignore_ascii_case("never") {
+                    Ok(WorktreeKindMaxAge::Never)
+                } else if let Ok(n) = v.parse::<u64>() {
+                    Ok(WorktreeKindMaxAge::Secs(n))
+                } else {
+                    Err(E::custom("expected \"never\" or integer seconds"))
+                }
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(WorktreeKindMaxAge::Never)
+            }
+            fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(WorktreeKindMaxAge::Never)
+            }
+        }
+        deserializer.deserialize_any(V)
+    }
+}
+/// Local `[worktree.auto_gc]` / remote `worktree_auto_gc` policy.
+/// Field-wise tolerant deserialize so one bad key cannot drop a sibling kill-switch.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct WorktreeAutoGcSettings {
+    /// `Some(false)` kill-switch; absent ⇒ default on (env kill still applies).
+    #[serde(
+        default,
+        deserialize_with = "de_opt_bool_tolerant",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub enabled: Option<bool>,
+    /// Age cutoff seconds when platform age-expiry is allowed; clamped by resolver.
+    #[serde(
+        default,
+        deserialize_with = "de_opt_u64_tolerant",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_age_secs: Option<u64>,
+    /// Min seconds between successful auto-GC stamps; clamped by resolver.
+    #[serde(
+        default,
+        deserialize_with = "de_opt_u64_tolerant",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub min_interval_secs: Option<u64>,
+    /// Count age candidates without deleting.
+    #[serde(
+        default,
+        deserialize_with = "de_opt_bool_tolerant",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub dry_run: Option<bool>,
+    /// Linux only.
+    #[serde(
+        default,
+        deserialize_with = "de_opt_bool_tolerant",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub include_orphan_snapshots: Option<bool>,
+    /// Per-kind max ages (`session`/`ab`/`pool`/`fork`/`manual`/`subagent`).
+    /// Seconds or `"never"`. Absent keys use defaults (client default: `manual`=never).
+    /// Remote may set `manual` to a finite TTL — not client-pinned; local TOML can restore `"never"`.
+    /// Unknown kind keys ignored at resolve.
+    #[serde(
+        default,
+        deserialize_with = "de_opt_max_age_by_kind_tolerant",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_age_by_kind: Option<std::collections::BTreeMap<String, WorktreeKindMaxAge>>,
+    /// Optional discovery rebuild + grok-scoped stale `.git/worktrees/` scrub (default off).
+    #[serde(
+        default,
+        deserialize_with = "de_opt_bool_tolerant",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub include_rebuild: Option<bool>,
+    /// Independent rebuild throttle seconds; absent ⇒ 24h. Clamped like `min_interval_secs`.
+    #[serde(
+        default,
+        deserialize_with = "de_opt_u64_tolerant",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub rebuild_min_interval_secs: Option<u64>,
 }
 /// Display-refresh probe + auto-cadence settings: ONE struct for local
 /// `[ui.display_refresh]`, remote settings `display_refresh`, and `UiConfig`.
@@ -596,7 +711,7 @@ pub struct RemoteSettings {
     #[serde(default)]
     pub worktree_type: Option<String>,
     /// Server-recommended default for `restore_code` in worktree resume.
-    /// Fallback when no local `[cli] restore_code` is set in config.toml.
+    /// Applied only when the client omits `restoreCode`.
     #[serde(default)]
     pub restore_code: Option<bool>,
     /// When `Some(true)`, Ctrl+C before the first server activity rewinds
@@ -607,6 +722,11 @@ pub struct RemoteSettings {
     /// Optional remote kill-switch; shell defaults ON when unset (set `false` to disable).
     #[serde(default)]
     pub session_recap: Option<bool>,
+    /// Enables the per-turn dashboard summary (one-line "what happened last
+    /// turn" generated at turn end). Optional remote kill-switch; shell
+    /// defaults ON when unset (set `false` to disable).
+    #[serde(default)]
+    pub turn_summary: Option<bool>,
     /// Enables the `ask_user_question` tool. Optional remote kill-switch:
     /// `Some(false)` strips the tool; `Some(true)` or absent → the shell
     /// default (ON). Feature-flagged via remote settings.
@@ -737,6 +857,16 @@ pub struct RemoteSettings {
     /// further override per the resolver chain.
     #[serde(default)]
     pub auto_compact_threshold_percent: Option<u8>,
+    /// Max subagent nesting depth (`grok_build_settings.subagents_max_depth`).
+    #[serde(default)]
+    pub subagents_max_depth: Option<u32>,
+    #[serde(default)]
+    pub subagents_max_concurrent: Option<u32>,
+    /// `"queue"` or `"fail"`.
+    #[serde(default)]
+    pub subagents_limit_behavior: Option<String>,
+    #[serde(default)]
+    pub workflow_max_concurrent_agents: Option<u32>,
     /// Global system-prompt identity label. Per-model override wins; see
     /// `resolve_system_prompt_label`.
     #[serde(default)]

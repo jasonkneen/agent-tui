@@ -116,7 +116,177 @@ pub struct ChannelBackend {
 
 impl ChannelBackend {
     pub fn new(tx: mpsc::UnboundedSender<SubagentEvent>) -> Self {
-        Self { tx }
+        Self {
+            tx,
+            parent_session_id: None,
+        }
+    }
+
+    /// Bind model-facing operations to one parent session.
+    pub fn for_session(
+        tx: mpsc::UnboundedSender<SubagentEvent>,
+        parent_session_id: impl Into<Arc<str>>,
+    ) -> Self {
+        Self {
+            tx,
+            parent_session_id: Some(parent_session_id.into()),
+        }
+    }
+
+    fn parent_session_id(&self) -> Option<String> {
+        self.parent_session_id.as_deref().map(str::to_owned)
+    }
+
+    pub fn sender(&self) -> mpsc::UnboundedSender<SubagentEvent> {
+        self.tx.clone()
+    }
+
+    pub fn into_resource(self) -> SubagentBackendResource {
+        SubagentBackendResource(Arc::new(self))
+    }
+
+    pub async fn cancel_parent_prompt(&self, parent_prompt_id: &str) -> SubagentCancelOutcome {
+        let (respond_to, response_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(SubagentEvent::Cancel(SubagentCancelRequest {
+                parent_session_id: self.parent_session_id(),
+                target: SubagentCancelTarget::ParentPromptId(parent_prompt_id.to_owned()),
+                respond_to,
+            }))
+            .is_err()
+        {
+            return SubagentCancelOutcome::NotFound;
+        }
+        response_rx.await.unwrap_or(SubagentCancelOutcome::NotFound)
+    }
+
+    /// User Stop: cancel all non-workflow children for this parent session.
+    ///
+    /// Requires [`Self::for_session`]; unbound backends return `NotFound` and
+    /// do not broadcast a wildcard cancel.
+    pub async fn cancel_parent_session(&self) -> SubagentCancelOutcome {
+        let (respond_to, response_rx) = oneshot::channel();
+        if !self.request_cancel_parent_session(respond_to) {
+            return SubagentCancelOutcome::NotFound;
+        }
+        response_rx.await.unwrap_or(SubagentCancelOutcome::NotFound)
+    }
+
+    /// Fire-and-forget ParentSession cancel used by the shell Stop path.
+    /// Returns false when the backend is unbound or the channel is closed.
+    pub fn request_cancel_parent_session(
+        &self,
+        respond_to: oneshot::Sender<SubagentCancelOutcome>,
+    ) -> bool {
+        let Some(parent_session_id) = self.parent_session_id() else {
+            return false;
+        };
+        self.tx
+            .send(SubagentEvent::Cancel(SubagentCancelRequest {
+                parent_session_id: Some(parent_session_id),
+                target: SubagentCancelTarget::ParentSession,
+                respond_to,
+            }))
+            .is_ok()
+    }
+
+    /// Re-open Task spawns after a prior ParentSession stop (start of next turn).
+    pub fn open_spawn_admission(&self) -> bool {
+        let Some(parent_session_id) = self.parent_session_id() else {
+            return false;
+        };
+        self.tx
+            .send(SubagentEvent::OpenSpawnAdmission { parent_session_id })
+            .is_ok()
+    }
+
+    pub async fn inspect(&self, id: &str) -> Option<SubagentInspection> {
+        let (respond_to, response_rx) = oneshot::channel();
+        self.tx
+            .send(SubagentEvent::Inspect(SubagentInspectRequest {
+                subagent_id: id.to_owned(),
+                parent_session_id: self.parent_session_id(),
+                respond_to,
+            }))
+            .ok()?;
+        response_rx.await.ok().flatten()
+    }
+
+    pub async fn list_running(&self, parent_session_id: &str) -> Vec<SubagentInspection> {
+        let (respond_to, response_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(SubagentEvent::ListRunning(SubagentListRunningRequest {
+                parent_session_id: parent_session_id.to_owned(),
+                respond_to,
+            }))
+            .is_err()
+        {
+            return Vec::new();
+        }
+        response_rx.await.unwrap_or_default()
+    }
+
+    pub async fn spawned_refs_for_prompt(
+        &self,
+        parent_session_id: &str,
+        prompt_id: &str,
+    ) -> Vec<SpawnedSubagentRef> {
+        let (respond_to, response_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(SubagentEvent::SpawnedRefs(SubagentSpawnedRefsRequest {
+                parent_session_id: self
+                    .parent_session_id
+                    .as_deref()
+                    .unwrap_or(parent_session_id)
+                    .to_owned(),
+                prompt_id: prompt_id.to_owned(),
+                respond_to,
+            }))
+            .is_err()
+        {
+            return Vec::new();
+        }
+        response_rx.await.unwrap_or_default()
+    }
+
+    pub async fn registry_counts(&self) -> SubagentRegistryCounts {
+        let (respond_to, response_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(SubagentEvent::RegistryCounts(
+                SubagentRegistryCountsRequest { respond_to },
+            ))
+            .is_err()
+        {
+            return SubagentRegistryCounts::default();
+        }
+        response_rx.await.unwrap_or_default()
+    }
+
+    /// Spawn while holding the host's interruptible foreground-wait token.
+    pub async fn spawn_with_foreground_wait(
+        &self,
+        request: SubagentRequest,
+        wait: Option<&super::types::SubagentForegroundWait>,
+    ) -> Result<SubagentResult, ToolError> {
+        let _wait = wait.map(super::types::SubagentForegroundWait::enter);
+        self.spawn(request).await
+    }
+}
+
+struct CancelResultReceiverOnDrop {
+    cancel_token: tokio_util::sync::CancellationToken,
+    armed: bool,
+}
+
+impl Drop for CancelResultReceiverOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cancel_token.cancel();
+        }
     }
 }
 
@@ -274,16 +444,16 @@ pub const VALIDATE_TYPE_TIMEOUT: std::time::Duration = std::time::Duration::from
 pub const VALIDATE_TYPE_TIMEOUT_ENV_VAR: &str = "XAI_VALIDATE_TYPE_TIMEOUT_MS";
 
 /// Validation timeout, honoring the env-var override.
-pub(crate) fn validate_type_timeout() -> std::time::Duration {
-    let raw = std::env::var(VALIDATE_TYPE_TIMEOUT_ENV_VAR).ok();
-    parse_timeout_ms(raw.as_deref())
+pub fn validate_type_timeout() -> std::time::Duration {
+    let value = std::env::var(VALIDATE_TYPE_TIMEOUT_ENV_VAR).ok();
+    parse_timeout_ms(value.as_deref())
         .map(std::time::Duration::from_millis)
         .unwrap_or(VALIDATE_TYPE_TIMEOUT)
 }
 
 /// Parse a positive `u64` millisecond value; `None` for unset, invalid, or zero.
 pub(crate) fn parse_timeout_ms(value: Option<&str>) -> Option<u64> {
-    value?.parse::<u64>().ok().filter(|&ms| ms > 0)
+    value.and_then(crate::util::env::parse_positive)
 }
 
 #[cfg(test)]

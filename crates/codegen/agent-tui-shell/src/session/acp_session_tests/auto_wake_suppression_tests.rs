@@ -73,6 +73,32 @@ fn monitor_event_notification(task_id: &str) -> PendingNotification {
 /// Monitor notifications in the idle drain collapse into ONE
 /// `format_monitor_events` block (same shape as the mid-turn injection);
 /// non-monitor notifications keep their raw blocks, `---`-separated.
+#[test]
+fn pending_notification_cap_keeps_newest_entries() {
+    let mut state = State {
+        running_task: None,
+        pending_inputs: std::collections::VecDeque::new(),
+        combine_edit_holds: std::collections::HashSet::new(),
+        pending_notifications: Vec::new(),
+        notifications_suppressed: true,
+        rewindable: false,
+        front_message_committed: false,
+        nudges_used_this_session: 0,
+    };
+    for index in 0..(MAX_PENDING_NOTIFICATIONS + 3) {
+        SessionActor::push_pending_notification(
+            &mut state,
+            bash_completed_notification(&format!("task-{index}")),
+        );
+    }
+    assert_eq!(state.pending_notifications.len(), MAX_PENDING_NOTIFICATIONS);
+    assert_eq!(state.pending_notifications[0].source.task_id(), "task-3");
+    let newest = format!("task-{}", MAX_PENDING_NOTIFICATIONS + 2);
+    assert_eq!(
+        state.pending_notifications.last().unwrap().source.task_id(),
+        newest
+    );
+}
 #[tokio::test(flavor = "current_thread")]
 async fn drain_batches_monitor_notifications_into_formatted_block() {
     let local = tokio::task::LocalSet::new();
@@ -141,6 +167,573 @@ async fn drain_batches_monitor_notifications_into_formatted_block() {
                 text.matches("---").count(), 1,
                 "one separator between the batch and the bash block: {text}"
             );
+        })
+        .await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn cancel_barrier_rejects_task_completion_wake_without_reporting_it() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _) =
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            let reservations = actor
+                .tool_context
+                .task_completion_reservations
+                .clone()
+                .expect("completion reservations");
+            reservations.reserve("bg-suppressed".to_string());
+            actor.state.lock().await.notifications_suppressed = true;
+            let gate = actor
+                .tool_context
+                .task_wake_suppressed
+                .clone()
+                .expect("task-wake gate");
+            gate.set(true);
+            let resources = actor
+                .agent
+                .borrow()
+                .tool_bridge()
+                .clone()
+                .shared_resources()
+                .await;
+            {
+                let mut resources = resources.lock().await;
+                resources.insert(reservations.clone());
+                resources.insert(gate.clone());
+            }
+            let origin = crate::session::PromptOrigin::TaskCompleted {
+                task_id: "bg-suppressed".to_string(),
+            };
+            let (admission, response_rx) = task_wake_admission(
+                "bg-suppressed",
+                NotificationSource::BashTaskCompleted {
+                    task_id: "bg-suppressed".to_string(),
+                },
+            );
+            assert!(
+                actor
+                    .admit_task_completion_wake(&origin, admission)
+                    .await
+                    .is_none()
+            );
+            assert_eq!(response_rx.await, Ok(false));
+            assert!(gate.get());
+            let state = actor.state.lock().await;
+            assert!(state.running_task.is_none());
+            assert!(state.pending_inputs.is_empty());
+            assert!(matches!(
+                state.pending_notifications.as_slice(),
+                [PendingNotification {
+                    source: NotificationSource::BashTaskCompleted { task_id },
+                    ..
+                }] if task_id == "bg-suppressed"
+            ));
+            drop(state);
+            assert!(reservations.contains("bg-suppressed"));
+            let res = resources.lock().await;
+            assert!(
+                res.get::<agent_tui_tools::types::resources::State<
+                    agent_tui_tools::reminders::task_completion::ReportedTaskCompletions,
+                >>()
+                .is_none(),
+                "declined admission must not report before user re-engagement"
+            );
+            drop(res);
+            let reminder = agent_tui_tools::reminders::TaskCompletionReminder;
+            let reminders = agent_tui_tools::types::tool::Reminder::collect_reminders(
+                &reminder,
+                resources,
+                &ToolOutput::Dynamic(serde_json::Value::Null.into()),
+            )
+            .await;
+            assert!(reminders.is_empty());
+            assert!(reservations.contains("bg-suppressed"));
+            reservations.release("bg-suppressed");
+        })
+        .await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn closed_admission_ack_stores_fallback_before_prompt_rejection() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _) =
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            let origin = crate::session::PromptOrigin::TaskCompleted {
+                task_id: "mon-timeout".to_string(),
+            };
+            let (admission, response_rx) = task_wake_admission(
+                "mon-timeout",
+                NotificationSource::MonitorCompleted {
+                    task_id: "mon-timeout".to_string(),
+                },
+            );
+            drop(response_rx);
+            assert!(
+                actor
+                    .admit_task_completion_wake(&origin, admission)
+                    .await
+                    .is_none()
+            );
+            let state = actor.state.lock().await;
+            assert!(matches!(
+                state.pending_notifications.as_slice(),
+                [PendingNotification {
+                    source: NotificationSource::MonitorCompleted { task_id },
+                    ..
+                }] if task_id == "mon-timeout"
+            ));
+        })
+        .await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn non_task_prompt_is_not_subject_to_task_wake_barrier() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _) =
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            actor.state.lock().await.notifications_suppressed = true;
+            let (admission, response_rx) = task_wake_admission(
+                "sub-1",
+                NotificationSource::BashTaskCompleted {
+                    task_id: "sub-1".to_string(),
+                },
+            );
+            assert!(
+                actor
+                    .admit_task_completion_wake(
+                        &crate::session::PromptOrigin::SubagentCompleted {
+                            subagent_id: "sub-1".to_string(),
+                        },
+                        admission,
+                    )
+                    .await
+                    .is_some(),
+                "subagent completion is outside terminal task-wake suppression scope"
+            );
+            assert_eq!(response_rx.await, Ok(true));
+        })
+        .await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn task_completion_wake_is_admitted_without_cancel_barrier() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _) = tokio::sync::mpsc::unbounded_channel::<
+                agent_tui_acp_lib::AcpClientMessage,
+            >();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<
+                PersistenceMsg,
+            >();
+            let actor = std::sync::Arc::new(
+                create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await,
+            );
+            let origin = crate::session::PromptOrigin::TaskCompleted {
+                task_id: "bg-normal".to_string(),
+            };
+            actor
+                .tool_context
+                .task_completion_reservations
+                .as_ref()
+                .expect("completion reservations")
+                .reserve("bg-normal".to_string());
+            let (admission, response_rx) = task_wake_admission(
+                "bg-normal",
+                NotificationSource::BashTaskCompleted {
+                    task_id: "bg-normal".to_string(),
+                },
+            );
+            let fallback = actor
+                .admit_task_completion_wake(&origin, admission)
+                .await
+                .expect("normal task wake should be admitted");
+            assert_eq!(response_rx.await, Ok(true));
+            let (respond_to, _rx) = oneshot::channel();
+            let _ = actor
+                .queue_input(QueueInputRequest {
+                    verbatim: true,
+                    task_wake_fallback: Some(fallback),
+                    ..queue_input_request(vec![], "task-completed-bg-normal", respond_to)
+                })
+                .await;
+            let state = actor.state.lock().await;
+            assert_eq!(state.pending_inputs.len(), 1);
+            assert!(matches!(
+                state.pending_inputs.front().map(|item| &item.origin),
+                Some(crate::session::PromptOrigin::TaskCompleted { task_id }) if task_id == "bg-normal"
+            ));
+            drop(state);
+            let resources = actor
+                .agent
+                .borrow()
+                .tool_bridge()
+                .clone()
+                .shared_resources()
+                .await;
+            assert!(
+                resources
+                    .lock()
+                    .await
+                    .get::<agent_tui_tools::types::resources::State<
+                        agent_tui_tools::reminders::task_completion::ReportedTaskCompletions,
+                    >>()
+                    .is_none(),
+                "queue acceptance alone must not mark the completion reported"
+            );
+            let actor_for_turn = actor.clone();
+            let turn = tokio::task::spawn_local(async move {
+                actor_for_turn
+                    .handle_prompt(
+                        "task-completed-bg-normal",
+                        vec![acp::ContentBlock::Text(acp::TextContent::new("done"))],
+                        PromptMode::Agent,
+                        None,
+                        None,
+                        None,
+                        None,
+                        true,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await
+            });
+            tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    async {
+                        loop {
+                            if already_reported(&actor, "bg-normal").await {
+                                break;
+                            }
+                            tokio::task::yield_now().await;
+                        }
+                    },
+                )
+                .await
+                .expect("synthetic turn marked completion reported");
+            turn.abort();
+            assert!(
+                already_reported(&actor, "bg-normal").await,
+                "actual synthetic turn start must mark the completion reported"
+            );
+            assert!(
+                actor
+                    .tool_context
+                    .task_completion_reservations
+                    .as_ref()
+                    .is_none_or(|ids| !ids.contains("bg-normal"))
+            );
+        })
+        .await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn disk_full_refusal_still_clears_task_completion_reservation() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _gateway_rx) =
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
+            let (persistence_tx, mut persistence_rx) =
+                tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            tokio::task::spawn_local(async move {
+                while let Some(msg) = persistence_rx.recv().await {
+                    if let PersistenceMsg::ProbeWritable { respond_to } = msg {
+                        let _ = respond_to
+                            .send(Err(std::io::Error::from(std::io::ErrorKind::StorageFull)));
+                    }
+                }
+            });
+            let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            actor.notifications.disk_full = tokio::sync::watch::channel(true).1;
+            actor
+                .tool_context
+                .task_completion_reservations
+                .as_ref()
+                .expect("completion reservations")
+                .reserve("bg-disk".to_string());
+            let actor = std::sync::Arc::new(actor);
+            let error = actor
+                .handle_prompt(
+                    "task-completed-bg-disk",
+                    vec![acp::ContentBlock::Text(acp::TextContent::new("done"))],
+                    PromptMode::Agent,
+                    None,
+                    None,
+                    None,
+                    None,
+                    true,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .expect_err("latched disk-full must refuse the wake");
+            assert_eq!(error.message, "No space left on device");
+            assert!(
+                already_reported(&actor, "bg-disk").await,
+                "disk-full refusal must mark the completion reported"
+            );
+            assert!(
+                actor
+                    .tool_context
+                    .task_completion_reservations
+                    .as_ref()
+                    .is_none_or(|ids| !ids.contains("bg-disk")),
+                "disk-full refusal must release the completion reservation"
+            );
+        })
+        .await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn genuine_user_start_consumes_deferred_completions_without_notification_turn() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _) =
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = std::sync::Arc::new(
+                create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await,
+            );
+            let body = agent_tui_tools::reminders::task_completion::format_monitor_completion(
+                &agent_tui_tools::types::TaskSnapshot {
+                    task_id: "mon-quiet".to_string(),
+                    command: "tail -f quiet.log".to_string(),
+                    display_command: Some("[monitor] quiet logs".to_string()),
+                    cwd: String::new(),
+                    start_time: std::time::SystemTime::now(),
+                    end_time: Some(std::time::SystemTime::now()),
+                    output: String::new(),
+                    output_file: std::path::PathBuf::new(),
+                    truncated: false,
+                    exit_code: Some(0),
+                    signal: None,
+                    completed: true,
+                    kind: agent_tui_tools::computer::types::TaskKind::Monitor,
+                    block_waited: false,
+                    explicitly_killed: false,
+                    owner_session_id: None,
+                    description: None,
+                    is_backgrounded: false,
+                    output_total_bytes: 0,
+                },
+                Some("get_command_or_subagent_output"),
+            );
+            {
+                let mut state = actor.state.lock().await;
+                state.notifications_suppressed = true;
+                state
+                    .pending_notifications
+                    .push(monitor_event_notification("mon-quiet"));
+                let mut monitor_completion = monitor_completed_notification("mon-quiet");
+                monitor_completion.prompt_blocks =
+                    vec![acp::ContentBlock::Text(acp::TextContent::new(body))];
+                state.pending_notifications.push(monitor_completion);
+                let mut bash_completion = bash_completed_notification("bash-deferred");
+                bash_completion.prompt_blocks = vec![acp::ContentBlock::Text(
+                    acp::TextContent::new("Background task bash-deferred completed."),
+                )];
+                state.pending_notifications.push(bash_completion);
+            }
+            let reservations = actor
+                .tool_context
+                .task_completion_reservations
+                .as_ref()
+                .expect("completion reservations");
+            reservations.reserve("mon-quiet".to_string());
+            reservations.reserve("bash-deferred".to_string());
+            actor
+                .tool_context
+                .task_wake_suppressed
+                .as_ref()
+                .expect("task-wake gate")
+                .set(true);
+            let actor_for_turn = actor.clone();
+            let turn = tokio::task::spawn_local(async move {
+                actor_for_turn
+                    .handle_prompt(
+                        "user-deferred-completions",
+                        vec![acp::ContentBlock::Text(acp::TextContent::new("continue"))],
+                        PromptMode::Agent,
+                        None,
+                        None,
+                        None,
+                        None,
+                        false,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    if actor.state.lock().await.pending_notifications.is_empty() {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("user turn consumed deferred completions");
+            turn.abort();
+            tokio::task::yield_now().await;
+            let state = actor.state.lock().await;
+            assert!(state.notifications_suppressed);
+            assert!(state.pending_notifications.is_empty());
+            assert!(state.pending_inputs.iter().all(|input| !matches!(
+                input.origin,
+                crate::session::PromptOrigin::NotificationDrain
+            )));
+            drop(state);
+            let (completion_tx, _completion_rx) = tokio::sync::mpsc::unbounded_channel();
+            SessionActor::maybe_drain_notifications(actor.clone(), completion_tx).await;
+            let state = actor.state.lock().await;
+            assert!(state.pending_inputs.iter().all(|input| !matches!(
+                input.origin,
+                crate::session::PromptOrigin::NotificationDrain
+            )));
+            drop(state);
+            assert!(!reservations.contains("mon-quiet"));
+            assert!(!reservations.contains("bash-deferred"));
+            assert!(
+                !actor
+                    .tool_context
+                    .task_wake_suppressed
+                    .as_ref()
+                    .expect("task-wake gate")
+                    .get()
+            );
+            let conversation = actor.chat_state_handle.get_conversation().await;
+            let text = conversation
+                .iter()
+                .map(|item| item.text_content())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains("Monitor \"mon-quiet\" ended"));
+            assert!(text.contains("Background task bash-deferred completed."));
+            assert!(!text.contains("<monitor-event"));
+        })
+        .await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn accepted_reservation_survives_user_start() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _) =
+                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
+            let actor = std::sync::Arc::new(
+                create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await,
+            );
+            let reservations = actor
+                .tool_context
+                .task_completion_reservations
+                .as_ref()
+                .expect("completion reservations");
+            reservations.reserve("accepted-race".to_string());
+            actor
+                .tool_context
+                .task_wake_suppressed
+                .as_ref()
+                .expect("task-wake gate")
+                .set(true);
+            let actor_for_turn = actor.clone();
+            let turn = tokio::task::spawn_local(async move {
+                actor_for_turn
+                    .handle_prompt(
+                        "user-accepted-race",
+                        vec![acp::ContentBlock::Text(acp::TextContent::new("continue"))],
+                        PromptMode::Agent,
+                        None,
+                        None,
+                        None,
+                        None,
+                        false,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    if actor
+                        .tool_context
+                        .task_wake_suppressed
+                        .as_ref()
+                        .is_none_or(|gate| !gate.get())
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("user turn started");
+            assert!(reservations.contains("accepted-race"));
+            turn.abort();
+            reservations.release("accepted-race");
+        })
+        .await;
+}
+#[tokio::test(flavor = "current_thread")]
+async fn same_id_bash_completion_does_not_suppress_monitor_event() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (gateway_tx, _) = tokio::sync::mpsc::unbounded_channel::<
+                agent_tui_acp_lib::AcpClientMessage,
+            >();
+            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<
+                PersistenceMsg,
+            >();
+            let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx)
+                .await;
+            let monitor = PendingNotification {
+                prompt_id: "monitor-shared".to_string(),
+                prompt_blocks: vec![acp::ContentBlock::Text(acp::TextContent::new(
+                    "<monitor-event description=\"watch\" task_id=\"shared\">\nstdout\n</monitor-event>",
+                ))],
+                priority: NotificationPriority::Next,
+                source: NotificationSource::MonitorEvent {
+                    task_id: "shared".to_string(),
+                },
+            };
+            let mut bash = bash_completed_notification("shared");
+            bash.prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(
+                "Background task shared completed.",
+            ))];
+            let mut state = actor.state.lock().await;
+            SessionActor::drain_notifications_into_turn(
+                &mut state,
+                vec![monitor, bash],
+                "get_command_or_subagent_output",
+            );
+            let text = state
+                .pending_inputs
+                .back()
+                .expect("drained turn")
+                .prompt_blocks
+                .iter()
+                .filter_map(|block| match block {
+                    acp::ContentBlock::Text(text) => Some(text.text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains("<monitor-event task_id=\"shared\">"));
+            assert!(text.contains("Background task shared completed."));
         })
         .await;
 }
@@ -259,22 +852,8 @@ async fn user_prompt_preempt_keeps_running_synthetic_slot() {
                     .push_back(task_completed_input("bg-other"));
             }
             let (respond_to, _rx) = oneshot::channel();
-            actor
-                .queue_input(
-                    vec![],
-                    "user-clarify".to_string(),
-                    PromptMode::Agent,
-                    None,
-                    None,
-                    None,
-                    None,
-                    false,
-                    None,
-                    false,
-                    respond_to,
-                    None,
-                    None,
-                )
+            let _ = actor
+                .queue_input(queue_input_request(vec![], "user-clarify", respond_to))
                 .await;
             let state = actor.state.lock().await;
             let remaining_ids: Vec<&str> = state
@@ -699,7 +1278,7 @@ async fn handle_bridge_tool_success_runs_consumed_completion_sweep() {
                     "tc-1",
                     "get_task_output",
                     "get_task_output",
-                    result,
+                    DrainedToolSuccess::new(result),
                     0,
                     "test-model",
                     &parsed_args,
@@ -1185,6 +1764,9 @@ fn completed_bash_task(id: &str) -> agent_tui_tools::computer::types::TaskSnapsh
         block_waited: false,
         explicitly_killed: false,
         owner_session_id: None,
+        description: None,
+        is_backgrounded: false,
+        output_total_bytes: 0,
     }
 }
 /// Real-actor coverage for the `SessionCommand::IsBusy` predicate

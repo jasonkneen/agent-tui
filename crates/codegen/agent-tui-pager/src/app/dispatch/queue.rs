@@ -11,8 +11,28 @@ use crate::app::agent::{AgentCommand, AgentId};
 use crate::app::agent_view::{AgentView, PromptMode};
 use crate::app::app_view::{ActiveView, AppView};
 use crate::scrollback::block::RenderBlock;
+use crate::scrollback::state::ScrollbackState;
 use agent_client_protocol as acp;
 use std::time::Instant;
+
+fn page_flip_on_send() -> bool {
+    crate::appearance::cache::load_page_flip_on_send()
+}
+
+/// Slash output skips the prompt drain; pin it at the top when page-flip is on.
+pub(super) fn push_and_page_flip(scrollback: &mut ScrollbackState, block: RenderBlock) {
+    scrollback.push_block(block);
+    if !page_flip_on_send() {
+        return;
+    }
+    let idx = scrollback.len() - 1;
+    scrollback.scroll_to_entry_top(idx);
+    scrollback.enable_follow_with_preserve();
+}
+
+fn combine_queued_prompts_enabled() -> bool {
+    crate::appearance::cache::load_combine_queued_prompts()
+}
 
 /// Whether a prompt/command submitted right now should take the
 /// server-authoritative immediate-send path: the **server is busy**
@@ -50,9 +70,15 @@ use std::time::Instant;
 /// (e.g. `[2, 3]` shown/run as `[3, 2]`). Requiring an empty local queue keeps
 /// later prompts behind the older ones (they join the local queue and drain in
 /// order), preserving FIFO.
-pub(super) fn immediate_server_send_eligible(agent: &AgentView) -> bool {
+///
+/// **Leader gate (`leader_mode`):** the shared queue exists to hold every
+/// attached client to one order. With no leader there is one client, and the
+/// two queues merge as *server rows first, then local rows*, so a local row
+/// (slash command, image prompt, scheduled prompt) can never move above them.
+pub(super) fn immediate_server_send_eligible(agent: &AgentView, leader_mode: bool) -> bool {
     let server_busy = agent.session.state.is_turn_running() || !agent.shared_queue.is_empty();
-    server_busy
+    leader_mode
+        && server_busy
         && agent.session.session_id.is_some()
         && agent.session.pending_prompts.is_empty()
         && !matches!(agent.prompt_mode, PromptMode::EditingQueued { .. })
@@ -403,6 +429,8 @@ pub(crate) fn maybe_drain_queue(agent: &mut AgentView) -> Vec<Effect> {
             // it closes the between-turns status window itself.
             agent.end_work_announced = false;
             agent.session.start_command(AgentCommand::Compact);
+            // Compact owns the pane; a leftover wake marker must not shadow stop.
+            agent.running_wake_turn = None;
             agent.turn_started_at = Some(Instant::now());
 
             vec![Effect::Compact {
@@ -484,23 +512,117 @@ pub(crate) fn shim_renders_own_user_block(kind: &str, text: Option<&str>) -> boo
 }
 
 /// Trailing turn-starting `UserPrompt` matching `text`, scanning back past
-/// turn-boundary chrome (`SessionEvent`/`System`); any content block ends the
-/// scan. Interjection bubbles are never claimable.
+/// turn-boundary chrome. `claim_interjection` skips other interjections and
+/// keeps the oldest match.
 fn trailing_user_prompt_matching(
     agent: &AgentView,
     text: &str,
+    claim_interjection: bool,
 ) -> Option<(usize, crate::scrollback::EntryId)> {
+    let mut found = None;
+    for idx in (0..agent.scrollback.len()).rev() {
+        let Some(entry) = agent.scrollback.entry(idx) else {
+            break;
+        };
+        match &entry.block {
+            RenderBlock::UserPrompt(ub) if ub.text == text && ub.is_interjection => {
+                if claim_interjection {
+                    found = Some((idx, entry.id));
+                    continue;
+                }
+                break;
+            }
+            RenderBlock::UserPrompt(ub) if ub.text == text && !ub.is_interjection => {
+                if !claim_interjection {
+                    return Some((idx, entry.id));
+                }
+                break;
+            }
+            RenderBlock::UserPrompt(ub) if claim_interjection && ub.is_interjection => continue,
+            RenderBlock::SessionEvent(_) | RenderBlock::System(_) => continue,
+            _ => break,
+        }
+    }
+    found
+}
+
+/// Last `n` non-interjection user prompts (oldest → newest), scanning back past
+/// turn chrome. Used to reuse multi-bubble paints when the echo already rendered.
+fn trailing_user_prompts(
+    agent: &AgentView,
+    n: usize,
+) -> Option<Vec<(usize, crate::scrollback::EntryId, String)>> {
+    if n == 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(n);
     for idx in (0..agent.scrollback.len()).rev() {
         let entry = agent.scrollback.entry(idx)?;
         match &entry.block {
-            RenderBlock::UserPrompt(ub) if ub.text == text && !ub.is_interjection => {
-                return Some((idx, entry.id));
+            RenderBlock::UserPrompt(ub) if !ub.is_interjection => {
+                out.push((idx, entry.id, ub.text.clone()));
+                if out.len() == n {
+                    out.reverse();
+                    return Some(out);
+                }
             }
             RenderBlock::SessionEvent(_) | RenderBlock::System(_) => continue,
             _ => return None,
         }
     }
     None
+}
+
+/// Paint one user bubble per combined segment, or reuse matching trailing
+/// bubbles. Drops a single joined-body bubble if the echo raced ahead.
+///
+/// Returns `(first_idx, first_id, last_id, all_segment_ids oldest→newest)`.
+fn paint_or_reuse_combined_user_bubbles(
+    agent: &mut AgentView,
+    segments: &[String],
+) -> (
+    usize,
+    crate::scrollback::EntryId,
+    crate::scrollback::EntryId,
+    Vec<crate::scrollback::EntryId>,
+) {
+    if let Some(existing) = trailing_user_prompts(agent, segments.len()).filter(|rows| {
+        rows.iter()
+            .map(|(_, _, t)| t.as_str())
+            .eq(segments.iter().map(String::as_str))
+    }) {
+        let (first_idx, first_id, _) = existing[0];
+        let (_, last_id, _) = existing[existing.len() - 1];
+        let ids = existing.iter().map(|(_, id, _)| *id).collect();
+        return (first_idx, first_id, last_id, ids);
+    }
+
+    let joined = agent_tui_prompt_queue::join_texts(segments.iter().map(String::as_str));
+    if let Some((_, id)) = trailing_user_prompt_matching(agent, &joined, false) {
+        agent.scrollback.remove_entry(id);
+    }
+
+    let mut first_idx = None;
+    let mut first_id = None;
+    let mut last_id = None;
+    let mut all_ids = Vec::with_capacity(segments.len());
+    for seg in segments {
+        let id = agent
+            .scrollback
+            .push_block(RenderBlock::user_prompt(seg.clone()));
+        all_ids.push(id);
+        if first_idx.is_none() {
+            first_idx = Some(agent.scrollback.len().saturating_sub(1));
+            first_id = Some(id);
+        }
+        last_id = Some(id);
+    }
+    (
+        first_idx.expect("segments non-empty"),
+        first_id.expect("segments non-empty"),
+        last_id.expect("segments non-empty"),
+        all_ids,
+    )
 }
 
 /// Paint the user block for a send-now'd prompt at dispatch: arming hides the
@@ -552,10 +674,25 @@ pub(super) fn push_send_now_user_block(
         .insert(prompt_id.to_string(), (entry_id, edited));
 }
 
+/// Arm the send-now cancel expectation for a just-dispatched plain prompt and
+/// paint its user block (the arm hides the queue echo, so the pair is
+/// inseparable). No-op unless the shell will actually cancel-and-send.
+pub(super) fn arm_send_now_and_paint_dispatched(
+    agent: &mut AgentView,
+    prompt_id: &str,
+    text: &str,
+) {
+    if !agent.expects_send_now_cancel() {
+        return;
+    }
+    agent.arm_send_now_expectation(prompt_id.to_string());
+    push_send_now_user_block(agent, prompt_id, "prompt", text, /* edited */ false);
+}
+
 /// Arm the send-now cancel expectation for queue row `id` and paint its user
 /// block — the arm hides the row, so the paint must accompany it. No-op when
-/// the shell won't cancel-and-send (idle / goal turn); no paint for kinds the
-/// adoption renders no block for (bash). `new_text` = edit-interject override.
+/// the shell won't cancel-and-send (idle / goal / uncommitted front); no paint
+/// for kinds the adoption renders no block for (bash). `new_text` = edit-interject override.
 pub(crate) fn arm_send_now_and_paint(agent: &mut AgentView, id: &str, new_text: Option<&str>) {
     if !agent.expects_send_now_cancel() {
         return;
@@ -667,6 +804,7 @@ pub(crate) fn apply_turn_start_shim(
         // The block may already be painted: consume the send-now paint's
         // id-keyed entry, else reuse a trailing echo block by text — never
         // double-push the user-prompt row.
+        let claim_interjection = prompt_id.starts_with("interject-fallback-");
         let map_painted = agent.send_now_painted_blocks.remove(&prompt_id).and_then(
             |(id, edited)| -> Option<(usize, crate::scrollback::EntryId)> {
                 let idx = agent.scrollback.index_of_id(id)?;
@@ -685,7 +823,7 @@ pub(crate) fn apply_turn_start_shim(
                 // (identical stacked texts).
                 if let Some((_, dup)) = text
                     .as_deref()
-                    .and_then(|t| trailing_user_prompt_matching(agent, t))
+                    .and_then(|t| trailing_user_prompt_matching(agent, t, claim_interjection))
                     && dup != id
                     && !agent
                         .send_now_painted_blocks
@@ -699,11 +837,17 @@ pub(crate) fn apply_turn_start_shim(
         );
         let already_painted = map_painted.or_else(|| {
             text.as_deref()
-                .and_then(|t| trailing_user_prompt_matching(agent, t))
+                .and_then(|t| trailing_user_prompt_matching(agent, t, claim_interjection))
                 // Never claim a block owned by another pending send-now.
                 .filter(|(_, id)| !agent.send_now_painted_blocks.values().any(|(v, _)| v == id))
         });
         let (prompt_idx, prompt_entry_id) = if let Some(found) = already_painted {
+            if claim_interjection
+                && let Some(RenderBlock::UserPrompt(ub)) =
+                    agent.scrollback.entry_mut(found.0).map(|e| &mut e.block)
+            {
+                ub.is_interjection = false;
+            }
             found
         } else {
             let id = agent.scrollback.push_block(block);
@@ -1089,6 +1233,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn arm_send_now_skips_paint_while_front_uncommitted() {
+        let mut app = test_app_with_agent();
+        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        agent.session.state = AgentState::TurnRunning;
+        agent.start_turn_boundary(Some("p-front"));
+        agent.session.current_prompt_id = Some("p-front".into());
+        agent.shared_queue = vec![crate::app::prompt_queue::QueueEntryWire {
+            id: "p-next".into(),
+            version: 1,
+            owner: None,
+            last_editor: None,
+            kind: "prompt".into(),
+            text: "flush me".into(),
+            position: 0,
+            combined_texts: None,
+        }];
+        let before = agent.scrollback.len();
+        arm_send_now_and_paint(agent, "p-next", None);
+        assert!(agent.expect_send_now_cancel.is_none());
+        assert_eq!(agent.scrollback.len(), before);
+        assert!(!agent.send_now_painted_blocks.contains_key("p-next"));
+
+        agent.front_message_committed = true;
+        arm_send_now_and_paint(agent, "p-next", None);
+        assert_eq!(agent.expect_send_now_cancel.as_deref(), Some("p-next"));
+        assert!(agent.send_now_painted_blocks.contains_key("p-next"));
+    }
+
     /// The turn-start shim sets `bash_turn` and pushes NO user block for
     /// an adopted `bash` entry.
     #[test]
@@ -1106,6 +1279,67 @@ mod tests {
         // No user/display block is pushed (the shell's execute block IS the entry).
         assert_eq!(agent.scrollback.len(), before);
         assert!(agent.session.in_flight_prompt.is_none());
+    }
+
+    #[test]
+    fn shim_interject_fallback_reuses_interjection_bubble() {
+        let mut app = test_app_with_agent();
+        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        agent
+            .scrollback
+            .push_block(RenderBlock::interjection_prompt("steer-a"));
+        agent
+            .scrollback
+            .push_block(RenderBlock::interjection_prompt("steer-b"));
+        let before = agent.scrollback.len();
+        apply_turn_start_shim(
+            agent,
+            "interject-fallback-a".into(),
+            Some("steer-a".into()),
+            "prompt",
+            None,
+        );
+        apply_turn_start_shim(
+            agent,
+            "interject-fallback-b".into(),
+            Some("steer-b".into()),
+            "prompt",
+            None,
+        );
+        assert_eq!(agent.scrollback.len(), before);
+        match &agent.scrollback.entry(0).unwrap().block {
+            RenderBlock::UserPrompt(ub) => {
+                assert!(!ub.is_interjection);
+                assert_eq!(ub.text, "steer-a");
+            }
+            other => panic!("expected user bubble, got {other:?}"),
+        }
+        match &agent.scrollback.entry(1).unwrap().block {
+            RenderBlock::UserPrompt(ub) => {
+                assert!(!ub.is_interjection);
+                assert_eq!(ub.text, "steer-b");
+            }
+            other => panic!("expected user bubble, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drain_reports_page_flip_only_when_prompt_starts() {
+        crate::appearance::cache::set_page_flip_on_send(true);
+        let mut app = test_app_with_agent();
+        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        agent.session.enqueue_prompt("first".into());
+        let started = maybe_drain_queue(agent);
+        let entry_id = started.page_flip_entry.expect("prompt starts a page flip");
+        assert_eq!(
+            agent.scrollback.index_of_id(entry_id),
+            agent.scrollback.selected()
+        );
+
+        agent.session.enqueue_prompt("queued".into());
+        let blocked = maybe_drain_queue(agent);
+        assert!(blocked.effects.is_empty());
+        assert!(blocked.page_flip_entry.is_none());
     }
 
     /// Turn-start path: the leader/viewer adoption shim

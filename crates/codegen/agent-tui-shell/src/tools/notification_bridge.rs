@@ -1,6 +1,10 @@
 //! Notification bridge: translates `agent-tui-tools` `ToolNotification` events
 //! into `agent-tui-shell`'s native systems (ACP gateway, hunk tracker, file state tracker).
-
+use crate::session::commands::SessionCommand;
+use crate::session::commands::{NotificationPriority, NotificationSource};
+use crate::session::persistence::{DurableAppendError, PersistenceHandle, PersistenceMsg};
+use crate::tools::task_completed_frame;
+use agent_client_protocol::{self as acp, Client as _};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,7 +22,7 @@ use crate::session::persistence::PersistenceMsg;
 use agent_tui_workspace::session::file_state::FileStateTracker;
 
 /// Configuration for the notification bridge.
-pub struct NotificationBridgeConfig {
+pub(crate) struct NotificationBridgeConfig {
     /// ACP gateway for sending streaming updates to TUI
     pub gateway: GatewaySender,
     /// ACP session ID
@@ -112,9 +116,10 @@ fn stamp_event_id(config: &NotificationBridgeConfig, meta: &mut Option<acp::Meta
 
 /// Create a `ToolNotificationHandle` and spawn a bridge task that
 /// translates notifications into shell-native systems.
-pub fn spawn_notification_bridge(config: NotificationBridgeConfig) -> ToolNotificationHandle {
-    let (handle, mut rx) = ToolNotificationHandle::channel();
-
+pub(crate) fn spawn_notification_bridge(
+    config: NotificationBridgeConfig,
+) -> ToolNotificationHandle {
+    let (handle, mut rx) = ToolNotificationHandle::acknowledged_channel();
     tokio::task::spawn_local(async move {
         // Per-tool-call byte offset for incremental delta computation.
         // Only used when `config.incremental_bash_output` is true.
@@ -491,18 +496,14 @@ async fn handle_notification(
                 stamp_event_id(config, &mut meta_map);
                 notification.meta = meta_map.map(serde_json::Value::Object);
             }
-
-            // Persist so task completion history survives reconnect/replay.
-            let _ = config.persistence_tx.send(PersistenceMsg::Update(
-                crate::session::storage::SessionUpdate::Xai(Box::new(notification.clone())),
-            ));
-
-            let params = serde_json::to_value(&notification)
-                .and_then(|v| serde_json::value::to_raw_value(&v))
-                .ok();
-            if let Some(params) = params {
-                let notification: acp::ExtNotification =
-                    acp::ExtNotification::new("x.ai/task_completed", params.into());
+            if let Some(params) = task_completed_frame::encode(&mut notification) {
+                let _ = config.persistence.tx.send(PersistenceMsg::Update(
+                    crate::session::storage::SessionUpdate::Xai(Box::new(notification.clone())),
+                ));
+                let notification: acp::ExtNotification = acp::ExtNotification::new(
+                    task_completed_frame::METHOD,
+                    params.into_inner().into(),
+                );
                 config.gateway.forward_fire_and_forget(notification);
             }
 
@@ -882,6 +883,9 @@ mod tests {
             block_waited: false,
             explicitly_killed: false,
             owner_session_id: None,
+            description: None,
+            is_backgrounded: false,
+            output_total_bytes: 0,
         }
     }
 
@@ -2039,6 +2043,9 @@ mod tests {
             block_waited: false,
             explicitly_killed: false,
             owner_session_id: None,
+            description: None,
+            is_backgrounded: false,
+            output_total_bytes: 0,
         }
     }
 
@@ -2141,6 +2148,53 @@ mod tests {
         assert!(
             prompt.contains("bg-disk-2"),
             "auto-wake-disabled: prompt must reference task id"
+        );
+    }
+    /// Completions must go through the size limit, and the copy persisted
+    /// for replay must be the copy that was sent. The limit itself is
+    /// tested in `task_completed_frame`.
+    #[tokio::test]
+    async fn task_completed_notification_is_frame_bounded() {
+        let (mut config, mut gateway_rx, mut persistence_rx, mut cmd_rx) =
+            make_test_config_full_raw();
+        config.auto_wake_enabled = false;
+        let mut snapshot = make_task_snapshot("bg-output-clamp", TaskKind::Bash);
+        snapshot.output = "Z".repeat(2 * 1024 * 1024);
+        snapshot.output_file = PathBuf::from("/tmp/bg-output-clamp.log");
+        snapshot.is_backgrounded = true;
+        let mut offsets = HashMap::new();
+        handle_notification(
+            &config,
+            ToolNotification::TaskCompleted(snapshot),
+            &mut offsets,
+        )
+        .await;
+        while cmd_rx.try_recv().is_ok() {}
+        let mut params = None;
+        while let Ok(msg) = gateway_rx.try_recv() {
+            if let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg
+                && args.request.method.as_ref() == "x.ai/task_completed"
+            {
+                params = Some(args.request.params.get().to_string());
+            }
+        }
+        let params = params.expect("expected an x.ai/task_completed notification");
+        assert!(
+            params.len() <= task_completed_frame::FRAME_MAX_BYTES,
+            "params is {} bytes",
+            params.len()
+        );
+        assert!(params.contains("/tmp/bg-output-clamp.log"));
+        let mut persisted = None;
+        while let Ok(msg) = persistence_rx.try_recv() {
+            if let PersistenceMsg::Update(crate::session::storage::SessionUpdate::Xai(saved)) = msg
+            {
+                persisted = Some(serde_json::to_value(&*saved).unwrap());
+            }
+        }
+        assert_eq!(
+            persisted.expect("the completion must be persisted"),
+            serde_json::from_str::<serde_json::Value>(&params).unwrap(),
         );
     }
 }

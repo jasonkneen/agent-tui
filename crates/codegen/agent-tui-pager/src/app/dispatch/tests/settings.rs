@@ -548,6 +548,100 @@ fn set_timestamps_emits_persist_setting_with_correct_payload() {
     assert_eq!(app.current_ui.show_timestamps, Some(false));
 }
 #[test]
+fn set_timeline_emits_persist_setting_with_correct_payload() {
+    use crate::settings::SettingValue;
+    let mut app = test_app_with_agent();
+    let default_on = app.current_ui.show_timeline_enabled();
+    let effects = dispatch(Action::SetTimeline(!default_on), &mut app);
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PersistSetting {
+            key,
+            value,
+            rollback_value,
+        } => {
+            assert_eq!(*key, "show_timeline");
+            assert_eq!(value, &SettingValue::Bool(!default_on));
+            assert_eq!(rollback_value, &SettingValue::Bool(default_on));
+        }
+        other => panic!("expected PersistSetting, got {other:?}"),
+    }
+    assert_eq!(app.current_ui.show_timeline, Some(!default_on));
+    assert_eq!(
+        crate::appearance::cache::load_show_timeline(),
+        !default_on,
+        "set_timeline must update the appearance cache"
+    );
+    assert_eq!(
+        app.appearance.show_timeline, !default_on,
+        "set_timeline must update the live appearance config"
+    );
+}
+#[test]
+fn set_timeline_toggles_displayed_state_when_current_ui_diverges() {
+    let mut app = test_app_with_agent();
+    app.appearance.show_timeline = true;
+    crate::appearance::cache::set_show_timeline(true);
+    app.current_ui.show_timeline = None;
+    assert!(
+        !app.current_ui.show_timeline_enabled(),
+        "current_ui resolves to the OFF default (the divergence)"
+    );
+    let new = !crate::appearance::cache::load_show_timeline();
+    assert!(!new, "toggle target is OFF");
+    let effects = dispatch(Action::SetTimeline(new), &mut app);
+    assert_eq!(effects.len(), 1, "toggle must persist, not silently no-op");
+    assert!(!app.appearance.show_timeline, "the rail is now hidden");
+    assert_eq!(app.current_ui.show_timeline, Some(false));
+}
+#[test]
+fn set_confirm_before_rewind_emits_persist_setting_with_correct_payload() {
+    use crate::settings::SettingValue;
+    let mut app = test_app_with_agent();
+    let default_on = app.current_ui.confirm_before_rewind_enabled();
+    let effects = dispatch(Action::SetConfirmBeforeRewind(!default_on), &mut app);
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PersistSetting {
+            key,
+            value,
+            rollback_value,
+        } => {
+            assert_eq!(*key, "confirm_before_rewind");
+            assert_eq!(value, &SettingValue::Bool(!default_on));
+            assert_eq!(rollback_value, &SettingValue::Bool(default_on));
+        }
+        other => panic!("expected PersistSetting, got {other:?}"),
+    }
+    assert_eq!(app.current_ui.confirm_before_rewind, Some(!default_on));
+}
+#[test]
+fn set_page_flip_on_send_emits_persist_setting_with_correct_payload() {
+    use crate::settings::SettingValue;
+    let mut app = test_app_with_agent();
+    let default_on = app.current_ui.page_flip_on_send_enabled();
+    crate::appearance::cache::set_page_flip_on_send(default_on);
+    let effects = dispatch(Action::SetPageFlipOnSend(!default_on), &mut app);
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PersistSetting {
+            key,
+            value,
+            rollback_value,
+        } => {
+            assert_eq!(*key, "page_flip_on_send");
+            assert_eq!(value, &SettingValue::Bool(!default_on));
+            assert_eq!(rollback_value, &SettingValue::Bool(default_on));
+        }
+        other => panic!("expected PersistSetting, got {other:?}"),
+    }
+    assert_eq!(app.current_ui.page_flip_on_send, Some(!default_on));
+    assert_eq!(
+        crate::appearance::cache::load_page_flip_on_send(),
+        !default_on
+    );
+}
+#[test]
 fn set_simple_mode_emits_persist_setting_with_correct_payload() {
     use crate::settings::SettingValue;
     let mut app = test_app_with_agent();
@@ -586,6 +680,295 @@ fn dispatch_open_settings_opens_then_close_on_reentry() {
             agent.active_modal.is_none(),
             "second dispatch should close the modal"
         );
+    }
+}
+/// A focused open on an agent whose settings modal is already open must
+/// reopen focused on the requested row — not toggle the modal closed.
+#[test]
+fn dispatch_open_settings_focus_reopens_when_already_open() {
+    use crate::views::modal::ActiveModal;
+    use crate::views::settings_modal::SettingsModalMode;
+    let mut app = test_app_with_agent();
+    let _ = dispatch(Action::OpenSettings, &mut app);
+    let agent = app.agents.get(&AgentId(0)).unwrap();
+    assert!(matches!(
+        agent.active_modal,
+        Some(ActiveModal::Settings { .. })
+    ));
+    let _ = dispatch(
+        Action::OpenSettingsFocus {
+            key: "coding_data_sharing",
+        },
+        &mut app,
+    );
+    let agent = app.agents.get(&AgentId(0)).unwrap();
+    let Some(ActiveModal::Settings { state }) = &agent.active_modal else {
+        panic!("focused re-entry must keep the settings modal open")
+    };
+    assert_eq!(
+        state.focused_setting().map(|(k, _)| k),
+        Some("coding_data_sharing"),
+        "focused re-entry must land on the requested row"
+    );
+    assert!(
+        matches!(state.mode(), SettingsModalMode::PickingEnum { .. }),
+        "focused re-entry must open the chooser, got {:?}",
+        state.mode()
+    );
+    assert!(
+        state.close_on_picker_exit,
+        "focused re-entry must arm close_on_picker_exit"
+    );
+}
+/// Chooser when editable, browse row when locked. The team-admin arm is the
+/// one a `team_name.is_some()` shortcut would break.
+#[test]
+fn dispatch_open_settings_focus_skips_the_chooser_only_when_locked() {
+    use crate::views::modal::ActiveModal;
+    use crate::views::settings_modal::SettingsModalMode;
+    let open_focused = |app: &mut AppView| -> SettingsModalMode {
+        let _ = dispatch(
+            Action::OpenSettingsFocus {
+                key: "coding_data_sharing",
+            },
+            app,
+        );
+        let agent = app.agents.get(&AgentId(0)).unwrap();
+        let Some(ActiveModal::Settings { state }) = &agent.active_modal else {
+            panic!("settings modal must be open")
+        };
+        assert_eq!(
+            state.focused_setting().map(|(k, _)| k),
+            Some("coding_data_sharing"),
+            "every landing focuses the row"
+        );
+        state.mode()
+    };
+    let mut app = test_app_with_agent();
+    assert!(
+        matches!(
+            open_focused(&mut app),
+            SettingsModalMode::PickingEnum { .. }
+        ),
+        "an editable setting opens its chooser"
+    );
+    let mut app = test_app_with_agent();
+    app.is_zdr = true;
+    assert!(
+        matches!(open_focused(&mut app), SettingsModalMode::Browse),
+        "ZDR must stop at the row that says so"
+    );
+    let mut app = test_app_with_agent();
+    app.team_name = Some("acme".to_string());
+    app.team_role = Some("member".to_string());
+    assert!(
+        matches!(open_focused(&mut app), SettingsModalMode::Browse),
+        "a team-managed lock must stop at the row that says so"
+    );
+    let mut app = test_app_with_agent();
+    app.team_name = Some("acme".to_string());
+    app.team_role = Some("admin".to_string());
+    assert!(
+        matches!(
+            open_focused(&mut app),
+            SettingsModalMode::PickingEnum { .. }
+        ),
+        "a team admin is not locked"
+    );
+}
+/// Focused open that enters the chooser sets `close_on_picker_exit` so Esc
+/// dismisses the modal (GB-4470). Locked landings stay in Browse with the
+/// flag clear — chrome Esc already closes.
+#[test]
+fn dispatch_open_settings_focus_sets_close_on_picker_exit_when_chooser_opens() {
+    use crate::views::modal::ActiveModal;
+    use crate::views::settings_modal::SettingsModalMode;
+    let mut app = test_app_with_agent();
+    let _ = dispatch(
+        Action::OpenSettingsFocus {
+            key: "coding_data_sharing",
+        },
+        &mut app,
+    );
+    let agent = app.agents.get(&AgentId(0)).unwrap();
+    let Some(ActiveModal::Settings { state }) = &agent.active_modal else {
+        panic!("settings modal must be open")
+    };
+    assert!(
+        matches!(state.mode(), SettingsModalMode::PickingEnum { .. }),
+        "editable focus must open the chooser"
+    );
+    assert!(
+        state.close_on_picker_exit,
+        "deep-link chooser open must set close_on_picker_exit"
+    );
+    let mut app = test_app_with_agent();
+    app.is_zdr = true;
+    let _ = dispatch(
+        Action::OpenSettingsFocus {
+            key: "coding_data_sharing",
+        },
+        &mut app,
+    );
+    let agent = app.agents.get(&AgentId(0)).unwrap();
+    let Some(ActiveModal::Settings { state }) = &agent.active_modal else {
+        panic!("settings modal must be open")
+    };
+    assert!(matches!(state.mode(), SettingsModalMode::Browse));
+    assert!(
+        !state.close_on_picker_exit,
+        "locked focus must not set close_on_picker_exit"
+    );
+}
+/// Plain OpenSettings does not arm close-on-picker-Esc.
+#[test]
+fn dispatch_open_settings_does_not_set_close_on_picker_exit() {
+    use crate::views::modal::ActiveModal;
+    let mut app = test_app_with_agent();
+    let _ = dispatch(Action::OpenSettings, &mut app);
+    let agent = app.agents.get(&AgentId(0)).unwrap();
+    let Some(ActiveModal::Settings { state }) = &agent.active_modal else {
+        panic!("settings modal must be open")
+    };
+    assert!(!state.close_on_picker_exit);
+}
+/// Full path: `/privacy`-style focus open → Esc dismisses the settings modal.
+#[test]
+fn open_settings_focus_esc_closes_settings_modal() {
+    use crate::views::modal::ActiveModal;
+    use crate::views::settings_modal::SettingsModalMode;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let _ = dispatch(
+        Action::OpenSettingsFocus {
+            key: "coding_data_sharing",
+        },
+        &mut app,
+    );
+    {
+        let agent = app.agents.get(&id).unwrap();
+        let Some(ActiveModal::Settings { state }) = &agent.active_modal else {
+            panic!("settings modal must be open")
+        };
+        assert!(matches!(
+            state.mode(),
+            SettingsModalMode::PickingEnum { .. }
+        ));
+        assert!(state.close_on_picker_exit);
+    }
+    let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    let _ = app.handle_input(&esc);
+    assert!(
+        app.agents.get(&id).unwrap().active_modal.is_none(),
+        "deep-link Esc must dismiss the settings modal"
+    );
+}
+/// Full path: `/privacy`-style focus open → Enter commits and dismisses.
+#[test]
+fn open_settings_focus_enter_closes_settings_modal() {
+    use crate::app::app_view::InputOutcome;
+    use crate::views::modal::ActiveModal;
+    use crate::views::settings_modal::SettingsModalMode;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let _ = dispatch(
+        Action::OpenSettingsFocus {
+            key: "coding_data_sharing",
+        },
+        &mut app,
+    );
+    {
+        let agent = app.agents.get(&id).unwrap();
+        let Some(ActiveModal::Settings { state }) = &agent.active_modal else {
+            panic!("settings modal must be open")
+        };
+        assert!(matches!(
+            state.mode(),
+            SettingsModalMode::PickingEnum { .. }
+        ));
+        assert!(state.close_on_picker_exit);
+    }
+    let enter = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let outcome = app.handle_input(&enter);
+    assert!(
+        app.agents.get(&id).unwrap().active_modal.is_none(),
+        "deep-link Enter must dismiss the settings modal"
+    );
+    assert!(
+        matches!(
+            outcome,
+            InputOutcome::Action(Action::SetCodingDataSharing { .. })
+        ),
+        "deep-link Enter must commit SetCodingDataSharing, got {outcome:?}"
+    );
+}
+/// Browse path: OpenSettings → enter picker → Esc keeps modal open in Browse.
+#[test]
+fn open_settings_enter_picker_esc_stays_open_in_browse() {
+    use crate::views::modal::ActiveModal;
+    use crate::views::settings_modal::SettingsModalMode;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let _ = dispatch(Action::OpenSettings, &mut app);
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        let Some(ActiveModal::Settings { state }) = &mut agent.active_modal else {
+            panic!("settings modal must be open")
+        };
+        assert!(state.focus_key("coding_data_sharing"));
+        assert!(state.try_enter_picking_enum());
+        assert!(!state.close_on_picker_exit);
+    }
+    let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    let _ = app.handle_input(&esc);
+    let agent = app.agents.get(&id).unwrap();
+    let Some(ActiveModal::Settings { state }) = &agent.active_modal else {
+        panic!("browse-path Esc must keep the settings modal open")
+    };
+    assert!(
+        matches!(state.mode(), SettingsModalMode::Browse),
+        "browse-path Esc must return to Browse, got {:?}",
+        state.mode()
+    );
+}
+/// `ActionThenClose` closes the modal and forwards the preview-revert Action
+/// through `apply_settings_outcome` (handle_input path).
+#[test]
+fn deep_link_preview_esc_closes_modal_and_forwards_revert_action() {
+    use crate::app::app_view::InputOutcome;
+    use crate::views::modal::ActiveModal;
+    use crate::views::settings_modal::SettingsModalMode;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let _ = dispatch(Action::OpenSettings, &mut app);
+    {
+        let agent = app.agents.get_mut(&id).unwrap();
+        let Some(ActiveModal::Settings { state }) = &mut agent.active_modal else {
+            panic!("settings modal must be open")
+        };
+        assert!(state.focus_key("theme"));
+        assert!(state.try_enter_picking_enum());
+        state.close_on_picker_exit = true;
+        assert!(matches!(
+            state.mode(),
+            SettingsModalMode::PickingEnum { .. }
+        ));
+    }
+    let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    let outcome = app.handle_input(&esc);
+    assert!(
+        app.agents.get(&id).unwrap().active_modal.is_none(),
+        "ActionThenClose must clear active_modal"
+    );
+    match outcome {
+        InputOutcome::Action(Action::PreviewTheme(name)) => {
+            assert_eq!(name, "groknight");
+        }
+        other => panic!("expected Action(PreviewTheme), got {other:?}"),
     }
 }
 /// `dispatch_open_reset_confirm` moves the Settings modal state
@@ -1139,6 +1522,22 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         }
         "show_timestamps" => {
             let _ = dispatch(Action::SetTimestamps(false), app);
+        }
+        "show_timeline" => {
+            let away = !app.current_ui.show_timeline_enabled();
+            let _ = dispatch(Action::SetTimeline(away), app);
+        }
+        "page_flip_on_send" => {
+            let away = !crate::appearance::cache::load_page_flip_on_send();
+            let _ = dispatch(Action::SetPageFlipOnSend(away), app);
+        }
+        "confirm_before_rewind" => {
+            let away = !app.current_ui.confirm_before_rewind_enabled();
+            let _ = dispatch(Action::SetConfirmBeforeRewind(away), app);
+        }
+        "combine_queued_prompts" => {
+            let away = !crate::appearance::cache::load_combine_queued_prompts();
+            let _ = dispatch(Action::SetCombineQueuedPrompts(away), app);
         }
         "simple_mode" => {
             let _ = dispatch(Action::SetSimpleMode(false), app);

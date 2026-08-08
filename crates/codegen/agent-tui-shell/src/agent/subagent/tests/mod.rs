@@ -2785,6 +2785,29 @@ async fn cancel_pending_subagent_at_promote_emits_exactly_one_cancelled_finish()
             &gcs_ctx,
         )
         .await;
+    assert!(matches!(
+            child_cmd_rx.try_recv(),
+            Ok(SessionCommand::Shutdown(_))
+        ));
+    assert!(result.cancelled);
+    assert!(!result.success);
+    let mut completion_data = ShellCompletionData::from_context(&ctx);
+    completion_data.spawned_notification_emitted = true;
+    present_child_completion(
+        ChildCompletion {
+            request,
+            result,
+            completion_data,
+            disposition: CompletionDisposition {
+                foreground_delivered: false,
+                backgrounded: false,
+                waiter_delivered: false,
+                explicitly_killed: false,
+                should_surface: false,
+            },
+        },
+        &gateway,
+    );
     let mut persisted = 0;
     while let Ok(cmd) = cmd_rx.try_recv() {
         if let SessionCommand::XaiSessionNotification { notification } = cmd
@@ -2885,36 +2908,14 @@ async fn run_promote_cancel_with_worktree(
             &gcs_ctx,
         )
         .await;
-    let mut persisted = 0;
-    while let Ok(cmd) = cmd_rx.try_recv() {
-        if let SessionCommand::XaiSessionNotification { notification } = cmd
-            && matches!(notification.update, SessionUpdate::SubagentFinished { .. })
-        {
-            persisted += 1;
-        }
-    }
-    assert_eq!(persisted, 1, "exactly one persisted SubagentFinished");
-    let mut live = 0;
-    while let Ok(msg) = gateway_rx.try_recv() {
-        if let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg
-            && args.request.params.get().contains("subagent_finished")
-        {
-            live += 1;
-        }
-    }
-    assert_eq!(live, 1, "exactly one live SubagentFinished");
-    let result = result_rx.await.expect("result delivered to oneshot");
-    assert!(result.cancelled, "result must be cancelled");
-    assert!(
-        matches!(coordinator.borrow().lookup(& subagent_id),
-        Some(SnapshotLookup::Ready(snap)) if matches!(snap.status,
-        SubagentSnapshotStatus::Cancelled { .. }))
-    );
+    assert!(matches!(
+            child_cmd_rx.try_recv(),
+            Ok(SessionCommand::Shutdown(_))
+        ));
+    assert!(result.cancelled);
 }
-/// The promote-abort teardown removes a FRESHLY-created worktree (this
-/// subagent's own, pristine) but PRESERVES a resumed subagent's reused
-/// worktree (it aliases the source's dir — deleting it would lose the
-/// source's working state). Exactly one cancelled finish emits either way.
+/// A pending cancel removes a freshly-created worktree but preserves a
+/// resumed child worktree owned by its source.
 #[tokio::test]
 async fn cancel_pending_at_promote_removes_fresh_worktree_preserves_resumed() {
     agent_tui_test_utils::require_git!();

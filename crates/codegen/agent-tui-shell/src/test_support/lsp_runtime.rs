@@ -33,6 +33,7 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
     let (tx, _rx) = mpsc::unbounded_channel();
     SubagentSpawnContext {
         lsp: None,
+        process_scope: None,
         parent_max_turns: None,
         gateway: test_gateway(),
         client_hooks: Default::default(),
@@ -118,6 +119,9 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         hook_registry: None,
         hook_workspace_root: String::new(),
         parent_depth: 0,
+        subagents_max_depth: agent_tui_tools::implementations::grok_build::task::MAX_SUBAGENT_DEPTH,
+        workflow_max_concurrent_agents:
+            crate::session::workflow::host_service::DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS,
         inference_idle_timeout_secs: 600,
         auto_compact_threshold_tiers: crate::agent::subagent::AutoCompactThresholdTiers::default(),
         permission_handle: None,

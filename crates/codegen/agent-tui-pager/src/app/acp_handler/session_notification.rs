@@ -217,7 +217,74 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                 agent.replayed_terminal_prompts.insert(prompt_id);
                 false
             } else if is_wake_prompt(&prompt_id) {
+                if agent
+                    .running_wake_turn
+                    .as_ref()
+                    .is_some_and(|wake| wake.prompt_id == prompt_id)
+                {
+                    agent.running_wake_turn = None;
+                }
+                agent.finished_wake_prompts.insert(prompt_id.to_string());
                 if agent.session.state.is_busy() {
+                    if agent.session.state.command_in_flight().is_some() {
+                        agent.session.tracker.snapshot_output_epoch();
+                    }
+                    let errored = matches!(stop_reason.as_str(), "error" | "rate_limit");
+                    if errored && agent.failed_wake_marker_for.as_deref() != Some(&*prompt_id) {
+                        agent.failed_wake_marker_for = Some(prompt_id.clone());
+                        if crate::app::dispatch::scrollback_has_recent_error_banner(
+                            &agent.scrollback,
+                        ) {
+                            false
+                        } else {
+                            let error = if stop_reason == "rate_limit" {
+                                agent_result
+                                    .as_deref()
+                                    .map(str::to_string)
+                                    .unwrap_or_else(|| "rate limited".to_string())
+                            } else {
+                                crate::app::error_display::format_request_failure(
+                                    None,
+                                    None,
+                                    agent_result.as_deref().unwrap_or("unknown error"),
+                                )
+                                .message()
+                            };
+                            agent.push_end_marker_block(
+                                crate::scrollback::blocks::SessionEvent::TurnFailed {
+                                    error,
+                                    elapsed: None,
+                                },
+                                Vec::new(),
+                                Some(prompt_id.clone()),
+                            );
+                            true
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    let cancel_trigger = session_notif
+                        .meta
+                        .as_ref()
+                        .and_then(|v| v.get("cancelTrigger"))
+                        .and_then(|v| v.as_str());
+                    finish_wake_turn(
+                        agent,
+                        &prompt_id,
+                        &stop_reason,
+                        agent_result.as_deref(),
+                        cancel_trigger,
+                    );
+                    true
+                }
+            } else if is_server_initiated_prompt(&prompt_id)
+                && !is_scheduler_fired_prompt(&prompt_id)
+            {
+                if agent.session.state.is_busy() {
+                    if agent.session.state.command_in_flight().is_some() {
+                        agent.session.tracker.snapshot_output_epoch();
+                    }
                     false
                 } else if matches!(stop_reason.as_str(), "cancelled" | "error" | "rate_limit") {
                     agent.maybe_push_work_status()
@@ -364,13 +431,8 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
             child_view.is_subagent_view = true;
             child_view.active_pane = crate::views::agent::ActivePane::Scrollback;
             child_view.set_sharing_enabled(agent.sharing_enabled);
-            let usage_visible = agent
-                .prompt
-                .slash_controller
-                .registry()
-                .get("usage")
-                .is_some();
-            child_view.set_usage_visible(usage_visible);
+            child_view.set_billing_surface_visible(agent.billing_surface_visible);
+            child_view.set_usage_command_visible(agent.usage_command_visible);
             let dashboard_visible = agent
                 .prompt
                 .slash_controller
@@ -754,13 +816,24 @@ pub(super) fn handle_session_notification(notif: &acp::ExtNotification, app: &mu
                 Some(crate::util::decode_html_entities(&session_summary).into_owned());
             true
         }
+        XaiSessionUpdate::LastTurnSummary {
+            summary,
+            prompt_id: _,
+        } => {
+            agent.set_last_turn_summary(Some(summary));
+            true
+        }
         XaiSessionUpdate::SessionRecap { summary, auto } => {
             use crate::scrollback::block::RenderBlock;
             use crate::scrollback::blocks::SessionEvent;
-            if should_drop_late_auto_recap(auto, meta.is_replay, agent.session.state.is_idle()) {
+            if should_drop_late_auto_recap(auto, meta.is_replay, agent) {
+                tracing::debug!("dropping late auto SessionRecap; CLI not idle for recap");
+                false
+            } else if should_drop_duplicate_auto_recap(auto, meta.is_replay, &agent.scrollback) {
                 tracing::debug!(
-                    "dropping late auto SessionRecap; agent busy (turn or command in flight)"
+                    "dropping duplicate live auto SessionRecap; recap already shown since last user turn"
                 );
+                app.notification_service.focus_tracker.mark_recap_shown();
                 false
             } else {
                 app.notification_service.focus_tracker.mark_recap_shown();
@@ -1270,16 +1343,19 @@ pub(super) fn apply_retry_state(
             } else if !*rate_limited && is_reauthable_failure(None, reason) {
                 is_reauth = true;
                 scrollback.push_block(RenderBlock::session_event(SessionEvent::ReAuthRequired));
-            } else {
-                let error = if *rate_limited {
-                    rate_limited_user_message(is_api_key_auth).into()
-                } else {
-                    format!("failed after {attempts} retries: {reason}")
-                };
+            } else if *rate_limited {
+                let error = crate::app::effects::sanitize_user_error(
+                    &format_rate_limited_user_message(Some(reason.as_str()), is_api_key_auth),
+                );
                 scrollback.push_block(RenderBlock::session_event(SessionEvent::RetryFailed {
                     error,
                     error_type: None,
                 }));
+            } else {
+                scrollback.push_block(RenderBlock::session_event(
+                    crate::app::error_display::format_request_failure(None, None, reason)
+                        .into_session_event(),
+                ));
             }
         }
         RetryState::Failed {
@@ -1287,7 +1363,8 @@ pub(super) fn apply_retry_state(
             message,
         } => {
             session.set_retry_activity(None);
-            if error_type == "encrypted_content_mismatch" {
+            let wire = crate::app::error_display::WireErrorType::parse(Some(error_type.as_str()));
+            if wire == crate::app::error_display::WireErrorType::EncryptedContentMismatch {
                 session.model_incompatible = true;
             }
             is_credit_limit = super::super::dispatch::is_credit_limit_error(None, message);
@@ -1296,16 +1373,31 @@ pub(super) fn apply_retry_state(
             } else if is_reauthable_failure(Some(error_type.as_str()), message) {
                 is_reauth = true;
                 scrollback.push_block(RenderBlock::session_event(SessionEvent::ReAuthRequired));
-            } else if error_type == "context_length" {
+            } else if wire == crate::app::error_display::WireErrorType::DiskFull {
+                if !crate::app::dispatch::scrollback_has_recent_disk_full(scrollback) {
+                    scrollback.push_block(RenderBlock::session_event(SessionEvent::DiskFull));
+                }
+            } else if wire == crate::app::error_display::WireErrorType::ContextLength {
                 if !scrollback_has_recent_compaction_failed(scrollback) {
                     scrollback
                         .push_block(RenderBlock::session_event(SessionEvent::ContextTooLarge));
                 }
-            } else {
+            } else if wire == crate::app::error_display::WireErrorType::EncryptedContentMismatch
+                || wire == crate::app::error_display::WireErrorType::LegacyAuth
+            {
                 scrollback.push_block(RenderBlock::session_event(SessionEvent::RetryFailed {
                     error: message.clone(),
                     error_type: Some(error_type.clone()),
                 }));
+            } else {
+                scrollback.push_block(RenderBlock::session_event(
+                    crate::app::error_display::format_request_failure(
+                        None,
+                        Some(error_type.as_str()),
+                        message,
+                    )
+                    .into_session_event(),
+                ));
             }
         }
     }

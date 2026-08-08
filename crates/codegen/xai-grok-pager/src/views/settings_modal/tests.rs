@@ -658,6 +658,7 @@ fn rows_contain_categories_and_settings_through_pr_14() {
             // both the pager drain and the shell promote. Registered before
             // multiline_mode, so it renders first).
             "combine_queued_prompts",
+            "confirm_before_rewind",
             // PAGER-owned multiline (Editor category).
             "multiline_mode",
             // SHELL-owned prompt_suggestions (Editor; tab autocomplete
@@ -1117,9 +1118,9 @@ fn mouse_moved_over_header_does_not_set_hover() {
 
 /// `state.hover_row = Some(idx)` paints the hovered row's bg
 /// with the theme's `bg_hover` color. (Mirrors the existing
-/// `picker_highlights_current_choice` test's pattern: the
-/// `assert_eq` against `theme.bg_hover` survives both colored
-/// and quantize-to-Reset color levels.)
+/// `picker_separates_focus_highlight_from_committed_marker` test's
+/// pattern: the `assert_eq` against `theme.bg_hover` survives both
+/// colored and quantize-to-Reset color levels.)
 #[test]
 fn hover_row_renders_with_hover_style() {
     let mut s = make_state();
@@ -2561,6 +2562,123 @@ fn picker_esc_returns_to_browse_after_preview_nav() {
     );
 }
 
+/// `/privacy` deep-link: focus + enter picker with `close_on_picker_exit`,
+/// then Esc closes the modal entirely (not Browse).
+#[test]
+fn deep_link_picker_esc_closes_modal() {
+    let mut s = make_state();
+    assert!(s.focus_key("coding_data_sharing"));
+    assert!(s.try_enter_picking_enum());
+    s.close_on_picker_exit = true;
+    assert!(matches!(s.mode(), SettingsModalMode::PickingEnum { .. }));
+
+    let outcome = handle_settings_key(&mut s, &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        matches!(outcome, SettingsKeyOutcome::Close),
+        "deep-link Esc must Close, got {outcome:?}"
+    );
+    assert!(
+        !s.close_on_picker_exit,
+        "flag must clear after Esc even when closing"
+    );
+}
+
+/// Settings → Privacy row → Enter into chooser: Esc returns to Browse.
+#[test]
+fn browse_enter_picker_esc_returns_to_browse() {
+    let mut s = make_state();
+    assert!(s.focus_key("coding_data_sharing"));
+    assert!(s.try_enter_picking_enum());
+    assert!(!s.close_on_picker_exit);
+    assert!(matches!(s.mode(), SettingsModalMode::PickingEnum { .. }));
+
+    let outcome = handle_settings_key(&mut s, &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        matches!(outcome, SettingsKeyOutcome::Changed),
+        "browse-path Esc must stay open (Changed), got {outcome:?}"
+    );
+    assert!(
+        matches!(s.mode(), SettingsModalMode::Browse),
+        "browse-path Esc must return to Browse, got {:?}",
+        s.mode()
+    );
+}
+
+/// Deep-link Enter commits the choice and closes the modal (not Browse).
+#[test]
+fn deep_link_commit_closes_modal() {
+    let mut s = make_state();
+    assert!(s.focus_key("coding_data_sharing"));
+    assert!(s.try_enter_picking_enum());
+    s.close_on_picker_exit = true;
+
+    let outcome = handle_settings_key(&mut s, &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    match outcome {
+        SettingsKeyOutcome::ActionThenClose(Action::SetCodingDataSharing { opted_in }) => {
+            assert!(!opted_in, "default snapshot is opt-out");
+        }
+        other => panic!("expected ActionThenClose(SetCodingDataSharing), got {other:?}"),
+    }
+    assert!(!s.close_on_picker_exit);
+}
+
+/// Browse-path Enter commits and returns to Browse (not Close).
+#[test]
+fn browse_path_enter_commit_returns_to_browse() {
+    let mut s = make_state();
+    assert!(s.focus_key("coding_data_sharing"));
+    assert!(s.try_enter_picking_enum());
+    assert!(!s.close_on_picker_exit);
+
+    let outcome = handle_settings_key(&mut s, &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    match outcome {
+        SettingsKeyOutcome::Action(Action::SetCodingDataSharing { opted_in }) => {
+            assert!(!opted_in, "default snapshot is opt-out");
+        }
+        other => panic!("expected Action(SetCodingDataSharing), got {other:?}"),
+    }
+    assert!(
+        matches!(s.mode(), SettingsModalMode::Browse),
+        "browse-path Enter must return to Browse, got {:?}",
+        s.mode()
+    );
+    assert!(!s.close_on_picker_exit);
+}
+
+/// Deep-link Enter on a preview enum commits via Set* and closes.
+#[test]
+fn deep_link_theme_commit_closes_with_set() {
+    let mut s = make_state();
+    s.transition_to_picking_enum("theme", 0, SettingValue::Enum("groknight"), true);
+    s.close_on_picker_exit = true;
+
+    let outcome = handle_settings_key(&mut s, &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    match outcome {
+        SettingsKeyOutcome::ActionThenClose(Action::SetTheme(name)) => {
+            assert_eq!(name, "auto");
+        }
+        other => panic!("expected ActionThenClose(SetTheme), got {other:?}"),
+    }
+    assert!(!s.close_on_picker_exit);
+}
+
+/// Deep-link Esc on a preview enum reverts the live preview and closes.
+#[test]
+fn deep_link_picker_esc_reverts_preview_and_closes() {
+    let mut s = make_state();
+    s.transition_to_picking_enum("theme", 0, SettingValue::Enum("groknight"), true);
+    s.close_on_picker_exit = true;
+
+    let outcome = handle_settings_key(&mut s, &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    match outcome {
+        SettingsKeyOutcome::ActionThenClose(Action::PreviewTheme(name)) => {
+            assert_eq!(name, "groknight");
+        }
+        other => panic!("expected ActionThenClose(PreviewTheme), got {other:?}"),
+    }
+    assert!(!s.close_on_picker_exit);
+}
+
 /// The picker renders every choice in declaration order, top to
 /// bottom. Asserts each choice's `display` string and description
 /// appears on the expected row with the documented spacing.
@@ -2627,14 +2745,12 @@ fn picker_renders_choices_in_order() {
     );
 }
 
-/// The currently-focused choice renders with the filled-disc
-/// marker `●`, `accent_user` marker color, `bg_visual` row bg,
-/// AND **BOLD** display text — three independent focus cues for
-/// low-contrast theme compatibility (parity with `cancel_turn_panel`).
+/// Focus (BG + bold) tracks `choices_idx`; the filled-disc marker
+/// tracks the committed `original_value` until Enter.
 #[test]
-fn picker_highlights_current_choice() {
+fn picker_separates_focus_highlight_from_committed_marker() {
     let mut s = picker_test_state();
-    // Focus the second choice (index 1).
+    // Focus the second choice while committed value remains "first".
     s.transition_to_picking_enum("test_enum", 1, SettingValue::Enum("first"), true);
     let area = Rect {
         x: 0,
@@ -2654,32 +2770,57 @@ fn picker_highlights_current_choice() {
             .map(|c| c.symbol().to_string())
             .unwrap_or_default()
     };
-    // Layout: rows 3..6 are choices (with subtitle on row 1).
-    assert_eq!(marker_at(3), "\u{25CB}", "row 3 (unfocused) should be ○");
-    assert_eq!(marker_at(4), "\u{25CF}", "row 4 (focused) should be ●");
-    assert_eq!(marker_at(5), "\u{25CB}", "row 5 (unfocused) should be ○");
+    let marker_fg = |buf: &Buffer, y: u16| -> Option<ratatui::style::Color> {
+        buf.cell((area.x + 1, y)).and_then(|c| c.style().fg)
+    };
+    // Layout: rows 3..5 are choices (with subtitle on row 1).
+    // Row 3 = committed "first" (unfocused), row 4 = focused "second".
+    assert_eq!(
+        marker_at(3),
+        "\u{25CF}",
+        "row 3 (committed, unfocused) should be ●"
+    );
+    assert_eq!(
+        marker_at(4),
+        "\u{25CB}",
+        "row 4 (focused, not committed) should be ○"
+    );
+    assert_eq!(marker_at(5), "\u{25CB}", "row 5 (neither) should be ○");
+
+    // Marker accent follows committed state, not focus.
+    if theme.accent_user != theme.gray {
+        assert_eq!(
+            marker_fg(&buf, 3),
+            Some(theme.accent_user),
+            "committed marker must use accent_user"
+        );
+        assert_eq!(
+            marker_fg(&buf, 4),
+            Some(theme.gray),
+            "focused-but-uncommitted marker must use gray"
+        );
+    }
 
     // Cell at the LAST column of each row carries the row bg
-    // independent of prefix-width tweaks.
+    // independent of prefix-width tweaks. Compare via
+    // `settings_list_row_bg` so terminal-native themes (Reset
+    // tokens elevated to DarkGray) pass too.
     let bg_at = |y: u16| -> Option<ratatui::style::Color> {
         buf.cell((area.x + area.width - 1, y))
             .and_then(|c| c.style().bg)
     };
     assert_eq!(
         bg_at(4),
-        Some(theme.bg_visual),
-        "focused row must have bg_visual background"
+        Some(settings_list_row_bg(&theme, true, false)),
+        "focused row must use selection background"
     );
     assert_eq!(
         bg_at(3),
-        Some(theme.bg_base),
-        "unfocused row must have bg_base background"
+        Some(settings_list_row_bg(&theme, false, false)),
+        "committed-but-unfocused row must use base background"
     );
 
-    // Display text on focused row carries BOLD modifier
-    // (three focus cues). Display "Second
-    // Option" starts at col `PICKER_PREFIX_W` (= 4). The 'S' at
-    // col 4 should be bold.
+    // Display text on focused row carries BOLD; committed alone does not.
     let focused_modifier = buf
         .cell((area.x + PICKER_PREFIX_W, 4))
         .map(|c| c.style().add_modifier)
@@ -2688,13 +2829,156 @@ fn picker_highlights_current_choice() {
         focused_modifier.contains(Modifier::BOLD),
         "focused row's display must be BOLD, got modifiers {focused_modifier:?}"
     );
-    let unfocused_modifier = buf
+    let committed_unfocused_modifier = buf
         .cell((area.x + PICKER_PREFIX_W, 3))
         .map(|c| c.style().add_modifier)
         .unwrap_or_default();
     assert!(
+        !committed_unfocused_modifier.contains(Modifier::BOLD),
+        "committed-but-unfocused row must NOT be BOLD, got modifiers {committed_unfocused_modifier:?}"
+    );
+
+    // Committed + focused: filled dot and selection bg/bold together.
+    s.transition_to_picking_enum("test_enum", 0, SettingValue::Enum("first"), true);
+    let mut buf2 = Buffer::empty(area);
+    render_picking_enum(&mut buf2, area, &s, &theme);
+    let marker_at2 = |y: u16| -> String {
+        buf2.cell((area.x + 1, y))
+            .map(|c| c.symbol().to_string())
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        marker_at2(3),
+        "\u{25CF}",
+        "committed+focused row should be ●"
+    );
+    assert_eq!(
+        marker_at2(4),
+        "\u{25CB}",
+        "uncommitted unfocused row should be ○"
+    );
+    let bg_at2 = |y: u16| -> Option<ratatui::style::Color> {
+        buf2.cell((area.x + area.width - 1, y))
+            .and_then(|c| c.style().bg)
+    };
+    assert_eq!(
+        bg_at2(3),
+        Some(settings_list_row_bg(&theme, true, false)),
+        "committed+focused row must use selection background"
+    );
+    assert_eq!(
+        bg_at2(4),
+        Some(settings_list_row_bg(&theme, false, false)),
+        "uncommitted unfocused row must use base background"
+    );
+    let both_modifier = buf2
+        .cell((area.x + PICKER_PREFIX_W, 3))
+        .map(|c| c.style().add_modifier)
+        .unwrap_or_default();
+    assert!(
+        both_modifier.contains(Modifier::BOLD),
+        "committed+focused row must be BOLD, got modifiers {both_modifier:?}"
+    );
+    let unfocused_modifier = buf2
+        .cell((area.x + PICKER_PREFIX_W, 4))
+        .map(|c| c.style().add_modifier)
+        .unwrap_or_default();
+    assert!(
         !unfocused_modifier.contains(Modifier::BOLD),
-        "unfocused row's display must NOT be BOLD, got modifiers {unfocused_modifier:?}"
+        "uncommitted unfocused row must NOT be BOLD, got modifiers {unfocused_modifier:?}"
+    );
+}
+
+/// DynamicEnum commits use `SettingValue::String`; the marker must
+/// resolve that arm the same way as static `Enum`, including the
+/// empty-canonical clear sentinel (`""` / "(no override)").
+#[test]
+fn picker_string_original_value_fills_committed_marker() {
+    let mut s = picker_test_state();
+    s.transition_to_picking_enum("test_enum", 1, SettingValue::String("first".into()), true);
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 12,
+    };
+    let mut buf = Buffer::empty(area);
+    let theme = Theme::current();
+    render_picking_enum(&mut buf, area, &s, &theme);
+
+    let marker_at = |y: u16| -> String {
+        buf.cell((area.x + 1, y))
+            .map(|c| c.symbol().to_string())
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        marker_at(3),
+        "\u{25CF}",
+        "String original_value \"first\" must fill row 3"
+    );
+    assert_eq!(
+        marker_at(4),
+        "\u{25CB}",
+        "focused non-committed row must stay hollow"
+    );
+
+    // Empty-canonical clear sentinel (DynamicEnum "(no override)" shape):
+    // empty String must fill the "" choice, not be skipped as "no value".
+    const CLEAR_SENTINEL_CHOICES: &[EnumChoice] = &[
+        EnumChoice {
+            canonical: "",
+            display: "(no override)",
+            description: "Clear override.",
+        },
+        EnumChoice {
+            canonical: "model-a",
+            display: "Model A",
+            description: "A model.",
+        },
+    ];
+    let entries = vec![SettingMeta {
+        key: "test_dynamic_like",
+        category: SettingCategory::Appearance,
+        owner: SettingOwner::Shared,
+        label: "Test clear sentinel",
+        description: "Catalog with empty-canonical choice.",
+        keywords: &[],
+        kind: SettingKind::Enum {
+            default: "",
+            choices: CLEAR_SENTINEL_CHOICES,
+            supports_preview: false,
+        },
+        restart_required: false,
+        hidden_in_minimal: false,
+    }];
+    let mut s2 = SettingsModalState::new(
+        Arc::new(SettingsRegistry::from_entries(entries)),
+        UiConfig::default(),
+        PagerLocalSnapshot::default(),
+    );
+    // Commit empty; focus the non-empty choice so marker ≠ focus.
+    s2.transition_to_picking_enum(
+        "test_dynamic_like",
+        1,
+        SettingValue::String(String::new()),
+        false,
+    );
+    let mut buf2 = Buffer::empty(area);
+    render_picking_enum(&mut buf2, area, &s2, &theme);
+    let marker_at2 = |y: u16| -> String {
+        buf2.cell((area.x + 1, y))
+            .map(|c| c.symbol().to_string())
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        marker_at2(3),
+        "\u{25CF}",
+        "empty String must fill empty-canonical clear row"
+    );
+    assert_eq!(
+        marker_at2(4),
+        "\u{25CB}",
+        "focused non-empty choice must stay hollow while clear is committed"
     );
 }
 
@@ -2819,6 +3103,63 @@ fn try_enter_picking_enum_returns_false_for_non_enum_row() {
         matches!(s.mode(), SettingsModalMode::Browse),
         "mode must not change on non-Enum row"
     );
+}
+
+/// A persisted `fork_secondary_model` slug renders as the catalog display
+/// name and seeds the picker on that model's row — not the stale-value
+/// fallback (index 1). The catalog carries two models so a fallback seed
+/// and a genuine match land on different indices.
+#[test]
+fn fork_secondary_model_picker_opens_on_persisted_model() {
+    use agent_client_protocol as acp;
+    // Must differ from the baseline slug or the empty-fold arm hides the lookup.
+    let slug = "grok-4.5-fast";
+    assert_ne!(slug, xai_grok_shell::models::default_model());
+    let snapshot = PagerLocalSnapshot {
+        available_models: vec![
+            ("Grok 3".to_string(), acp::ModelId::new(Arc::from("grok-3"))),
+            (
+                "Grok 4.5 Fast".to_string(),
+                acp::ModelId::new(Arc::from(slug)),
+            ),
+        ],
+        ..PagerLocalSnapshot::default()
+    };
+    let ui = UiConfig {
+        fork_secondary_model: slug.to_string(),
+        ..UiConfig::default()
+    };
+    let mut s = SettingsModalState::new(Arc::new(SettingsRegistry::defaults()), ui, snapshot);
+
+    // Row value shows the display name, matching the default_model row.
+    assert_eq!(
+        s.value_for("fork_secondary_model"),
+        Some(SettingValue::String("Grok 4.5 Fast".to_string())),
+    );
+
+    assert!(s.focus_key("fork_secondary_model"));
+    assert!(s.try_enter_picking_enum());
+    match s.mode() {
+        SettingsModalMode::PickingEnum {
+            key,
+            choices_idx,
+            ref original_value,
+            ..
+        } => {
+            assert_eq!(key, "fork_secondary_model");
+            // Choices: [(no override), Grok 3, Grok 4.5 Fast] → idx 2.
+            assert_eq!(
+                choices_idx, 2,
+                "picker must open on the persisted model, not the stale fallback",
+            );
+            assert_eq!(
+                original_value,
+                &SettingValue::String("Grok 4.5 Fast".to_string()),
+                "original_value must carry the display name so Esc-revert round-trips",
+            );
+        }
+        ref other => panic!("expected PickingEnum mode, got {other:?}"),
+    }
 }
 
 // -- render_picking_enum narrow-terminal coverage --
@@ -4154,14 +4495,11 @@ fn advance_next_recovers_when_selection_is_hidden() {
 #[test]
 fn advance_prev_recovers_when_selection_is_hidden() {
     let mut s = make_state();
-    // Apply a filter matching only show_timestamps and simple_mode.
-    // "mode" matches both: compact_mode label, simple_mode label
-    // AND show_timestamps via... actually let's pick a more reliable
-    // filter — use individual keywords. "simple" matches simple_mode
-    // only. Let's use that and corrupt selected to compact_mode
-    // (hidden). Up should land on the LAST visible setting which
-    // is simple_mode.
-    s.set_query("simple");
+    // The filter must match exactly one setting, so the "LAST visible"
+    // target is unambiguous. `ascii` is a simple_mode keyword and hits
+    // nothing else (settings_e2e pins that). Corrupt `selected` to the
+    // now-hidden compact_mode; Up must land on simple_mode.
+    s.set_query("ascii");
     let compact_idx = s
         .rows
         .iter()
@@ -4616,8 +4954,8 @@ fn pathologically_narrow_truncates_label_with_ellipsis() {
 /// Two-line rows expand `state.row_rects` to span BOTH lines so
 /// mouse clicks on either line trigger the same default action.
 ///
-/// `coding_data_sharing`: label 19 + value "Opt out" 7 + chevron
-/// 2 + chrome 4 = 32 cells one-line. We render at width=28 so
+/// `coding_data_sharing`'s label plus the value "Opt out", the chevron,
+/// and the row chrome are far wider than the width=28 we render at, so
 /// the row drops to two lines.
 #[test]
 fn two_line_row_hit_rect_spans_both_lines() {
@@ -4685,7 +5023,7 @@ fn two_line_row_hit_rect_spans_both_lines() {
 #[test]
 fn two_line_row_with_expansion_renders_three_segments() {
     let mut s = make_state();
-    // Coding data sharing's label + value (with chevron) won't
+    // The coding-data row's label + value (with chevron) won't
     // fit on a 28-col line, forcing two-line layout.
     let row_idx = s
         .rows
@@ -4711,11 +5049,22 @@ fn two_line_row_with_expansion_renders_three_segments() {
         "expanded two-line row must allocate ≥2 lines for the row itself, got height={}",
         rect.height
     );
-    // The row label is on line 1.
+    // The row label is on line 1. A 28-col row truncates a long label, so
+    // match the head of the live copy rather than the whole string.
     let label_line = buf_row_text(&buf, rect.y, area.x, area.width);
+    let label = s
+        .registry
+        .find("coding_data_sharing")
+        .expect("registered")
+        .label;
+    let head: String = label
+        .split_whitespace()
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
-        label_line.contains("Coding data sharing"),
-        "line 1 must contain the row label: {label_line:?}"
+        label_line.contains(&head),
+        "line 1 must contain the row label (head {head:?}): {label_line:?}"
     );
     // The value (display: "Opt out" or similar) is on line 2.
     let value_line = buf_row_text(&buf, rect.y + 1, area.x, area.width);
@@ -6088,6 +6437,51 @@ fn click_settings_breadcrumb_collapses_picker_to_browse() {
     );
 }
 
+/// Breadcrumb is hierarchical up: even with deep-link `close_on_picker_exit`,
+/// click returns to Browse (never Close / ActionThenClose).
+#[test]
+fn click_settings_breadcrumb_ignores_close_on_picker_exit() {
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 120,
+        height: 30,
+    };
+    let mut s = enter_picker_for("theme");
+    s.close_on_picker_exit = true;
+    let mut buf = Buffer::empty(area);
+    render_settings_modal(&mut buf, area, &mut s, false, None);
+    let rect = s
+        .settings_breadcrumb_rect
+        .expect("PickingEnum must populate breadcrumb rect");
+
+    let outcome = handle_settings_mouse(
+        &mut s,
+        MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        rect.x + rect.width / 2,
+        rect.y,
+    );
+    assert!(
+        !matches!(
+            outcome,
+            SettingsKeyOutcome::Close | SettingsKeyOutcome::ActionThenClose(_)
+        ),
+        "breadcrumb must not dismiss the modal, got {outcome:?}"
+    );
+    match outcome {
+        SettingsKeyOutcome::Action(Action::PreviewTheme(orig)) => {
+            assert_eq!(orig, "groknight");
+        }
+        other => panic!("expected preview revert Action, got {other:?}"),
+    }
+    assert!(
+        matches!(s.mode(), SettingsModalMode::Browse),
+        "breadcrumb must return to Browse, got {:?}",
+        s.mode()
+    );
+    assert!(!s.close_on_picker_exit);
+}
+
 /// Sibling of `click_settings_breadcrumb_collapses_picker_to_browse`
 /// that exercises the preview-then-click path: user navigates
 /// to a different theme via Down arrow (Action::PreviewTheme
@@ -6388,6 +6782,66 @@ fn hover_breadcrumb_flips_state_and_returns_changed() {
     assert!(
         !s.breadcrumb_hovered,
         "moving outside must clear breadcrumb_hovered",
+    );
+}
+
+/// `d` must be inert on a consent chooser, not merely hidden from the
+/// footer.
+#[test]
+fn consent_chooser_drops_tip_and_reset() {
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 120,
+        height: 40,
+    };
+    let screen = |s: &mut SettingsModalState| {
+        let mut buf = Buffer::empty(area);
+        render_settings_modal(&mut buf, area, s, false, None);
+        (0..area.height)
+            .map(|y| buf_row_text(&buf, y, area.x, area.width))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let mut consent = enter_picker_for("coding_data_sharing");
+    let text = screen(&mut consent);
+    assert!(
+        !text.contains("Ask Grok"),
+        "consent chooser must not render the docs tip:\n{text}"
+    );
+    assert!(
+        !text.contains("d reset"),
+        "consent chooser must not offer reset:\n{text}"
+    );
+    assert!(
+        text.contains("Enter select"),
+        "the other footer hints must survive:\n{text}"
+    );
+
+    let outcome = handle_settings_key(
+        &mut consent,
+        &KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+    );
+    assert!(
+        matches!(outcome, SettingsKeyOutcome::Unchanged),
+        "`d` must be inert on a consent chooser, got {outcome:?}"
+    );
+    assert!(
+        matches!(consent.mode(), SettingsModalMode::PickingEnum { .. }),
+        "`d` must leave the chooser open, got {:?}",
+        consent.mode()
+    );
+
+    let mut ordinary = enter_picker_for("theme");
+    let text = screen(&mut ordinary);
+    assert!(
+        text.contains("d reset") && text.contains("Ask Grok"),
+        "ordinary pickers keep the tip and the reset hint:\n{text}"
+    );
+    assert!(
+        text.contains("Enter select") && !text.contains("Enter commit"),
+        "every chooser selects an answer rather than committing a value:\n{text}"
     );
 }
 
@@ -7545,6 +7999,86 @@ fn locked_coding_data_sharing_row_does_not_open_picker() {
     assert!(matches!(s.mode(), SettingsModalMode::PickingEnum { .. }));
 }
 
+/// `d` on a locked row must not open the confirm dialog: the dispatch-time
+/// guard would refuse the reset anyway, but only after walking the user
+/// through a confirmation for a change that cannot happen.
+#[test]
+fn locked_coding_data_sharing_row_refuses_reset() {
+    for lock in [
+        CodingDataSharingLock::Zdr,
+        CodingDataSharingLock::TeamManaged,
+    ] {
+        let mut s = make_locked_state(lock);
+        s.selected = coding_data_sharing_row_idx(&s);
+        let out = handle_settings_key(
+            &mut s,
+            &KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+        );
+        assert!(
+            matches!(out, SettingsKeyOutcome::Unchanged),
+            "`d` on a locked row must be a no-op ({lock:?}), got {out:?}"
+        );
+    }
+
+    // Control arm: no lock → `d` still opens the confirm dialog.
+    let mut s = make_state();
+    s.selected = coding_data_sharing_row_idx(&s);
+    let out = handle_settings_key(
+        &mut s,
+        &KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+    );
+    assert!(
+        matches!(
+            out,
+            SettingsKeyOutcome::Action(Action::OpenResetConfirm {
+                key: "coding_data_sharing"
+            })
+        ),
+        "`d` on an unlocked row must still offer reset, got {out:?}"
+    );
+}
+
+/// `→ expand` stays on a locked row — that is how the lock reason is read.
+#[test]
+fn locked_row_footer_drops_the_keys_it_refuses() {
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 120,
+        height: 40,
+    };
+    let screen = |s: &mut SettingsModalState| {
+        let mut buf = Buffer::empty(area);
+        render_settings_modal(&mut buf, area, s, false, None);
+        (0..area.height)
+            .map(|y| buf_row_text(&buf, y, area.x, area.width))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let mut locked = make_locked_state(CodingDataSharingLock::Zdr);
+    locked.selected = coding_data_sharing_row_idx(&locked);
+    let text = screen(&mut locked);
+    for hint in ["d reset", "Enter edit", "Space toggle"] {
+        assert!(
+            !text.contains(hint),
+            "a locked row must not advertise `{hint}`:\n{text}"
+        );
+    }
+    assert!(
+        text.contains("expand"),
+        "`→ expand` reads the lock reason and must survive:\n{text}"
+    );
+
+    let mut unlocked = make_state();
+    unlocked.selected = coding_data_sharing_row_idx(&unlocked);
+    let text = screen(&mut unlocked);
+    assert!(
+        text.contains("d reset") && text.contains("Enter edit"),
+        "an unlocked row keeps the full footer:\n{text}"
+    );
+}
+
 /// Locked rows drop the `›` enter-affordance and render a per-variant
 /// value: ZDR replaces opt-in/out with "ZDR"; team-managed keeps the
 /// value with an " · Admin Managed" suffix. Unlocked rows keep the plain
@@ -7642,8 +8176,19 @@ fn locked_coding_data_sharing_expanded_description_replaces_with_reason() {
         text.contains("Managed by your team admin."),
         "expanded locked row must show the lock reason: {text:?}"
     );
+    // Token from the live description so this survives copy edits.
+    let desc = s
+        .registry
+        .find("coding_data_sharing")
+        .expect("registered")
+        .description;
+    let desc_head: String = desc
+        .split_whitespace()
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(" ");
     assert!(
-        !text.contains("Controls whether"),
+        !text.contains(&desc_head),
         "locked expansion must replace the description, not append to it: {text:?}"
     );
 
@@ -7655,7 +8200,7 @@ fn locked_coding_data_sharing_expanded_description_replaces_with_reason() {
     render_rows(&mut buf, area, &mut s, &theme);
     let text = flatten(&buf);
     assert!(
-        text.contains("Controls whether"),
+        text.contains(&desc_head),
         "expanded row must render the registry description: {text:?}"
     );
     assert!(

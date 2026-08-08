@@ -53,7 +53,7 @@ impl std::fmt::Display for Scope {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct InspectReport {
+pub(crate) struct InspectReport {
     pub grok_version: String,
     pub channel: String,
     pub cwd: String,
@@ -82,7 +82,7 @@ pub struct InspectReport {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct InstructionFile {
+pub(crate) struct InstructionFile {
     pub path: String,
     pub scope: Scope,
     pub file_type: String,
@@ -100,7 +100,7 @@ pub struct InstructionFile {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PermissionsReport {
+pub(crate) struct PermissionsReport {
     pub sources: Vec<String>,
     pub loaded: usize,
     pub skipped: Vec<SkippedRule>,
@@ -124,7 +124,7 @@ pub struct PermissionsReport {
 /// derives its line from these fields (see `enforced_label`).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct EnforcedPolicy {
+pub(crate) struct EnforcedPolicy {
     /// Stable key: "alwaysApprove" | "telemetry" | "feedback".
     pub setting: String,
     /// The enforced value.
@@ -135,7 +135,7 @@ pub struct EnforcedPolicy {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SkippedRule {
+pub(crate) struct SkippedRule {
     pub rule: String,
     pub reason: String,
 }
@@ -145,7 +145,7 @@ pub struct SkippedRule {
 /// The team pin is admin policy, not a secret, so it is shown verbatim.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LoginPolicyReport {
+pub(crate) struct LoginPolicyReport {
     /// Raw `disable_api_key_auth` knob (env `GROK_DISABLE_API_KEY_AUTH`).
     pub disable_api_key_auth: Option<bool>,
     /// Configured team pin: single string, list, or null when unset.
@@ -156,7 +156,7 @@ pub struct LoginPolicyReport {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HookEntry {
+pub(crate) struct HookEntry {
     pub event: String,
     pub hook_type: String,
     pub target: String,
@@ -173,7 +173,7 @@ pub struct HookEntry {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SkillEntry {
+pub(crate) struct SkillEntry {
     pub name: String,
     pub description: String,
     pub source: ConfigSource,
@@ -186,11 +186,18 @@ pub struct SkillEntry {
     pub disabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compatibility_status: Option<CompatEntryStatus>,
+    /// Bare name this skill lost (`login`, `commit`, …).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collides_with: Option<String>,
+    /// Qualified invocation when [`Self::collides_with`] is set. Absent when
+    /// that name is contested too.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invocable_as: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentEntry {
+pub(crate) struct AgentEntry {
     pub name: String,
     pub description: String,
     pub source: ConfigSource,
@@ -217,7 +224,7 @@ pub struct PluginProvides {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MarketplaceEntry {
+pub(crate) struct MarketplaceEntry {
     pub name: String,
     pub path: String,
     pub enabled_plugins: usize,
@@ -243,7 +250,7 @@ pub struct McpServerEntry {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LspServerEntry {
+pub(crate) struct LspServerEntry {
     pub name: String,
     pub command: String,
     pub args: Vec<String>,
@@ -256,7 +263,7 @@ pub struct LspServerEntry {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ConfigSources {
+pub(crate) struct ConfigSources {
     /// Config layers (system + user managed, user + system requirements, user
     /// config.toml, the macOS MDM managed-preferences layer, and project
     /// .grok/config.toml files). Driven from the same resolvers used at runtime
@@ -269,7 +276,7 @@ pub struct ConfigSources {
 /// A single config layer entry for `grok inspect`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ConfigLayer {
+pub(crate) struct ConfigLayer {
     /// Logical role of the layer: "system-managed", "managed", "user",
     /// "system-requirements", "requirements", "mdm", or "project".
     pub role: String,
@@ -772,11 +779,13 @@ async fn list_skills(
     )
     .await;
 
+    let name_counts = slash_name_counts(&skills);
     skills
         .into_iter()
         .map(|s| {
             let source = skill_entry_source(&s);
             let vendor = derive_vendor(&s.path).map(String::from);
+            let (collides_with, invocable_as) = slash_collision(&s, &name_counts);
             SkillEntry {
                 name: s.label().to_string(),
                 description: s.description,
@@ -786,9 +795,49 @@ async fn list_skills(
                 // Preserve `[skills].disabled`; compatibility is applied later.
                 disabled: !s.enabled,
                 compatibility_status: None,
+                collides_with,
+                invocable_as,
             }
         })
         .collect()
+}
+
+fn slash_name_counts(
+    skills: &[xai_grok_agent::prompt::skills::SkillInfo],
+) -> HashMap<String, usize> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for skill in skills.iter().filter(|s| s.user_invocable && s.enabled) {
+        *counts.entry(skill.name.to_lowercase()).or_default() += 1;
+        *counts
+            .entry(
+                xai_grok_tools::implementations::skills::skill::format_skill_name(skill)
+                    .to_lowercase(),
+            )
+            .or_default() += 1;
+    }
+    counts
+}
+
+fn slash_collision(
+    skill: &xai_grok_agent::prompt::skills::SkillInfo,
+    name_counts: &HashMap<String, usize>,
+) -> (Option<String>, Option<String>) {
+    if !skill.user_invocable || !skill.enabled {
+        return (None, None);
+    }
+    let name_key = skill.name.to_lowercase();
+    let contested = crate::session::slash_commands::is_reserved_slash_name(&skill.name)
+        || name_counts.get(&name_key).is_some_and(|n| *n > 1);
+    if !contested {
+        return (None, None);
+    }
+    let qualified =
+        xai_grok_tools::implementations::skills::skill::format_skill_name(skill).to_lowercase();
+    let invocable_as = name_counts
+        .get(&qualified)
+        .is_some_and(|n| *n == 1)
+        .then_some(qualified);
+    (Some(skill.name.clone()), invocable_as)
 }
 
 /// Resolve the inspect-facing source for a discovered skill.
@@ -1395,11 +1444,21 @@ fn print_human(r: &InspectReport) {
         |s| s.name.clone(),
         |s| {
             let status = disabled_compat_tags(s.disabled, s.compatibility_status);
+            let collision = match (&s.collides_with, &s.invocable_as) {
+                (Some(contested), Some(invocable)) => {
+                    format!(" [collides with /{contested} → /{invocable}]")
+                }
+                (Some(contested), None) => {
+                    format!(" [collides with /{contested} — not invocable]")
+                }
+                _ => String::new(),
+            };
             format!(
-                "{}{}{}",
+                "{}{}{}{}",
                 s.source.display_label(),
                 vendor_tag(&s.vendor),
                 status,
+                collision,
             )
         },
     );
@@ -1968,6 +2027,82 @@ mod tests {
             skill_entry_source(&s),
             ConfigSource::Bundled { .. }
         ));
+    }
+
+    fn blank_skill_entry(skill: &SkillInfo) -> SkillEntry {
+        SkillEntry {
+            name: skill.label().to_string(),
+            description: skill.description.clone(),
+            source: ConfigSource::User {
+                path: PathBuf::from(&skill.path),
+            },
+            user_invocable: skill.user_invocable,
+            vendor: None,
+            disabled: !skill.enabled,
+            compatibility_status: None,
+            collides_with: None,
+            invocable_as: None,
+        }
+    }
+
+    fn collision_entry(skill: &SkillInfo, all: &[SkillInfo]) -> SkillEntry {
+        let mut entry = blank_skill_entry(skill);
+        let (collides_with, invocable_as) = slash_collision(skill, &slash_name_counts(all));
+        entry.collides_with = collides_with;
+        entry.invocable_as = invocable_as;
+        entry
+    }
+
+    #[test]
+    fn apply_slash_collision_flags_reserved_names_and_duplicates() {
+        let mut login = skill_fixture(
+            "login",
+            "/plugins/acme/skills/login/SKILL.md",
+            SkillScope::Plugin,
+        );
+        login.plugin_name = Some("acme".into());
+        let deploy = skill_fixture("deploy", "/tmp/deploy/SKILL.md", SkillScope::Local);
+        // Gated builtins like /flush stay untagged — inspect must not invent
+        // /local:flush while the live catalog may still advertise /flush.
+        let flush = skill_fixture("flush", "/tmp/flush/SKILL.md", SkillScope::Local);
+        let commit_local = skill_fixture("commit", "/tmp/l/commit/SKILL.md", SkillScope::Local);
+        let commit_user = skill_fixture("commit", "/tmp/u/commit/SKILL.md", SkillScope::User);
+        let all = [login, deploy, flush, commit_local, commit_user];
+        let [login, deploy, flush, commit_local, commit_user] = &all;
+
+        let entry = collision_entry(login, &all);
+        assert_eq!(entry.collides_with.as_deref(), Some("login"));
+        assert_eq!(entry.invocable_as.as_deref(), Some("acme:login"));
+
+        for skill in [deploy, flush] {
+            let entry = collision_entry(skill, &all);
+            assert_eq!(entry.collides_with, None, "{}", skill.name);
+            assert_eq!(entry.invocable_as, None, "{}", skill.name);
+        }
+
+        let entry = collision_entry(commit_local, &all);
+        assert_eq!(entry.collides_with.as_deref(), Some("commit"));
+        assert_eq!(entry.invocable_as.as_deref(), Some("local:commit"));
+        let entry = collision_entry(commit_user, &all);
+        assert_eq!(entry.invocable_as.as_deref(), Some("user:commit"));
+    }
+
+    #[test]
+    fn apply_slash_collision_folds_reserved_name_case() {
+        let skill = skill_fixture("Login", "/tmp/Login/SKILL.md", SkillScope::Local);
+        let entry = collision_entry(&skill, std::slice::from_ref(&skill));
+        assert_eq!(entry.collides_with.as_deref(), Some("Login"));
+        assert_eq!(entry.invocable_as.as_deref(), Some("local:login"));
+    }
+
+    #[test]
+    fn apply_slash_collision_withholds_contested_qualified_names() {
+        let a = skill_fixture("commit", "/tmp/a/commit/SKILL.md", SkillScope::Local);
+        let b = skill_fixture("commit", "/tmp/b/commit/SKILL.md", SkillScope::Local);
+        let all = [a, b];
+        let entry = collision_entry(&all[0], &all);
+        assert_eq!(entry.collides_with.as_deref(), Some("commit"));
+        assert_eq!(entry.invocable_as, None);
     }
 
     /// A discovery-stamped `config_source` (plugins, `[skills].paths`) wins

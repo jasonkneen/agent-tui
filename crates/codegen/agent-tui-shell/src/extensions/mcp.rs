@@ -70,7 +70,7 @@ fn default_true() -> bool {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct McpListResponse {
+pub(crate) struct McpListResponse {
     pub servers: Vec<McpServerEntry>,
 }
 
@@ -170,7 +170,7 @@ pub struct McpToolEntry {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct McpCallRequest {
+pub(crate) struct McpCallRequest {
     /// When present: session pool. When absent: agent pool (config.toml only).
     #[serde(default)]
     pub session_id: Option<String>,
@@ -278,7 +278,7 @@ pub use crate::session::mcp_dispatcher::{
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct McpReadResourceRequest {
+pub(crate) struct McpReadResourceRequest {
     #[serde(default)]
     pub session_id: Option<String>,
     pub server: String,
@@ -399,7 +399,7 @@ pub fn build_mcp_catalog(
     build_mcp_catalog_with_gateway_tools(managed_configs, local_servers, None, &Default::default())
 }
 
-pub fn build_mcp_catalog_with_gateway_tools(
+pub(crate) fn build_mcp_catalog_with_gateway_tools(
     managed_configs: &[crate::session::managed_mcp::ManagedMcpConfig],
     local_servers: &[acp::McpServer],
     gateway_catalog: Option<&crate::session::managed_mcp::GatewayToolCatalog>,
@@ -538,17 +538,6 @@ fn managed_gateway_connector_id(entry_name: &str) -> Option<&str> {
     entry_name.strip_prefix(MANAGED_GATEWAY_ENTRY_PREFIX)
 }
 
-fn should_append_disabled_mcp_placeholder(
-    name: &str,
-    catalog_names: &std::collections::HashSet<String>,
-    gateway_tools_enabled: bool,
-) -> bool {
-    if catalog_names.contains(name) {
-        return false;
-    }
-    !gateway_tools_enabled
-}
-
 fn disabled_server_placeholder_entry(name: &str) -> McpServerEntry {
     let is_managed_gateway = name.starts_with(MANAGED_GATEWAY_ENTRY_PREFIX);
     let source = if is_managed_gateway || name.starts_with(MANAGED_MCP_PREFIX) {
@@ -586,7 +575,7 @@ fn disabled_server_placeholder_entry(name: &str) -> McpServerEntry {
 
 /// Build session MCP status: which servers are enabled, healthy, and what tools they expose.
 /// Clones state under lock then releases — does not hold lock across awaits.
-pub async fn build_mcp_status(
+pub(crate) async fn build_mcp_status(
     mcp_state: &Arc<TokioMutex<McpState>>,
     tool_bridge: &Arc<agent_tui_tools::bridge::ToolBridge>,
     event_writer: Option<&agent_tui_file_utils::events::EventWriter>,
@@ -745,7 +734,10 @@ async fn ensure_agent_pool_initialized(mcp_state: &Arc<TokioMutex<McpState>>) {
 
 /// Spawn config.toml MCP clients into the agent pool. Handshakes happen
 /// lazily on first `CallMcpTool`.
-pub async fn init_agent_mcp_pool(mcp_state: &Arc<TokioMutex<McpState>>, cwd: &std::path::Path) {
+pub(crate) async fn init_agent_mcp_pool(
+    mcp_state: &Arc<TokioMutex<McpState>>,
+    cwd: &std::path::Path,
+) {
     use crate::session::mcp_servers::start_mcp_servers;
 
     let configs = {
@@ -763,18 +755,12 @@ pub async fn init_agent_mcp_pool(mcp_state: &Arc<TokioMutex<McpState>>, cwd: &st
     }
 
     let noop = agent_tui_file_utils::events::EventWriter::noop();
-    let results = start_mcp_servers(
-        configs,
-        None,
-        Some(cwd),
-        &Default::default(),
-        &Default::default(),
-        &noop,
-        // Pass Interactive to preserve prior deferred-OAuth behavior. A session-less SDK agent can
-        // reach this non-interactively; threading real non-interactivity here is a deliberate follow-up.
-        crate::session::mcp_servers::OauthInteractivity::Interactive,
-    )
-    .await;
+    // session_less picks Interactive to preserve prior deferred-OAuth behavior. A session-less SDK
+    // agent can reach this non-interactively; threading real non-interactivity is a deliberate follow-up.
+    let ctx = crate::session::mcp_servers::McpSpawnCtx::session_less(&noop);
+    let meta = Default::default();
+    let oauth = Default::default();
+    let results = start_mcp_servers(configs, Some(cwd), &meta, &oauth, &ctx).await;
     let clients: HashMap<McpServerName, Arc<McpClient>> = results
         .into_iter()
         .filter_map(|r| match r {
@@ -949,15 +935,22 @@ async fn handle_list(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         &disabled_tools,
     );
 
-    // Include disabled servers from config so they appear in the list
-    // with enabled=false and can be re-enabled by the user.
-    let disabled_names = crate::util::config::disabled_mcp_server_names(&cwd);
-    let catalog_names: std::collections::HashSet<String> =
-        servers.iter().map(|s| s.name.clone()).collect();
-    for name in &disabled_names {
-        if should_append_disabled_mcp_placeholder(name, &catalog_names, gateway_tools_enabled) {
-            servers.push(disabled_server_placeholder_entry(name));
-        }
+    // Disabled stubs: only names Space enable can still resolve (see
+    // `crate::util::config::mcp_reenable`). Orphans with no definition stay hidden.
+    let catalog_names: HashSet<String> = servers.iter().map(|s| s.name.clone()).collect();
+    let discovery = crate::session::managed_mcp::McpDiscoveryInputs {
+        cwd: &cwd,
+        managed_configs: &managed_configs,
+        plugin_registry: plugin_registry_snapshot.as_deref(),
+        compat: &compat,
+    };
+    let stubs = crate::util::config::reenableable_disabled_stubs(
+        &disabled_names,
+        &catalog_names,
+        &discovery,
+    );
+    for name in stubs {
+        servers.push(disabled_server_placeholder_entry(&name));
     }
 
     if let Some(snapshot) = session_snapshot {
@@ -1127,7 +1120,7 @@ async fn handle_read_resource(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRe
     to_ext_response(Ok(result))
 }
 
-pub async fn read_mcp_resource(
+pub(crate) async fn read_mcp_resource(
     mcp_state: &Arc<TokioMutex<McpState>>,
     server_name: &str,
     uri: &str,
@@ -1216,7 +1209,7 @@ pub async fn read_mcp_resource(
 ///
 /// Injected into the agent's `SharedResources` via `tool_bridge.update_resource()`
 /// at session startup so tools can enumerate and fetch MCP resources.
-pub struct McpStateResourceProvider(pub Arc<TokioMutex<McpState>>);
+pub(crate) struct McpStateResourceProvider(pub Arc<TokioMutex<McpState>>);
 
 #[async_trait::async_trait]
 impl agent_tui_tools::types::resources::McpResourceProvider for McpStateResourceProvider {
@@ -1424,6 +1417,195 @@ async fn handle_auth_trigger(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRes
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpSetupRequest {
+    session_id: String,
+    server_name: String,
+    values: HashMap<String, String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpSetupResponse {
+    ok: bool,
+}
+
+async fn handle_setup(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
+    let req = parse_params::<McpSetupRequest>(args)?;
+    let acp_id = acp::SessionId::new(req.session_id.clone());
+    let handle = agent
+        .get_session_handle(&acp_id)
+        .ok_or_else(|| acp::Error::invalid_params().data("session not found"))?;
+    let cwd = agent
+        .get_session_cwd(&acp_id)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let setup_entries = crate::util::config::collect_mcp_setup_configs(
+        &cwd,
+        agent.plugin_registry_snapshot().as_deref(),
+        &agent.cfg.borrow().compat_resolved,
+    );
+    let entry = setup_entries
+        .get(&req.server_name)
+        .ok_or_else(|| acp::Error::invalid_params().data("server setup not found"))?;
+    let setup = entry
+        .config
+        .setup
+        .as_ref()
+        .ok_or_else(|| acp::Error::invalid_params().data("server setup not found"))?;
+
+    // Only schema field ids (never arbitrary client keys).
+    let filtered_values: HashMap<String, String> = setup
+        .fields
+        .iter()
+        .filter_map(|field| {
+            req.values
+                .get(&field.id)
+                .map(|value| (field.id.clone(), value.clone()))
+        })
+        .collect();
+
+    let pending_preferences = crate::util::config::McpServerPreferences {
+        values: filtered_values,
+        source: Some(entry.source.clone()),
+        updated_at: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+    };
+    match entry.config.resolve_setup(Some(&pending_preferences)) {
+        crate::util::config::McpSetupResolution::Resolved(_) => {}
+        crate::util::config::McpSetupResolution::Required(_) => {
+            return Err(acp::Error::invalid_params().data("setup values incomplete"));
+        }
+        crate::util::config::McpSetupResolution::Invalid(reason) => {
+            return Err(acp::Error::invalid_params().data(reason));
+        }
+    }
+
+    let load = crate::util::config::load_mcp_preferences();
+    if !load.is_writable() {
+        return Err(acp::Error::internal_error().data(
+            "MCP preferences file is unreadable; fix or remove mcp_preferences.json before saving",
+        ));
+    }
+    let mut prefs = load.file();
+    let previous_entry = prefs.servers.get(&req.server_name).cloned();
+    prefs
+        .servers
+        .insert(req.server_name.clone(), pending_preferences);
+    crate::util::config::save_mcp_preferences(&prefs)
+        .await
+        .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
+
+    let rollback_prefs = || async {
+        let _ = crate::util::config::restore_mcp_preference_server(
+            &req.server_name,
+            previous_entry.clone(),
+        )
+        .await;
+    };
+
+    // Presence check with personal disable ignored (no config write yet).
+    let managed_configs = agent.get_managed_mcp_configs().await;
+    let plugin_reg = agent.plugin_registry_snapshot();
+    let compat = agent.cfg.borrow().compat_resolved;
+    let discovery = crate::session::managed_mcp::McpDiscoveryInputs {
+        cwd: &cwd,
+        managed_configs: &managed_configs,
+        plugin_registry: plugin_reg.as_deref(),
+        compat: &compat,
+    };
+    let discovered =
+        crate::session::managed_mcp::discover_mcp_definitions_ignoring_disable(&discovery);
+    let Some(probe) = discovered.get(&req.server_name) else {
+        rollback_prefs().await;
+        return Err(acp::Error::internal_error().data("server did not resolve after setup"));
+    };
+    let allowlist = &agent_tui_workspace::permission::resolution::managed_settings().mcp_allowlist;
+    if !allowlist.is_server_allowed(probe) {
+        rollback_prefs().await;
+        let reason =
+            crate::session::managed_mcp::McpDisabledReason::for_blocked_server(allowlist, probe);
+        return Err(acp::Error::invalid_params().data(reason.to_string()));
+    }
+
+    // Clear disable only after resolve succeeds, then merge for a spawnable
+    // transport (includes managed header inject).
+    let was_disabled =
+        crate::util::config::disabled_mcp_server_names(&cwd).contains(&req.server_name);
+    let enable_paths = if was_disabled {
+        match crate::util::config::save_mcp_server_enabled_in(&req.server_name, true, &cwd).await {
+            Ok(paths) => paths,
+            Err(e) => {
+                rollback_prefs().await;
+                return Err(acp::Error::internal_error().data(format!(
+                    "failed to clear disabled MCP server entry after setup resolve: {e}"
+                )));
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
+    let restore_disable = || async {
+        if !was_disabled {
+            return;
+        }
+        if let Err(re) = crate::util::config::restore_mcp_server_enabled_after_enable(
+            &req.server_name,
+            &enable_paths,
+        )
+        .await
+        {
+            tracing::warn!(
+                server = req.server_name.as_str(),
+                error = %re,
+                "Failed to restore MCP enable state after setup failure"
+            );
+        }
+    };
+
+    // Prefs + enable-tier restore for failures after enable wrote config.
+    let rollback_after_enable = || async {
+        rollback_prefs().await;
+        restore_disable().await;
+    };
+
+    let found = crate::session::managed_mcp::merge_managed_mcp_servers_with_policy(
+        vec![],
+        &cwd,
+        &managed_configs,
+        plugin_reg.as_deref(),
+        &compat,
+    )
+    .into_iter()
+    .find(|s| crate::session::mcp_servers::mcp_server_name(&s.server) == req.server_name);
+
+    let server = match found {
+        Some(s) if s.disabled_reason.is_none() => s.server,
+        Some(s) => {
+            rollback_after_enable().await;
+            return Err(acp::Error::invalid_params().data(
+                s.disabled_reason
+                    .map(|r| r.to_string())
+                    .unwrap_or_else(|| "blocked by organization policy".into()),
+            ));
+        }
+        None => {
+            rollback_after_enable().await;
+            return Err(acp::Error::internal_error().data("server did not resolve after setup"));
+        }
+    };
+
+    if let Err(e) = handle
+        .toggle_mcp_server(req.server_name.clone(), true, Some(server))
+        .await
+    {
+        rollback_after_enable().await;
+        return Err(acp::Error::internal_error().data(e.to_string()));
+    }
+
+    to_ext_response(Ok(McpSetupResponse { ok: true }))
+}
+
 // ── mcp/toggle handler ───────────────────────────────────────────────
 
 #[derive(serde::Deserialize)]
@@ -1457,7 +1639,7 @@ async fn handle_toggle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         if let Some(connector_id) = gateway_connector_id {
             if let Err(e) =
-                crate::util::config::save_mcp_server_enabled(&req.server_name, true).await
+                crate::util::config::save_mcp_server_enabled_in(&req.server_name, true, &cwd).await
             {
                 tracing::warn!(
                     server = req.server_name.as_str(),
@@ -1478,7 +1660,9 @@ async fn handle_toggle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
             crate::session::managed_mcp::invalidate_cache(agent.managed_mcp_cache()).await;
         }
         let managed_configs = agent.get_managed_mcp_configs().await;
-        if let Err(e) = crate::util::config::save_mcp_server_enabled(&req.server_name, true).await {
+        if let Err(e) =
+            crate::util::config::save_mcp_server_enabled_in(&req.server_name, true, &cwd).await
+        {
             tracing::warn!(
                 server = req.server_name.as_str(),
                 error = %e,
@@ -1659,8 +1843,8 @@ async fn handle_delete(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;
 
     // The toggle path spawns a task that adds the server to
-    // `disabled_mcp_servers`. Clean that up since we're deleting entirely.
-    let _ = crate::util::config::save_mcp_server_enabled(&req.server_name, true).await;
+    // `disabled_mcp_servers`. Clear user list only — do not unstick project.
+    let _ = crate::util::config::save_user_mcp_server_enabled(&req.server_name, true).await;
 
     to_ext_response(Ok(McpToggleResponse { ok: true }))
 }
@@ -2023,76 +2207,6 @@ mod tests {
         let entry = disabled_server_placeholder_entry("grok_com_slack");
         assert_eq!(entry.source, McpServerSource::Managed);
         assert!(matches!(entry.config, McpServerConfig::Stdio { .. }));
-    }
-
-    /// Mirrors `handle_list` set construction: catalog names from
-    /// `build_mcp_catalog_with_gateway_tools` (same inputs as production),
-    /// then disabled placeholders via `should_append_disabled_mcp_placeholder`.
-    fn append_disabled_like_handle_list(
-        servers: &mut Vec<McpServerEntry>,
-        disabled_names: &[&str],
-        gateway_tools_enabled: bool,
-    ) {
-        let catalog_names: std::collections::HashSet<String> =
-            servers.iter().map(|s| s.name.clone()).collect();
-        for name in disabled_names {
-            if should_append_disabled_mcp_placeholder(name, &catalog_names, gateway_tools_enabled) {
-                servers.push(disabled_server_placeholder_entry(name));
-            }
-        }
-    }
-
-    #[test]
-    fn disabled_placeholders_match_handle_list_catalog_relationships() {
-        // Empty loads (gateway on, nothing in catalog) + orphan legacy disables
-        // only in disabled_mcp_servers — production ghost-stub regression.
-        let mut servers = build_mcp_catalog_with_gateway_tools(&[], &[], None, &Default::default());
-        append_disabled_like_handle_list(
-            &mut servers,
-            &["grok_com_slack", "grok_mcp_linear"],
-            true,
-        );
-        assert!(
-            servers.is_empty(),
-            "gateway on + no catalog rows → no stubs for orphan disables"
-        );
-
-        // Same orphans with gateway off → still placeholders (legacy UX).
-        let mut servers = build_mcp_catalog_with_gateway_tools(&[], &[], None, &Default::default());
-        append_disabled_like_handle_list(&mut servers, &["grok_com_slack"], false);
-        assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].name, "grok_com_slack");
-        assert!(!servers[0].session.as_ref().unwrap().enabled);
-
-        // Name already in catalog (gateway row) → never double-append.
-        let gateway = crate::session::managed_mcp::GatewayToolCatalog {
-            tools: vec![gateway_tool(
-                "linear",
-                "Linear",
-                "list_issues",
-                "List issues",
-                "linear.list_issues",
-                "List Linear issues",
-            )],
-            total_tools: 1,
-            connectors_needing_reauth: vec![],
-        };
-        let mut servers =
-            build_mcp_catalog_with_gateway_tools(&[], &[], Some(&gateway), &Default::default());
-        let gateway_entry = managed_gateway_entry_name("linear");
-        assert!(servers.iter().any(|s| s.name == gateway_entry));
-        let before = servers.len();
-        append_disabled_like_handle_list(&mut servers, &[gateway_entry.as_str()], true);
-        append_disabled_like_handle_list(&mut servers, &[gateway_entry.as_str()], false);
-        assert_eq!(
-            servers.len(),
-            before,
-            "disabled name already in catalog must not add a second row"
-        );
-        assert_eq!(
-            servers.iter().filter(|s| s.name == gateway_entry).count(),
-            1
-        );
     }
 
     #[test]

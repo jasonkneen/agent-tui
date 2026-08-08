@@ -1,11 +1,15 @@
 [package]
 name = "agent-tui-pager"
-version = "0.1.220-alpha.4"
+version = "1.0.0"
 edition.workspace = true
 license = "Apache-2.0"
 authors = ["xAI"]
 
 [dependencies]
+agent-tui-hermes-runtime = { workspace = true }
+agent-tui-lazar-runtime = { workspace = true }
+agent-tui-claude-runtime = { workspace = true }
+agent-tui-codex-runtime = { workspace = true }
 # TTY safety — detach subprocesses from the controlling terminal
 dunce = { workspace = true }
 agent-tui-tty-utils = { workspace = true }
@@ -54,6 +58,7 @@ portable-pty = "0.9"
 # Utilities
 derive_more = { workspace = true, features = ["deref", "deref_mut"] }
 anyhow = { workspace = true }
+shlex = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 clap_complete = { workspace = true }
 rand = { workspace = true }
@@ -72,7 +77,7 @@ tracing-subscriber = { workspace = true }
 
 # Binary hardening: compile-time string obfuscation.
 # (cryptify / rustls / semver / tikv-jemallocator moved to the composition-root
-# binary `agent-tui-bin` with `main.rs`; this lib no longer references them.)
+# binary `agent-tui-pager-bin` with `main.rs`; this lib no longer references them.)
 obfstr = { workspace = true }
 
 # Fuzzy matching (history search daemon)
@@ -96,12 +101,6 @@ agent-tui-config = { workspace = true }
 # (cpal is target-gated to non-Linux inside agent-tui-voice).
 agent-tui-voice = { path = "../agent-tui-voice", default-features = false, features = ["audio"] }
 agent-tui-shell = { workspace = true }
-# Codex app-server warm pool (local CLI auth; no OAuth in Agent TUI).
-agent-tui-codex-runtime = { workspace = true }
-# Claude Agent SDK harness via Claude Code CLI (local login).
-agent-tui-claude-runtime = { workspace = true }
-agent-tui-lazar-runtime = { workspace = true }
-agent-tui-hermes-runtime = { workspace = true }
 agent-tui-workspace = { workspace = true }
 agent-tui-token-estimation = { workspace = true }
 agent-tui-telemetry = { workspace = true }
@@ -115,6 +114,7 @@ agent-tui-agent = { workspace = true }
 agent-tui-plugin-marketplace = { path = "../agent-tui-plugin-marketplace" }
 agent-tui-hooks-plugins-types = { path = "../agent-tui-hooks-plugins-types" }
 wait-timeout = { workspace = true }
+walkdir = { workspace = true }
 agent-tui-sandbox = { path = "../agent-tui-sandbox", default-features = false }
 
 # Base64 encoding for image data
@@ -125,7 +125,6 @@ image = { workspace = true, features = ["png", "jpeg", "tiff", "gif", "webp"] }
 
 # ID generation
 uuid = { workspace = true, features = ["v4"] }
-which = { workspace = true }
 
 # Path computation (plan file, etc.)
 dirs = { workspace = true }
@@ -167,8 +166,8 @@ core-foundation = { workspace = true }
 windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
 
 [dev-dependencies]
-# Enable the render crate's test-only helpers for the pager's test build.
 agent-tui-pager-render = { path = "../agent-tui-pager-render", features = ["test-support"] }
+agent-tui-shell = { workspace = true, features = ["test-support"] }
 pretty_assertions = { workspace = true }
 insta = { workspace = true }
 criterion = { workspace = true }
@@ -182,7 +181,7 @@ agent-tui-test-support = { workspace = true, features = [] }
 # Ring CryptoProvider install for the in-process leader-cluster tests. Explicit
 # spec mirroring the shell's, NOT `workspace = true`: the workspace pin enables
 # aws-lc-rs, under which `rustls::crypto::ring` does not exist. Dev-only — the
-# production lib deliberately dropped rustls (moved to agent-tui-bin).
+# production lib deliberately dropped rustls (moved to agent-tui-pager-bin).
 rustls = { version = "0.23", default-features = false, features = [
     "ring",
     "logging",
@@ -202,13 +201,52 @@ harness = false
 name = "edit_highlight"
 harness = false
 
-# Integration testing.
-[[test]]
-name = "pty_e2e"
-path = "tests/pty_e2e/mod.rs"
+[[bench]]
+name = "resize"
+harness = false
 
-# Leader-mode PTY e2e — split from pty_e2e so multi-process cluster bring-up
-# never contends with the main PTY pool (the LEADER_TIMEOUT flake root).
+# PTY integration tests are split into coherent scheduling families. The test
+# modules remain under tests/pty_e2e/; these roots only define which cases share
+# one Cargo/Bazel process. All cases stay #[ignore]d for ordinary Cargo runs.
+# Selected Cargo runs must provide PAGER_BINARY; Bazel wires the sibling binary.
+[[test]]
+name = "doctor_early_dispatch"
+path = "tests/doctor_early_dispatch.rs"
+
+[[test]]
+name = "pty_e2e_smoke"
+path = "tests/pty_e2e_smoke.rs"
+
+[[test]]
+name = "pty_e2e_queue"
+path = "tests/pty_e2e_queue.rs"
+
+[[test]]
+name = "pty_e2e_scroll_selection"
+path = "tests/pty_e2e_scroll_selection.rs"
+
+[[test]]
+name = "pty_e2e_minimal"
+path = "tests/pty_e2e_minimal.rs"
+
+[[test]]
+name = "pty_e2e_config_ui"
+path = "tests/pty_e2e_config_ui.rs"
+
+[[test]]
+name = "pty_e2e_shell_tools"
+path = "tests/pty_e2e_shell_tools.rs"
+
+[[test]]
+name = "pty_e2e_persistence"
+path = "tests/pty_e2e_persistence.rs"
+
+[[test]]
+name = "pty_e2e_clipboard"
+path = "tests/pty_e2e_clipboard.rs"
+
+# Leader-mode PTY e2e — split from ordinary PTY families so multi-process
+# cluster bring-up never contends with their bounded pools.
 [[test]]
 name = "leader_pty_e2e"
 path = "tests/leader_pty_e2e/mod.rs"
@@ -245,17 +283,30 @@ path = "src/bin/question_view_playground.rs"
 name = "todo-pane-playground"
 path = "src/bin/todo_pane_playground.rs"
 
+# Opt into [workspace.lints.clippy] (too_many_arguments etc.). Without this,
+# `cargo clippy --workspace -- -D warnings` on this package is stricter than
+# the workspace-default clippy allows used in CI.
+[lints]
+workspace = true
+
 [features]
 default = ["jemalloc", "sandbox-enforce"]
 default-bazel = [
     "jemalloc",
     "sandbox-enforce",
+    "test-support",
+    "local-workspace",
     ]
+local-workspace = ["agent-tui-shell/local-workspace"]
 # No-op on this crate: the actual `#[global_allocator]` (and the
 # `tikv-jemallocator` dep) live on the composition-root binary
-# `agent-tui-bin`, which owns `main.rs`. Kept as an empty feature so the
+# `agent-tui-pager-bin`, which owns `main.rs`. Kept as an empty feature so the
 # workspace-uniform `[jemalloc, sandbox-enforce]` default set resolves
 # here too and the generated `crate_features` stay valid.
 jemalloc = []
 sandbox-enforce = ["agent-tui-sandbox/enforce"]
 release-dist = []
+# Exposes test-only view-model constructors/setters (e.g. `test_agent_view`,
+# `AgentSession::set_yolo_mode_for_test`) to sibling crates' test builds — used
+# by `agent-tui-pager-minimal`'s unit tests. Never enabled in production builds.
+test-support = ["agent-tui-pager-render/test-support"]

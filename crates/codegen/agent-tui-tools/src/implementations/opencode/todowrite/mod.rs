@@ -312,13 +312,13 @@ impl agent_tui_tool_runtime::Tool for TodoWriteTool {
     ) -> agent_tui_tool_types::ToolDescription {
         agent_tui_tool_types::ToolDescription::new(
             "todowrite",
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
 
     fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {
         agent_tui_tool_protocol::ToolCapabilities {
-            is_read_only: true,
+            is_read_only: false,
             tool_scope: Some(agent_tui_tool_protocol::ToolScope::Read),
             ..Default::default()
         }

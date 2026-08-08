@@ -153,6 +153,7 @@ fn write_tmux_buffer(text: &str) -> bool {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         agent_tui_tty_utils::detach_std_command(&mut cmd);
+        #[allow(clippy::disallowed_methods)] // short-lived clipboard helper, waited on below
         let mut child = cmd.spawn()?;
         // Bounded wait: a wedged tmux server must not freeze the UI thread.
         let status = agent_tui_shared::clipboard::wait_with_deadline(

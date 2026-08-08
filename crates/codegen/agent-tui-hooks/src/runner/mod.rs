@@ -11,6 +11,7 @@ use crate::result::{HookDecision, HttpInfo};
 pub struct RunContext<'a> {
     pub session_id: &'a str,
     pub workspace_root: &'a str,
+    pub process_scope: Option<agent_tui_tools::util::ProcessScope>,
 }
 
 /// Result of running a single hook (any handler type).

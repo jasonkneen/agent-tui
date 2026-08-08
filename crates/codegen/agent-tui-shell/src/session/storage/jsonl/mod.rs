@@ -1,8 +1,6 @@
-use super::{PersistedData, SessionUpdateEnvelope, StorageAdapter, updates_truncate_for_prompt};
+use super::{PersistedData, SessionUpdateEnvelope, StorageAdapter};
 use crate::sampling::types::ChatRequestMessage;
-use crate::sampling::{
-    ContentPart, ConversationItem, conversation_truncate_for_prompt, transform_conversation_cwd,
-};
+use crate::sampling::{ContentPart, ConversationItem};
 use crate::session::info::Info;
 use crate::session::persistence::{CHAT_FORMAT_VERSION, Summary};
 use crate::tools::todo::TodoState;
@@ -13,11 +11,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 use agent_tui_workspace::session::file_state::RewindPoint;
-/// How the adapter resolves the session directory on disk.
-///
-/// - `FromRoot` (default): computes `{root}/sessions/{urlencoded(cwd)}/{session_id}/`
-/// - `Explicit`: uses a caller-provided directory directly, ignoring `Info` fields.
-///   Used for subagent child sessions whose files live under the parent's session dir.
+mod copy;
 #[derive(Clone)]
 enum SessionDirMode {
     /// Existing behavior: root + sessions/{cwd}/{id}/
@@ -303,8 +297,7 @@ impl JsonlStorageAdapter {
     /// Corruption-tolerant like [`Self::read_chat_history_sync`]: updates are
     /// display/replay data appended non-atomically, so a torn line (crashed or
     /// racing append) is skipped with a warning instead of failing the caller
-    /// (session load, fork copy). The live replay path is already lenient;
-    /// this keeps the fork path from bricking on the same corruption.
+    /// (session load). The live replay and fork-copy paths are equally lenient.
     fn read_updates_jsonl(&self, path: PathBuf) -> io::Result<Vec<super::SessionUpdate>> {
         if !path.exists() {
             return Ok(Vec::new());
@@ -568,21 +561,19 @@ impl JsonlStorageAdapter {
         .map_err(io::Error::other)?
     }
 }
-/// Transform session ID in a SessionUpdate
+/// Rewrite the session id an update carries. Shared by the fork copy and the
 fn transform_session_id_in_update(
     update: super::SessionUpdate,
     new_id: &acp::SessionId,
 ) -> super::SessionUpdate {
     match update {
-        super::SessionUpdate::Acp(notification) => {
-            let mut inner = (*notification).clone();
-            inner.session_id = new_id.clone();
-            super::SessionUpdate::Acp(Box::new(inner))
+        super::SessionUpdate::Acp(mut notification) => {
+            notification.session_id = new_id.clone();
+            super::SessionUpdate::Acp(notification)
         }
-        super::SessionUpdate::Xai(notification) => {
-            let mut inner = (*notification).clone();
-            inner.session_id = new_id.clone();
-            super::SessionUpdate::Xai(Box::new(inner))
+        super::SessionUpdate::Xai(mut notification) => {
+            notification.session_id = new_id.clone();
+            super::SessionUpdate::Xai(notification)
         }
     }
 }
@@ -967,6 +958,20 @@ impl StorageAdapter for JsonlStorageAdapter {
             info,
             super::summary_write::SummaryPatch {
                 generated_title_if_absent: Some(session_title),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+    async fn set_last_turn_summary(
+        &self,
+        info: &Info,
+        summary: Option<(String, String)>,
+    ) -> io::Result<()> {
+        self.apply_summary_patch(
+            info,
+            super::summary_write::SummaryPatch {
+                last_turn_summary: Some(summary),
                 ..Default::default()
             },
         )

@@ -210,6 +210,7 @@ async fn record_last_turn_usage_round_trip() {
         total_tokens: 1290,
         reasoning_tokens: 0,
         cached_prompt_tokens: 800,
+        cache_creation_prompt_tokens: 0,
     };
     h.handle.record_last_turn_usage(usage.clone());
 
@@ -225,6 +226,7 @@ async fn record_last_turn_usage_round_trip() {
         total_tokens: 10000,
         reasoning_tokens: 0,
         cached_prompt_tokens: 0,
+        cache_creation_prompt_tokens: 0,
     };
     h.handle.record_last_turn_usage(next);
     let got2 = h
@@ -246,6 +248,7 @@ async fn prompt_usage_ledger_via_handle_resets_and_clears() {
         total_tokens: 12,
         reasoning_tokens: 0,
         cached_prompt_tokens: 0,
+        cache_creation_prompt_tokens: 0,
     };
 
     let h = TestHarness::new();

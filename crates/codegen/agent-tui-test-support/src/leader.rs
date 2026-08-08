@@ -352,3 +352,116 @@ pub async fn wait_for_replay_notifications(
 pub fn leader_log(home: &Path) -> String {
     std::fs::read_to_string(home.join(".grok").join("leader.log")).unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fake_leader(script: &str) -> PersistentLeader {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", script])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .envs(agent_tui_tty_utils::pager_env());
+        agent_tui_tty_utils::detach_std_command(&mut cmd);
+        #[allow(clippy::disallowed_methods)] // test fixture; the test reaps it
+        let child = cmd.spawn().expect("spawn fake persistent leader");
+        let pid = child.id();
+        let tree = TestProcessTree::try_attach(pid, "fake persistent leader")
+            .expect("attach fake persistent leader");
+        PersistentLeader { child, tree, pid }
+    }
+
+    fn fixture(root: &Path, leader: PersistentLeader) -> LeaderFixture {
+        LeaderFixture {
+            inner: Arc::new(Mutex::new(LeaderFixtureState {
+                binary: PathBuf::from("fixture"),
+                socket: root.join("leader.sock"),
+                lock: root.join("leader.lock"),
+                active_clients: 0,
+                leader: Some(leader),
+            })),
+        }
+    }
+
+    #[tokio::test]
+    async fn close_terminates_and_reaps_directly_owned_leader() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let leader = fake_leader("trap 'exit 0' TERM; while :; do sleep 1; done");
+        let pid = leader.pid;
+        let fixture = fixture(temp.path(), leader);
+
+        fixture.close().await.expect("close fixture");
+
+        assert!(!pid_alive(pid));
+        assert!(fixture.inner.lock().unwrap().leader.is_none());
+    }
+
+    #[tokio::test]
+    async fn active_direct_client_registration_blocks_fixture_close() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let fixture = fixture(
+            temp.path(),
+            fake_leader("trap 'exit 0' TERM; while :; do sleep 1; done"),
+        );
+        let registration = FixtureClientRegistration::new(&fixture.inner);
+
+        let error = fixture
+            .close()
+            .await
+            .expect_err("active client must block close");
+        assert!(error.to_string().contains("close/drop clients first"));
+
+        drop(registration);
+        fixture.close().await.expect("close after client drop");
+    }
+
+    #[test]
+    fn lock_file_replacement_pid_is_never_adopted_or_signaled() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let initial = fake_leader("trap 'exit 0' TERM; while :; do sleep 1; done");
+        let initial_pid = initial.pid;
+        let mut replacement = fake_leader("trap 'exit 0' TERM; while :; do sleep 1; done");
+        let replacement_pid = replacement.pid;
+        std::fs::write(temp.path().join("leader.lock"), replacement_pid.to_string())
+            .expect("replacement lock");
+        let fixture = fixture(temp.path(), initial);
+
+        drop(fixture);
+
+        assert!(!pid_alive(initial_pid));
+        assert!(
+            pid_alive(replacement_pid),
+            "observed replacement must remain untouched"
+        );
+        shutdown_persistent_leader(&mut replacement).expect("clean replacement test owner");
+    }
+
+    #[tokio::test]
+    async fn close_hard_kills_term_ignoring_descendant() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let pid_file = temp.path().join("descendant.pid");
+        let script = format!(
+            "trap 'exit 0' TERM; sh -c 'trap \"\" TERM; echo $$ > {}; while :; do sleep 1; done' & while :; do sleep 1; done",
+            pid_file.display()
+        );
+        let fixture = fixture(temp.path(), fake_leader(&script));
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while !pid_file.exists() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let descendant: u32 = std::fs::read_to_string(&pid_file)
+            .expect("descendant pid")
+            .trim()
+            .parse()
+            .expect("parse descendant pid");
+
+        fixture.close().await.expect("close fixture");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while pid_alive(descendant) && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!pid_alive(descendant), "descendant {descendant} leaked");
+    }
+}

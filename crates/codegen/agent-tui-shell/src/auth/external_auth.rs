@@ -1,15 +1,14 @@
-use crate::auth::{AuthMode, GrokAuth};
+use crate::auth::AuthMode;
+use crate::auth::GrokAuth;
+use crate::auth::token_output::parse_token_output;
+use crate::util::subprocess::CommandLog;
+use crate::util::subprocess::RunError;
+use crate::util::subprocess::RunOptions;
+use crate::util::subprocess::run_detached_with_timeout;
+use crate::util::subprocess::shell_c;
+use std::time::Duration;
 
-#[derive(serde::Deserialize)]
-pub(crate) struct ExternalAuthOutput {
-    pub access_token: String,
-    #[serde(default)]
-    pub refresh_token: Option<String>,
-    #[serde(default)]
-    pub expires_in: Option<u64>,
-}
-
-/// Parse process output (stdout) into a `GrokAuth`. Accepts bare token or JSON.
+/// Parse stdout into a session-credential `GrokAuth`.
 pub(crate) fn parse_output(output: &std::process::Output) -> anyhow::Result<GrokAuth> {
     if !output.status.success() {
         anyhow::bail!("exited with {}", output.status);
@@ -67,47 +66,35 @@ pub(crate) fn parse_output(output: &std::process::Output) -> anyhow::Result<Grok
     })
 }
 
-/// Sync version for mid-session refresh. 5s timeout for refresh, 60s for initial.
-pub(crate) fn run_external_auth_sync(command: &str, is_refresh: bool) -> Option<GrokAuth> {
-    use std::process::{Command, Stdio};
+/// Short timeout for a mid-session refresh: it must not hang the session.
+/// The single run in `ExternalBinaryRefresher` gets this whole budget.
+const EXTERNAL_AUTH_REFRESH_TIMEOUT: Duration = Duration::from_secs(7);
 
-    let timeout_secs = if is_refresh { 5 } else { 60 };
+/// Runs the external auth binary for a headless mid-session refresh. Initial,
+/// interactive sign-in takes a separate path (`flow::run_external_auth_provider`,
+/// which bridges the provider's stderr link), so this handles refresh only.
+pub(crate) async fn run_external_refresh(command: &str) -> Option<GrokAuth> {
+    tracing::info!(cmd = %command, timeout_secs = EXTERNAL_AUTH_REFRESH_TIMEOUT.as_secs(), "auth: running external auth provider (headless refresh)");
 
-    tracing::info!(cmd = %command, is_refresh, timeout_secs, "auth: running external auth provider (sync)");
-
-    let mut cmd = Command::new("sh");
-    cmd.args(["-c", command])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        // Pipe stderr — inherit would corrupt the TUI alternate screen.
-        .stderr(Stdio::piped());
-    if is_refresh {
-        cmd.env("GROK_AUTH_EXPIRED", "1");
-    }
-    agent_tui_tools::util::detach_std_command(&mut cmd);
-    cmd.envs(agent_tui_tools::util::pager_env());
-    let mut child = cmd.spawn()
-        .map_err(|e| {
-            tracing::warn!(error = %e, cmd = %command, "auth: failed to start external auth provider");
-            e
-        })
-        .ok()?;
-
-    let timeout = std::time::Duration::from_secs(timeout_secs);
-    let start = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_status)) => break,
-            Ok(None) => {
-                if start.elapsed() > timeout {
-                    tracing::warn!(
-                        cmd = %command,
-                        timeout_secs,
-                        "auth: external auth provider timed out (likely needs interactive auth), killing"
-                    );
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
+    let mut cmd = shell_c(command);
+    cmd.env("GROK_AUTH_EXPIRED", "1");
+    // Route through the group-killing runner so a provider that spawns helpers
+    // is torn down as a unit on timeout.
+    let output = match run_detached_with_timeout(
+        cmd,
+        EXTERNAL_AUTH_REFRESH_TIMEOUT,
+        RunOptions {
+            label: "external auth provider",
+            command_log: CommandLog::Shown(command),
+        },
+    )
+    .await
+    {
+        Ok(output) => output,
+        Err(e) => {
+            let reason = match e {
+                RunError::TimedOut => {
+                    "timed out (a timeout usually means it needs interactive sign-in)"
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }

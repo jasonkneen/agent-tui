@@ -6,6 +6,10 @@ pub mod mock_fs;
 #[cfg(unix)]
 pub mod shell_state;
 pub mod terminal;
+// Unix only, because the tests build their logs with shell tools.
+// See `computer::task_log` for the tests that run everywhere.
+#[cfg(all(test, unix))]
+mod terminal_snapshot_tests;
 
 pub use cgroup::{CgroupMemoryConfig, PROCESS_OOM_EXIT_CODE};
 pub use file_system::LocalFs;

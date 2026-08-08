@@ -1,7 +1,7 @@
 //! Feedback API request and response types.
 //!
 //! These types support the feedback collection system for Grok sessions.
-//! The agent (agent-tui-shell) uses heuristics to determine when to request feedback,
+//! The agent (xai-grok-shell) uses heuristics to determine when to request feedback,
 //! and clients submit feedback through these types to the feedback backend.
 
 use chrono::{DateTime, Utc};
@@ -380,7 +380,7 @@ pub struct FeedbackSubmission {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_version: Option<String>,
 
-    /// Shell (agent-tui-shell) version
+    /// Shell (xai-grok-shell) version
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shell_version: Option<String>,
 
@@ -516,6 +516,12 @@ pub struct FeedbackTerminalInfo {
     pub is_byobu: bool,
     /// Raw `TERM` environment variable value.
     pub term_var: String,
+    /// Terminal version exactly as the emulator reports it, when known — not
+    /// always the release number, since Alacritty answers with its
+    /// `alacritty_terminal` library version (release 0.15.1 arrives as
+    /// "0.25.0"). The source that reported it is deliberately not carried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub term_version: Option<String>,
     /// tmux server version if inside tmux, otherwise "n/a".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tmux_version: Option<String>,

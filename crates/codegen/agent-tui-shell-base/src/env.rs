@@ -15,6 +15,12 @@ pub use agent_tui_env::{
     GrokBuildEnvironment, PROD_ASSET_SERVER_URL, PROD_CLI_CHAT_PROXY_BASE_URL, PROD_GATEWAY_WS_URL,
     PROD_RELAY_WS_URL, PROD_WS_ORIGIN,
 };
+/// Public Computer Hub WebSocket URL used by the local-workspace supervisor
+/// (`workspace_server --hub-url`) when `agent_config.hub.url` is unset.
+/// Extracted from the former private leader const (same literal).
+pub const PROD_COMPUTER_HUB_WS_URL: &str = "wss://computer-hub.grok.com/v1/tools";
+#[cfg(any(test, feature = "test-support"))]
+pub use agent_tui_env::EnvVarGuard;
 /// Env var that opts a process into gateway-bridge mode. When set to
 /// a parseable URL, `session/new` / `session/load` spawns a per-session
 /// `gateway_bridge` actor in the shell; unset → local-mode (unchanged).

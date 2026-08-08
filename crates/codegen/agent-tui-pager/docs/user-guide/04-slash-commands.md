@@ -2,12 +2,9 @@
 
 Type `/` in the prompt to access commands. Each command runs an action immediately and autocompletes as you type.
 
-Slash commands come from two sources:
+Commands come from two places: **shell builtins**, handled by the agent backend (agent-tui-shell), and **pager builtins**, handled by the pager frontend (agent-tui-pager). Both show up in the same menu, and any enabled skill with `user-invocable: true` appears there too. If a skill reuses a built-in name such as `login`, the built-in keeps `/login` and the skill stays available as `/plugin-name:login` — the menu badges both so the collision is visible.
 
-- **Shell builtins** -- handled by the agent backend (agent-tui-shell)
-- **Pager builtins** -- handled by the TUI frontend (agent-tui-pager)
-
-Both sets are available in the autocomplete menu. Skills installed via SKILL.md files also appear as slash commands.
+Every command below lists its aliases where it has them. A few commands only appear when a feature or session state enables them; those cases are called out inline. The menu is also filtered by render mode — see [`/minimal` and `/fullscreen`](#minimal-and-fullscreen).
 
 ---
 
@@ -30,6 +27,12 @@ Open the session picker to load a previous session from disk.
 ```
 /resume
 ```
+
+### `/dashboard`
+
+Open the [Agent Dashboard](23-dashboard.md): live roster of top-level sessions in this pager (peek, reply, dispatch, pin, rename, stop, attach). Aliases: `/agents-dashboard`, `/sessions`.
+
+Not `/config-agents` (alias `/agents`), which manages agent *definitions* and personas. Hidden in minimal mode; disable with `GROK_AGENT_DASHBOARD=0` or `[dashboard].enabled = false`.
 
 ### `/compact [context]`
 
@@ -59,9 +62,9 @@ Show session details including model, turn count, and context usage.
 ```
 
 
-### `/fork`
+### `/rewind` (alias: `/undo`)
 
-Branch the current session into a new agent, preserving history up to this point.
+Roll the conversation back to an earlier turn and discard everything after it. `/undo` is the same command.
 
 ```
 /fork
@@ -111,6 +114,12 @@ Exit the current session and return to the welcome screen.
 ```
 
 Aliases: `/welcome`
+
+### `/delete`
+
+Delete the current session's history. Confirms first. Returns to the welcome screen, or to the dashboard when you opened the session from the dashboard.
+
+To delete a session you are not in, open `/resume` or the welcome session list and press `d` then `y`. On the dashboard, press `Ctrl+X` twice or click `[✗]`.
 
 ### `/rename`
 
@@ -239,18 +248,9 @@ prompt and type the character. Persists to `[ui].vim_mode` in `config.toml`.
 
 ### `/minimal` and `/fullscreen`
 
-Reopen the current session in the other render mode. `/minimal` (offered in
-fullscreen) switches to the experimental scrollback-native mode; `/fullscreen`
-(offered in minimal; alias `/full`) switches back to the standard alt-screen
-TUI. Both relaunch the pager on the same conversation and are **sticky**: the
-choice persists to `[ui].screen_mode` in `config.toml`, so future plain `agent-tui`
-launches open in whatever mode was last used. The `--minimal` / `--fullscreen`
-CLI flags do the same thing at launch time.
+Reopen the current session in the other render mode. `/minimal` (offered while you're in fullscreen) switches to the experimental scrollback-native mode; `/fullscreen` (offered while you're in minimal; alias `/full`) switches back to standard fullscreen mode. Both relaunch the pager on the same conversation for this session only — they don't touch `config.toml`, and the relaunch banner reminds you how to switch back. The `--minimal` / `--fullscreen` CLI flags are session-scoped the same way. To make plain `grok` open in a given mode by default, use `/settings` → **Default screen mode** or set `[ui] screen_mode`.
 
-```
-/minimal
-/fullscreen
-```
+A handful of commands only work in one of the two modes, because the surface they drive doesn't exist in the other: `/find`, `/jump`, `/timeline`, `/theme`, `/tutorial`, `/workflows`, and `/dashboard` are fullscreen-only, while `/expand` and `/edit-prompt` are minimal-only. Those are hidden from the command menu and the palette in the mode they can't run in. If you type one out anyway, Grok says why — and points you at whichever is actually useful. When the other mode is the only way to get it, that's the mode switch: `/theme isn't available in minimal mode (minimal renders with your terminal's own palette). Run /fullscreen to switch this session.` When this mode already does the job another way, it names that instead: `/expand isn't available in fullscreen mode — press Tab to focus the scrollback, then → on the block.` Everything else works in both. Note that `--no-alt-screen` still counts as fullscreen here, so it keeps the fullscreen-only commands.
 
 ### `/plan`
 
@@ -321,12 +321,7 @@ The `/hooks`, `/plugins`, `/marketplace`, and `/skills` commands open the same e
 
 Open the extensions modal on the Hooks tab. From the modal you can view loaded hooks, add or remove custom hooks, and enable or disable them individually. The modal does not grant project trust -- see [10-hooks.md](10-hooks.md) for the trust model.
 
-```
-/hooks
-```
-
-**Note:** The shell advertises individual `/hooks-list`, `/hooks-trust`, `/hooks-add`, `/hooks-remove`,
-and `/hooks-untrust` commands. In the TUI pager, these are consolidated into the `/hooks` modal.
+The shell also advertises individual `/hooks-list`, `/hooks-trust`, `/hooks-add`, `/hooks-remove`, and `/hooks-untrust` commands; in the pager these are folded into the `/hooks` modal.
 
 ### `/plugins`
 
@@ -336,9 +331,7 @@ Open the extensions modal on the Plugins tab. From the modal you can view instal
 /plugins
 ```
 
-The shell also supports subcommands (`/plugins list`, `/plugins install <source>`,
-`/plugins uninstall <name>`, `/plugins update`). In the TUI, the `/plugins` modal
-provides the same functionality with a visual interface.
+The shell additionally supports subcommands (`/plugins list`, `/plugins install <source>`, `/plugins uninstall <name>`, `/plugins update`, `/plugins reload`). In the pager, the modal does the same work visually.
 
 ### `/marketplace`
 
@@ -408,7 +401,19 @@ Set, manage, or check an autonomous goal. Agent TUI works toward the objective a
 
 Arguments: `<objective>`, `status`, `pause`, `resume`, or `clear`. **Availability:** appears only when the goal feature is enabled and the `update_goal` tool is in the session toolset.
 
-### `/theme`
+### `/deep-research <query>`
+
+Kick off a background research workflow. It plans a bounded set of questions, gathers structured claims with source evidence, cross-checks each claim on an independent verifier shard, and renders only the claims that survive, with their verified source locators. Failed shards, dropped claims, and researcher uncertainties are reported as coverage limitations, and the report is marked **Partial** whenever any remain.
+
+```
+/deep-research Compare the migration risks of PostgreSQL 17 and MySQL 9
+```
+
+The command returns right away — follow progress in `/workflows`, and the final report appears in the conversation on its own.
+
+Model-launched workflows may set `agent_budget` on the `workflow` tool. It's an absolute cumulative cap on logical child-agent calls: every `agent()` call and every item in a `parallel()` panel spends one slot, while schema-correction retries don't. The default is 128, explicit values run 1–1,024, and a panel that would cross the remaining budget is rejected before any of its children launch. Separately, a host-configured cap (32 by default) bounds how many children run at a time per run; larger panels queue and still act as a barrier. `budget()` reports the cap as `total`, admitted calls as `spent`, `reserved` (always zero), and `remaining`. Named slash launches use the default budget.
+
+### `/workflow`
 
 Switch the TUI color theme.
 
@@ -416,13 +421,28 @@ Switch the TUI color theme.
 /theme
 ```
 
-Aliases: `/t`
+Project workflows live in `.grok/workflows/*.rhai`; user workflows live in `~/.grok/workflows/*.rhai`. A same-process pause/resume continues the original immutable script, args, and `agent_budget` cap from committed host-call results — to iterate, edit the returned script copy and launch it as a new run.
+
+A budget-limited run is different: it only resumes through a model/tool resume request that supplies an `agent_budget` above the admitted agent count. A bare `/workflow resume <name>` can't raise the cap, so it rejects budget-limited runs. Runs interrupted by a process restart aren't resumed at all, because external effects have no stable cross-process identity. And resume is not exactly-once: an external effect whose result wasn't committed before a same-process pause can run again.
+
+### `/workflows`
+
+Open the live workflows **run** dashboard — active and retained runs, not a catalog of saved definitions. Each row shows the run's display name, phase, agent roster, progress, and result. Inside a run's detail view, `p` pauses, `r` resumes an ordinary pause, and `x` stops. Budget-limited runs can't bare-resume: `r` returns the shell's rejection (raise the cap with a model/tool resume that passes a higher `agent_budget`), while `x` still stops. `s` saves the run's script, but it's hidden for known built-ins and numbered duplicate handles — for those, choose a new unique `meta.name` and save the edited script explicitly.
+
+---
+
+## Other
+
+### `/theme`
+
+Switch the color theme. Alias: `/t`.
 
 ### `/feedback [message]`
 
-Report an issue or send feedback.
+Report an issue or send feedback. A message sends immediately. With none, a pane opens for a longer report: `Enter` sends, `Esc` discards.
 
 ```
+/feedback
 /feedback Something isn't working correctly
 ```
 
@@ -464,7 +484,7 @@ Aliases: `/changelog`
 
 ### `/docs`
 
-Browse in-TUI How-to Guides, open online Build docs, or jump to a guide by title.
+Browse the built-in How-to Guides, open the online Build docs, or jump straight to a guide by title. Aliases: `/howto`, `/guides`.
 
 ```
 /docs
@@ -499,6 +519,8 @@ Open the agents modal to view and manage agent definitions, set the default agen
 ```
 
 Aliases: `/agents`
+
+Not the live multi-session [Agent Dashboard](23-dashboard.md) (`/dashboard` / `Ctrl+\`).
 
 ### `/personas`
 
@@ -538,11 +560,14 @@ View credit usage or manage billing.
 
 ### `/privacy`
 
-Show or toggle privacy and data-retention status.
+Open Settings on **Coding data, retention, and training**, where you choose
+**Opt in** or **Opt out**. Takes no arguments.
 
 ```
 /privacy
 ```
+
+This setting doesn't touch `[features] telemetry`, `trace_upload`, or your external OTEL settings — see [Monitoring Usage](24-monitoring-usage.md#related-settings). On team accounts only a team admin can change it, and admins can also enable or disable Zero Data Retention for the team ([how to enable ZDR](https://docs.x.ai/developers/faq/security#how-to-enable-zdr)). When the choice isn't yours to make, the row says so — `ZDR` or `· Admin Managed` — instead of opening the chooser.
 
 ---
 
@@ -583,7 +608,7 @@ Skills from plugins also appear as slash commands. When multiple skills share th
 /user:commit       # User-scoped skill
 ```
 
-Built-in slash commands always take priority over skills with the same name. If you name a skill "compact", typing `/compact` will run the built-in compact command, but `/local:compact` will invoke the skill.
+Built-in commands always win the bare name. Name a skill "compact" and `/compact` still runs the built-in — the skill stays available as `/local:compact` (or `/acme:compact` for a plugin). Both appear in the slash menu: the built-in is tagged `built-in` and the skill is tagged `skill · local` / `skill · acme`.
 
 ---
 

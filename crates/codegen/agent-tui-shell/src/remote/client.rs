@@ -207,16 +207,16 @@ async fn fetch_bundle_inner(
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ShareResponse {
+pub(crate) struct ShareResponse {
     pub permission_id: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LoadDataResponse {
+pub(crate) struct LoadDataResponse {
     pub messages: Option<Vec<LoadedMessage>>,
     pub session: Option<SessionInfo>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LoadedMessage {
+pub(crate) struct LoadedMessage {
     pub id: String,
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -235,14 +235,14 @@ pub struct SessionInfo {
     pub metadata: Option<serde_json::Value>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SaveDataRequest {
+pub(crate) struct SaveDataRequest {
     pub messages: Vec<ExportedMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UpsertSessionRequest {
+pub(crate) struct UpsertSessionRequest {
     pub session: SessionUpdate,
     pub agent_id: String,
 }
@@ -288,9 +288,11 @@ impl Default for BackendClient {
 }
 impl BackendClient {
     fn build_default_client() -> reqwest::Client {
-        reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(DEFAULT_TIMEOUT)
+        agent_tui_extra_ca::with_extra_root_certificates(
+                reqwest::Client::builder()
+                    .connect_timeout(Duration::from_secs(10))
+                    .timeout(DEFAULT_TIMEOUT),
+            )
             .build()
             .expect("failed to build HTTP client")
     }
@@ -315,7 +317,10 @@ impl BackendClient {
     }
     /// Attach a live `AuthManager` so every request resolves a fresh token
     /// instead of requiring the caller to pass `&GrokAuth`.
-    pub fn with_auth_manager(mut self, manager: std::sync::Arc<crate::auth::AuthManager>) -> Self {
+    pub(crate) fn with_auth_manager(
+        mut self,
+        manager: std::sync::Arc<crate::auth::AuthManager>,
+    ) -> Self {
         let credentials: std::sync::Arc<dyn agent_tui_auth::AuthCredentialProvider> =
             std::sync::Arc::new(
                 crate::auth::credential_provider::ShellAuthCredentialProvider::new(
@@ -376,22 +381,6 @@ impl BackendClient {
         }
         let share_response = self.create_share_link(&session.session_id).await?;
         Ok(share_url(&share_response.permission_id))
-    }
-    /// Sync session to backend without creating a share link.
-    pub async fn sync_session(
-        &self,
-        session: &ExportedSession,
-        agent_id: &str,
-    ) -> Result<(), BackendError> {
-        self.upsert_session(&session.session_id, &session.metadata, agent_id)
-            .await?;
-        self.save_session_data(
-            &session.session_id,
-            &session.messages,
-            Some(&session.metadata),
-        )
-        .await?;
-        Ok(())
     }
     /// Build auth + identity headers.
     /// Must include X-XAI-Token-Auth so nginx auth subrequest routes to authenticate_agent_tui_cli_token.
@@ -467,7 +456,7 @@ impl BackendClient {
         }
         Ok(())
     }
-    pub async fn save_session_data(
+    pub(crate) async fn save_session_data(
         &self,
         session_id: &str,
         messages: &[ExportedMessage],
@@ -504,7 +493,7 @@ impl BackendClient {
         let data: ListResponse = response.json().await?;
         Ok(data.sessions)
     }
-    pub async fn load_session_data(
+    pub(crate) async fn load_session_data(
         &self,
         session_id: &str,
     ) -> Result<LoadDataResponse, BackendError> {
@@ -523,7 +512,10 @@ impl BackendClient {
         let data: LoadDataResponse = response.json().await?;
         Ok(data)
     }
-    pub async fn create_share_link(&self, session_id: &str) -> Result<ShareResponse, BackendError> {
+    pub(crate) async fn create_share_link(
+        &self,
+        session_id: &str,
+    ) -> Result<ShareResponse, BackendError> {
         let url = format!("{}/sessions/{}/share", self.base_url, session_id);
         let response = self.send_with_auth(self.reqwest_client.post(&url)).await?;
         if !response.status().is_success() {
@@ -534,7 +526,7 @@ impl BackendClient {
         let share_response: ShareResponse = response.json().await?;
         Ok(share_response)
     }
-    pub async fn delete_session_data(&self, session_id: &str) -> Result<(), BackendError> {
+    pub(crate) async fn delete_session_data(&self, session_id: &str) -> Result<(), BackendError> {
         let url = format!("{}/sessions/{}/data", self.base_url, session_id);
         let response = self
             .send_with_auth(self.reqwest_client.delete(&url))
@@ -788,7 +780,7 @@ pub(crate) fn fetch_models_blocking(
 }
 /// Parse a single model entry from the /models-v2 response.
 /// Used by both initial model fetch and session-resume metadata refresh.
-pub fn parse_remote_model_value(
+pub(crate) fn parse_remote_model_value(
     value: &serde_json::Value,
     default_base_url: &str,
 ) -> Option<crate::agent::config::ModelEntryConfig> {

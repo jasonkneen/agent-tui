@@ -131,9 +131,9 @@ pub fn render_dropdown(
     let items = &snap.matches;
     let selected = snap.selected.min(items.len().saturating_sub(1));
 
-    // Reserve 2 right columns for the scrollbar when wrapped content
-    // overflows. Decide at full width: narrowing only adds lines, so the
-    // decision cannot become stale.
+    // Reserve 2 right columns when wrapped content overflows. Decided at
+    // full width; narrowing generally adds lines. Dropping a badge can free
+    // width — worst case a spare gutter, never a missing scrollbar.
     let content_w = area.width as usize;
     let visible_rows = area.height as usize;
     let needs_scrollbar = flat_line_count(items, content_w, visible_rows + 1) > visible_rows;
@@ -235,17 +235,39 @@ pub struct RenderedDropdown {
     pub has_scrollbar: bool,
 }
 
+/// Badge geometry shared by [`flat_line_count`] and [`build_item_lines`]
+/// so height estimation cannot diverge from what is drawn.
+struct BadgeLayout {
+    badge: Option<String>,
+    desc_w: usize,
+}
+
+impl BadgeLayout {
+    fn compute(item: &SuggestionRow, total_w: usize, desc_indent: usize) -> Self {
+        let badge = item
+            .provenance
+            .as_ref()
+            .map(|p| p.badge().into_owned())
+            .filter(|badge| desc_indent + 1 + badge.width() < total_w);
+        let reserve = badge.as_ref().map_or(0, |badge| 1 + badge.width());
+        let desc_w = total_w
+            .saturating_sub(desc_indent)
+            .saturating_sub(reserve)
+            .max(1);
+        Self { badge, desc_w }
+    }
+}
+
 /// Flat line count of `items` at `row_w`, mirroring [`build_item_lines`]
 /// (label line + wrapped-description continuation lines). Saturates at
 /// `cap` so the empty-query dropdown (every command listed) doesn't wrap
 /// hundreds of descriptions just to compare against a single-digit height.
 fn flat_line_count(items: &[SuggestionRow], row_w: usize, cap: usize) -> usize {
     let label_col_w = compute_label_column_w(items, row_w.saturating_sub(PREFIX_W));
-    let desc_w = row_w
-        .saturating_sub(PREFIX_W + label_col_w + LABEL_DESC_GAP)
-        .max(1);
+    let desc_indent = PREFIX_W + label_col_w + LABEL_DESC_GAP;
     let mut lines = 0usize;
     for item in items {
+        let desc_w = BadgeLayout::compute(item, row_w, desc_indent).desc_w;
         lines += if item.description.is_empty() {
             1
         } else {
@@ -310,27 +332,43 @@ fn build_item_lines(
     // Build per-character spans for the label with fuzzy highlight.
     let label_spans = build_highlighted_spans(&label, &item.indices, normal_style, match_style);
 
-    // Description column indent (prefix + label + gap).
+    // Description column indent (prefix + label + gap). `label_col_w` already
+    // includes the tag suffix, so descriptions align across tagged/untagged
+    // rows.
     let desc_indent = PREFIX_W + label_col_w + LABEL_DESC_GAP;
-    let desc_w = total_w.saturating_sub(desc_indent).max(1);
+    let layout = BadgeLayout::compute(item, total_w, desc_indent);
 
     // Word-wrap description into lines of `desc_w` width.
     let desc_lines = if item.description.is_empty() {
         Vec::new()
     } else {
-        simple_word_wrap(&item.description, desc_w)
+        simple_word_wrap(&item.description, layout.desc_w)
     };
 
-    // 2. First line: prefix + label(padded) + gap + first desc line.
+    // 2. First line: prefix + label + padding + [tag] + gap + first desc + right badge.
     {
         let mut spans = vec![prefix_span];
         spans.extend(label_spans);
         if padding > 0 {
             spans.push(Span::styled(" ".repeat(padding), bg_style));
         }
-        if let Some(first_desc) = desc_lines.first() {
+        if let Some(tag_text) = tag_text {
+            spans.push(Span::styled(tag_text, tag_style));
+        }
+        let first_desc = desc_lines.first().map(String::as_str).unwrap_or("");
+        if !first_desc.is_empty() {
             spans.push(Span::styled(" ".to_string(), bg_style));
-            spans.push(Span::styled(first_desc.clone(), desc_style));
+            spans.push(Span::styled(first_desc.to_string(), desc_style));
+        }
+        if let Some(badge) = &layout.badge {
+            // Align to the first line's used width, not wrap `desc_indent`.
+            let desc_gap = if first_desc.is_empty() { 0 } else { 1 };
+            let used = PREFIX_W + label_col_w + desc_gap + first_desc.width();
+            let gap = total_w.saturating_sub(used).saturating_sub(badge.width());
+            if gap > 0 {
+                spans.push(Span::styled(" ".repeat(gap), bg_style));
+            }
+            spans.push(Span::styled(badge.clone(), desc_style));
         }
         out.push(Line::from(spans).style(bg_style));
     }
@@ -457,6 +495,7 @@ fn simple_word_wrap(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::slash::CommandProvenance;
 
     #[test]
     fn desired_item_rows_caps_many_short_items() {
@@ -466,6 +505,8 @@ mod tests {
                 description: String::new(),
                 insert_text: format!("/cmd{i}"),
                 indices: vec![],
+                tag: None,
+                provenance: None,
             })
             .collect();
         assert_eq!(desired_item_rows(&matches, 80), MAX_DROPDOWN_ROWS);
@@ -486,6 +527,8 @@ mod tests {
                 description: format!("description for command {i}"),
                 insert_text: format!("/cmd{i}"),
                 indices: vec![],
+                tag: None,
+                provenance: None,
             })
             .collect();
         let snap = SlashSnapshot {
@@ -503,12 +546,74 @@ mod tests {
         render_dropdown(&mut buf, area, &snap, Some(1), &theme);
     }
 
+    #[test]
+    fn fuzzy_indices_render_with_theme_accent() {
+        let theme = Theme::default();
+        let normal = Style::default().fg(theme.text_primary);
+        let matched = Style::default().fg(theme.fuzzy_accent);
+        let spans = build_highlighted_spans("ssh-wrap", &[0, 1, 2], normal, matched);
+        assert_eq!(spans[0].content.as_ref(), "ssh");
+        assert_eq!(spans[0].style.fg, Some(theme.fuzzy_accent));
+        assert_eq!(spans[1].style.fg, Some(theme.text_primary));
+    }
+
+    #[test]
+    fn provenance_badge_is_right_aligned() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+
+        let theme = Theme::current();
+        let matches = vec![
+            SuggestionRow {
+                display: "/login".into(),
+                description: "Log in or re-authenticate with your account".into(),
+                insert_text: "/login".into(),
+                indices: vec![],
+                tag: None,
+                provenance: Some(CommandProvenance::Builtin),
+            },
+            SuggestionRow {
+                display: "/acme:login".into(),
+                description: "Acme account login".into(),
+                insert_text: "/acme:login ".into(),
+                indices: vec![],
+                tag: None,
+                provenance: Some(CommandProvenance::Skill {
+                    source: "acme".to_string(),
+                }),
+            },
+        ];
+        let snap = SlashSnapshot {
+            open: true,
+            matches,
+            selected: 0,
+            ..Default::default()
+        };
+        let area = Rect::new(0, 0, 80, 4);
+        let mut buf = Buffer::empty(area);
+        render_dropdown(&mut buf, area, &snap, None, &theme);
+
+        let line0: String = (0..80).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        let line1: String = (0..80).map(|x| buf[(x, 1)].symbol().to_string()).collect();
+        assert!(line0.contains("Log in or re-authenticate"));
+        assert!(line1.contains("Acme account login"));
+        assert!(!line0.contains(" · built-in"));
+        // Flush right: the badge's last glyph sits in the final column.
+        assert!(line0.ends_with("built-in"), "not right-aligned: {line0:?}");
+        assert!(
+            line1.ends_with("skill · acme"),
+            "not right-aligned: {line1:?}"
+        );
+    }
+
     fn row(display: &str, description: &str) -> SuggestionRow {
         SuggestionRow {
             display: display.into(),
             description: description.into(),
             insert_text: display.into(),
             indices: vec![],
+            tag: None,
+            provenance: None,
         }
     }
 

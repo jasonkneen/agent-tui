@@ -22,14 +22,14 @@ fn toml_bool_sync(env_var: Option<&str>, section: &str, key: &str) -> bool {
         false
     }
 }
-pub fn load_relay_sync_enabled_sync() -> bool {
+pub(crate) fn load_relay_sync_enabled_sync() -> bool {
     toml_bool_sync(Some("GROK_RELAY_SYNC_ENABLED"), "relay", "enabled")
 }
 /// `[harness]` blocking-upload settings from ONE effective-config parse:
 /// `block_for_upload` (default false — prompt handling waits for turn-end
 /// uploads when set) and `upload_flush_timeout_secs` (default 60 — budget for
 /// that wait).
-pub fn load_blocking_upload_config_sync() -> (bool, std::time::Duration) {
+pub(crate) fn load_blocking_upload_config_sync() -> (bool, std::time::Duration) {
     const DEFAULT_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
     let root: TomlValue = match crate::config::load_effective_config() {
         Ok(r) => r,
@@ -158,55 +158,6 @@ default = "grok-code-fast-1"
             assert_eq!(default.as_deref(), Some("grok-code-fast-1"));
         } else {
             panic!("Expected models table");
-        }
-    }
-    #[test]
-    fn test_remote_secret_parsing() {
-        let toml_str = r#"
-[remote]
-secret = "my-secret-token"
-"#;
-        let root: TomlValue = toml::from_str(toml_str).unwrap();
-        if let TomlValue::Table(table) = root
-            && let Some(TomlValue::Table(remote)) = table.get("remote")
-        {
-            let secret = remote
-                .get("secret")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            assert_eq!(secret, Some("my-secret-token".to_string()));
-        } else {
-            panic!("Expected remote table");
-        }
-    }
-    #[test]
-    fn test_remote_secret_empty_section() {
-        let toml_str = r#"
-[remote]
-"#;
-        let root: TomlValue = toml::from_str(toml_str).unwrap();
-        if let TomlValue::Table(table) = root
-            && let Some(TomlValue::Table(remote)) = table.get("remote")
-        {
-            let secret = remote
-                .get("secret")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            assert!(secret.is_none());
-        } else {
-            panic!("Expected remote table");
-        }
-    }
-    #[test]
-    fn test_remote_secret_no_section() {
-        let toml_str = r#"
-[models]
-default = "grok-code-fast-1"
-"#;
-        let root: TomlValue = toml::from_str(toml_str).unwrap();
-        if let TomlValue::Table(table) = root {
-            let has_remote = table.get("remote").is_some();
-            assert!(!has_remote);
         }
     }
     #[test]

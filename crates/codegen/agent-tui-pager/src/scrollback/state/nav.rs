@@ -324,6 +324,32 @@ impl ScrollbackState {
         false
     }
 
+    /// Whether the response being read starts above the viewport top: the
+    /// active turn (the one owning the top row) has a response anchor whose
+    /// first line is scrolled off screen. Drives the ▲ jump-to-response-top
+    /// indicator, whose click runs [`Self::prev_response`] — from inside an
+    /// answer that anchor is exactly the nearest one above, so the indicator
+    /// only shows when the click has that answer's top to land on.
+    ///
+    /// Cache-only estimate (`&self`, headers ignored) so render can poll it
+    /// every frame; the estimate never undershoots the exact target, so a
+    /// visible indicator always has a real jump behind it.
+    pub fn has_response_top_above(&self) -> bool {
+        let Some(turn) = self
+            .active_turn_for_viewport()
+            .and_then(|t| self.turns.get(t))
+        else {
+            return false;
+        };
+        let Some(idx) = response_anchor_in_range(&self.entries, turn.range()) else {
+            return false;
+        };
+        self.visible_entry_range().contains(&idx)
+            && self
+                .entry_top_estimate(idx)
+                .is_some_and(|estimate| estimate < self.scroll_offset)
+    }
+
     /// Set status of the last turn.
     pub fn set_last_turn_status(&mut self, status: TurnStatus) {
         if let Some(turn) = self.turns.last_mut() {
@@ -1003,7 +1029,7 @@ impl ScrollbackState {
         let theme = Theme::current();
         let entry_area_width = self.entry_area_width(self.last_width);
         EntryRenderer::new(entry, &theme)
-            .with_appearance(self.appearance.clone())
+            .with_appearance_ref(&self.appearance)
             .with_cwd(self.cwd())
             .rendered_row_of_logical_line(entry_area_width, line_in_entry)
     }
@@ -2129,5 +2155,233 @@ mod tests {
             delta <= state.viewport_height as usize,
             "viewport jumped {delta} rows after select_next (page offset was {offset_after_page})"
         );
+    }
+
+    /// Regression: a full page-down must not skip the lines that sit behind a
+    /// sticky prompt header pinned at the viewport top. The content area is
+    /// `viewport - header` rows, so a page that advances `viewport - 2` rows
+    /// jumps `header - 2` lines over the top border. The page delta has to
+    /// subtract the header height so the intended 2-row overlap is preserved.
+    #[test]
+    fn page_down_does_not_skip_lines_behind_sticky_header() {
+        let mut h = ScrollTestHarness::new(80, 20);
+        // A multi-line prompt so the pinned header is taller than the 2-row
+        // overlap (single-line prompts render as exactly 1 row + 1 gap = 2,
+        // which happens to match the overlap and would hide the bug), followed
+        // by one very tall response so there is plenty of room to page through
+        // the middle without clamping at the bottom.
+        h.push_prompt("Q1 line A\nQ1 line B\nQ1 line C");
+        let giant: String = (1..=300)
+            .map(|i| format!("answer line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        h.push_agent(&giant);
+        h.frame();
+
+        // Start at the top, then page down until the prompt scrolls above the
+        // viewport and pins as a sticky header. One extra page lands on the
+        // stable (fully collapsed) header height.
+        h.state.goto_top();
+        h.frame();
+        let mut guard = 0;
+        while h.state.current_header_screen_rows() == 0 {
+            h.state.page_down();
+            h.frame();
+            guard += 1;
+            assert!(
+                guard < 100,
+                "expected a sticky header to appear while paging"
+            );
+        }
+        h.state.page_down();
+        h.frame();
+
+        // The header must be taller than the 2-row overlap, otherwise the old
+        // `viewport - 2` delta would not have skipped anything and the test
+        // would not exercise the bug.
+        let header = h.state.current_header_screen_rows();
+        assert!(
+            header > 2,
+            "test needs a header taller than the overlap to be meaningful, got {header}"
+        );
+        // There must be a full page of room left below, so the next page-down
+        // advances a whole page instead of clamping at the bottom.
+        assert!(
+            h.state.scroll_offset + h.state.viewport_height as usize <= h.max_offset(),
+            "test needs a full page of room to page down without clamping"
+        );
+
+        let old_bottom_line = h.state.scroll_offset + h.state.viewport_height as usize - 1;
+        h.state.page_down();
+        h.frame();
+        let new_top_content = h.state.scroll_offset + h.state.current_header_screen_rows() as usize;
+
+        assert!(
+            new_top_content <= old_bottom_line + 1,
+            "page-down skipped lines behind the sticky header: new top content line \
+             {new_top_content} > old bottom line {old_bottom_line} + 1"
+        );
+    }
+
+    /// Regression: when sticky headers are disabled the renderer draws no
+    /// header (`render_with_sticky_headers` falls back to a zero-height layout
+    /// because `use_sticky` is false), so the whole viewport is content and a
+    /// page must advance `viewport - 2`. `current_header_screen_rows()` used to
+    /// measure the header unconditionally, so `page_scroll_rows()` subtracted a
+    /// header that was never on screen and PageUp/PageDown advanced short of a
+    /// full page. The header height must be gated on the same flag as the
+    /// renderer.
+    #[test]
+    fn page_delta_ignores_header_when_sticky_headers_disabled() {
+        let mut h = ScrollTestHarness::new(80, 20);
+        // Same setup as the sticky-header test: a multi-line prompt that would
+        // pin a >2-row header when enabled, plus a long response with room to
+        // page through the middle without clamping at the bottom.
+        h.push_prompt("Q1 line A\nQ1 line B\nQ1 line C");
+        let giant: String = (1..=300)
+            .map(|i| format!("answer line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        h.push_agent(&giant);
+        h.frame();
+
+        // Page down (with sticky headers on, the harness default) until the
+        // prompt pins as a header, so we land on a scroll position where a
+        // header genuinely exists.
+        h.state.goto_top();
+        h.frame();
+        let mut guard = 0;
+        while h.state.current_header_screen_rows() == 0 {
+            h.state.page_down();
+            h.frame();
+            guard += 1;
+            assert!(
+                guard < 100,
+                "expected a sticky header to appear while paging"
+            );
+        }
+        h.state.page_down();
+        h.frame();
+
+        // Sanity: with sticky headers on, a real (>2-row) header is measured
+        // here, so gating on the flag actually changes the result below.
+        let header_on = h.state.current_header_screen_rows();
+        assert!(
+            header_on > 2,
+            "test needs a real header with sticky headers on, got {header_on}"
+        );
+        // A full page of room remains below, so a page-down will not clamp.
+        assert!(
+            h.state.scroll_offset + h.state.viewport_height as usize <= h.max_offset(),
+            "test needs a full page of room to page down without clamping"
+        );
+
+        // Disable sticky headers, mirroring the renderer's `use_sticky` gate.
+        // No header is drawn now, so none must be subtracted from the page.
+        h.state.appearance.scrollback.display.sticky_headers = false;
+        h.frame();
+
+        assert_eq!(
+            h.state.current_header_screen_rows(),
+            0,
+            "no header must be measured when sticky headers are disabled"
+        );
+        let expected = h.state.viewport_height - 2;
+        assert_eq!(
+            h.state.page_scroll_rows(),
+            expected,
+            "page delta must be viewport - 2 (no header subtracted) when sticky headers are off"
+        );
+
+        // The observable scroll delta of a page-down is a full viewport - 2.
+        let before = h.state.scroll_offset;
+        h.state.page_down();
+        h.frame();
+        assert_eq!(
+            h.state.scroll_offset - before,
+            expected as usize,
+            "page-down should advance a full viewport - 2 with sticky headers off"
+        );
+    }
+
+    #[test]
+    fn response_top_above_tracks_the_answer_being_read() {
+        let mut state = ScrollbackState::new();
+        state.push_block(user_block("Q1")); // 0
+        state.push_block(tall_agent_block()); // 1
+        state.prepare_layout(80, 6);
+
+        // Follow mode parks at the tail of the long answer: its first line
+        // is above the viewport, so the indicator has a jump to offer.
+        assert!(state.is_follow_mode());
+        assert!(state.has_response_top_above());
+
+        // Taking the jump (the indicator click = K) lands on the answer's
+        // top; from there there is nothing further up to jump to.
+        assert!(state.prev_response());
+        assert_eq!(state.selected(), Some(1));
+        assert!(!state.has_response_top_above());
+    }
+
+    #[test]
+    fn response_top_above_is_false_for_short_answers_and_without_layout() {
+        let mut state = ScrollbackState::new();
+        state.push_block(user_block("Q1"));
+        state.push_block(agent_block("short answer"));
+
+        // No layout yet: no viewport top to compare against.
+        assert!(!state.has_response_top_above());
+
+        // Fully visible answer: nothing above the viewport top.
+        state.prepare_layout(80, 20);
+        assert!(!state.has_response_top_above());
+    }
+
+    #[test]
+    fn response_top_above_works_for_earlier_turns_too() {
+        let mut state = ScrollbackState::new();
+        state.push_block(user_block("Q1")); // 0
+        state.push_block(tall_agent_block()); // 1
+        state.push_block(user_block("Q2")); // 2
+        state.push_block(tall_agent_block()); // 3
+        state.prepare_layout(80, 6);
+
+        // Park the viewport mid-way through turn 0's answer: the indicator
+        // is not reserved for the last turn.
+        state.goto_top();
+        while !state.has_response_top_above() {
+            let before = state.scroll_offset();
+            state.scroll_down(1);
+            assert_ne!(
+                state.scroll_offset(),
+                before,
+                "hit the bottom without ever entering turn 0's answer"
+            );
+        }
+        assert_eq!(state.active_turn_for_viewport(), Some(0));
+
+        // The jump snaps to THIS answer's top, not the last one's.
+        assert!(state.prev_response());
+        assert_eq!(state.selected(), Some(1));
+    }
+
+    #[test]
+    fn response_top_above_is_false_while_the_answer_is_still_below() {
+        let mut state = ScrollbackState::new();
+        state.push_block(user_block("Q1")); // 0
+        state.push_block(tall_agent_block()); // 1
+        state.push_block(user_block("Q2")); // 2
+        for i in 0..8 {
+            state.push_block(tool_block(&format!("tool {i}"))); // 3..=10
+        }
+        state.push_block(agent_block("A2")); // 11
+        state.prepare_layout(80, 6);
+
+        // Viewport top inside turn 1's tool run: turn 1's answer starts
+        // BELOW the top, so there is no "top of the response" to return to
+        // even though turn 0's answer sits further up.
+        state.scroll_to_entry_top(8);
+        assert_eq!(state.active_turn_for_viewport(), Some(1));
+        assert!(!state.has_response_top_above());
     }
 }

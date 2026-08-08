@@ -7,9 +7,11 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::auth::config::LEGACY_AUTH_SCOPE;
 use crate::auth::{AuthManager, GrokAuth, GrokComConfig, parse_output};
+use crate::http::TransportFailureKind;
 use crate::util::grok_home;
+use agent_tui_telemetry::events::{LoginFailed, LoginFailureKind};
 
-pub type StderrCallback = Box<dyn Fn(&str)>;
+pub(crate) type StderrCallback = Box<dyn Fn(&str)>;
 
 /// Reject a cached credential for reuse if it lacks `oidc_issuer`, has a
 /// mismatched issuer, or its team principal violates the `force_login_team_uuid`
@@ -194,7 +196,7 @@ impl AuthUrlMode {
     }
 
     /// Back-compat flag for older clients that only read `external_provider`.
-    pub fn is_external_provider(self) -> bool {
+    pub(crate) fn is_external_provider(self) -> bool {
         matches!(self, Self::Command)
     }
 }
@@ -211,25 +213,32 @@ pub struct AuthChannels {
     pub code_rx: mpsc::Receiver<String>,
 }
 
+/// Sets no `GROK_AUTH_EXPIRED`: operator binaries, which live outside this
+/// repo, read that variable as "headless, don't prompt" and decline the run.
 async fn run_external_auth_provider(
     command: &str,
     auth_manager: &Arc<AuthManager>,
-    is_refresh: bool,
+    over_stale_credential: bool,
     on_stderr: Option<StderrCallback>,
 ) -> anyhow::Result<(GrokAuth, bool)> {
     let inherit_stderr = on_stderr.is_none();
     tracing::info!(
         cmd = %command,
-        is_refresh,
+        over_stale_credential,
         inherit_stderr,
-        "auth: running external auth provider"
+        "auth: running external auth provider (interactive login)"
     );
 
-    let mut cmd = tokio::process::Command::new("sh");
-    cmd.args(["-c", command])
-        .stdin(std::process::Stdio::null())
+    // `sh -c` on unix, `cmd /C` on Windows — a hardcoded `sh` cannot spawn on a
+    // default Windows install, and the spawn failure fell through to the
+    // built-in browser login instead of honoring `auth_provider_command`.
+    let mut cmd = crate::util::subprocess::shell_c(command);
+    cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true);
+    // TODO: `kill_on_drop` SIGKILLs only the direct shell child; a provider that
+    // backgrounds work (setsid / `&`) leaks the grandchild on shutdown-cancel.
+    // Proper fix: pgid-kill via agent-tui-tty-utils.
 
     // TUI: pipe stderr and forward via callback — inherit would corrupt the
     // alternate screen. CLI / headless: inherit so URLs and progress appear in
@@ -240,13 +249,10 @@ async fn run_external_auth_provider(
         cmd.stderr(std::process::Stdio::piped());
     }
 
-    if is_refresh {
-        cmd.env("GROK_AUTH_EXPIRED", "1");
-    }
-
     agent_tui_tools::util::detach_command(&mut cmd);
     cmd.envs(agent_tui_tools::util::pager_env());
 
+    #[allow(clippy::disallowed_methods)] // auth provider child; see the process-group note above
     let mut child = cmd
         .spawn()
         .map_err(|e| anyhow::anyhow!("failed to start auth provider `{command}`: {e}"))?;
@@ -301,7 +307,7 @@ async fn run_external_auth_provider(
     )?;
 
     // Token output has no profile; carry it forward, or fetch it when reauth cleared prev.
-    match (is_refresh, auth_manager.current_or_expired()) {
+    match (over_stale_credential, auth_manager.current_or_expired()) {
         (true, Some(prev)) => auth.carry_user_profile_from(&prev),
         _ => auth_manager.enrich_auth_inline(&mut auth).await,
     }
@@ -321,7 +327,7 @@ async fn run_external_auth_provider(
 }
 
 /// GUI auth: bridges external provider stderr to `url_tx`, pipes code submission via `code_rx`.
-pub async fn run_auth_flow_with_stderr_bridge(
+pub(crate) async fn run_auth_flow_with_stderr_bridge(
     auth_manager: &Arc<AuthManager>,
     grok_com_config: &GrokComConfig,
     channels: AuthChannels,
@@ -409,7 +415,7 @@ pub async fn run_auth_flow_with_stderr_bridge(
 
 /// Full auth chain: cache → refresh → external provider → interactive (OIDC/OAuth2/legacy).
 /// When `url_tx` and `code_rx` are `None`, falls back to stderr/stdin (CLI mode).
-pub async fn run_auth_flow(
+pub(crate) async fn run_auth_flow(
     auth_manager: &Arc<AuthManager>,
     grok_com_config: &GrokComConfig,
     reauth: bool,
@@ -434,7 +440,7 @@ pub async fn run_auth_flow(
 /// Like [`run_auth_flow`] but with `force_interactive`: skip cached
 /// credentials without clearing them. Used by `/login` for mid-session
 /// re-auth where abandoning the flow must not disrupt the session.
-pub async fn run_auth_flow_interactive(
+pub(crate) async fn run_auth_flow_interactive(
     auth_manager: &Arc<AuthManager>,
     grok_com_config: &GrokComConfig,
     on_stderr: Option<StderrCallback>,
@@ -455,7 +461,68 @@ pub async fn run_auth_flow_interactive(
     .await
 }
 
+/// Every interactive login returns through here, so reporting the failure here
+/// costs one event per attempt — a retried request, or the discovery cache
+/// background token refresh shares, can't inflate it. Never changes the result.
 async fn run_auth_flow_inner(
+    auth_manager: &Arc<AuthManager>,
+    grok_com_config: &GrokComConfig,
+    reauth: bool,
+    force_interactive: bool,
+    on_stderr: Option<StderrCallback>,
+    url_tx: Option<Rc<RefCell<Option<oneshot::Sender<AuthUrlInfo>>>>>,
+    code_rx: Option<mpsc::Receiver<String>>,
+    login_override: LoginTransportOverride,
+) -> anyhow::Result<(GrokAuth, bool)> {
+    let result = run_auth_flow_steps(
+        auth_manager,
+        grok_com_config,
+        reauth,
+        force_interactive,
+        on_stderr,
+        url_tx,
+        code_rx,
+        login_override,
+    )
+    .await;
+    if let Err(err) = &result
+        && let Some(event) = login_failure_event(err)
+    {
+        agent_tui_telemetry::session_ctx::log_event(event);
+    }
+    result
+}
+
+/// `None` when nothing in the chain failed over HTTP (the user backed out, the
+/// loopback listener couldn't bind, the id_token didn't validate) rather than
+/// inventing a transport verdict for it.
+fn login_failure_event(err: &anyhow::Error) -> Option<LoginFailed> {
+    let source = err
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<reqwest::Error>())?;
+    Some(LoginFailed {
+        error_kind: failure_kind(
+            crate::http::TransportFailure::classify(source).kind,
+            source.is_decode(),
+        ),
+        os_error: crate::http::find_os_error_code(source),
+    })
+}
+
+/// A body that won't parse is a decode failure, not a transport one — even
+/// though `reqwest` also reports it as a body-phase error.
+fn failure_kind(transport: TransportFailureKind, is_decode: bool) -> LoginFailureKind {
+    if is_decode {
+        return LoginFailureKind::Decode;
+    }
+    match transport {
+        TransportFailureKind::Unreachable => LoginFailureKind::TransportConnect,
+        TransportFailureKind::Interrupted => LoginFailureKind::TransportInterrupted,
+        TransportFailureKind::Permanent => LoginFailureKind::TransportPermanent,
+    }
+}
+
+async fn run_auth_flow_steps(
     auth_manager: &Arc<AuthManager>,
     grok_com_config: &GrokComConfig,
     reauth: bool,
@@ -508,7 +575,7 @@ async fn run_auth_flow_inner(
         // OidcRefresher instances in sibling processes. Without this,
         // two processes can send the same refresh_token simultaneously,
         // triggering IdP refresh-token-family revocation (reuse detection).
-        let _file_lock = auth_manager
+        let file_lock = auth_manager
             .try_lock_auth_file_async(crate::auth::manager::AUTH_LOCK_TIMEOUT)
             .await;
 
@@ -519,7 +586,7 @@ async fn run_auth_flow_inner(
             "auth run_auth_flow expired path",
             None,
             Some(serde_json::json!({
-                "got_lock": _file_lock.is_some(),
+                "got_lock": file_lock.is_some(),
                 "disk_found": disk_auth.is_some(),
                 "disk_expired": disk_expired,
             })),
@@ -541,6 +608,10 @@ async fn run_auth_flow_inner(
         // Disk token not usable. Try the full auth() dispatcher which
         // handles OIDC refresh, external binary, disk re-read — all
         // through refresh_chain (single mutation point).
+        //
+        // flock does not nest: held across `auth()`, which re-acquires the same
+        // file lock, this blocks the process on itself until the lock timeout.
+        drop(file_lock);
         match auth_manager.auth().await {
             Ok(fresh) => return Ok((fresh, false)),
             Err(e) => {
@@ -576,8 +647,9 @@ async fn run_auth_flow_inner(
     }
 
     if let Some(ref cmd) = grok_com_config.auth_provider_command {
-        let is_refresh = reauth || auth_manager.is_expired();
-        match run_external_auth_provider(cmd, auth_manager, is_refresh, on_stderr).await {
+        let over_stale_credential = reauth || auth_manager.is_expired();
+        match run_external_auth_provider(cmd, auth_manager, over_stale_credential, on_stderr).await
+        {
             Ok(result) => return Ok(result),
             Err(e) => {
                 tracing::warn!(
@@ -879,6 +951,41 @@ pub async fn run_cli_login(
     device_auth: bool,
     devbox: bool,
 ) -> anyhow::Result<()> {
+    // Devbox never reaches the login funnel, so it reports nothing and needs
+    // no telemetry client — and `AuthManager::new` is not free (it logs, and
+    // may rewrite auth.json to drop a stale scope).
+    if devbox {
+        let auth = super::devbox_login::run_devbox_login(config).await?;
+        return apply_post_login_config(auth).await;
+    }
+
+    // Agent bootstrap is what normally initializes the product telemetry
+    // client, and `grok login` never boots an agent, so without this every
+    // event this process emits is dropped before reaching a sink. One manager
+    // serves both the identity it reads and the login flow below.
+    let auth_manager = Arc::new(AuthManager::new(
+        &grok_home::grok_home(),
+        config.grok_com_config.clone(),
+    ));
+    crate::agent::init::update_telemetry_config(config, &auth_manager);
+
+    let result = run_cli_login_steps(config, &auth_manager, oauth, device_auth).await;
+
+    // Posts run on a spawned task and this process exits as soon as we return.
+    agent_tui_telemetry::session_ctx::drain_pending(CLI_TELEMETRY_DRAIN).await;
+    result
+}
+
+/// Returns as soon as the post lands (~1.7s cold), so the bound only bites on a
+/// black-holed network — where waiting out the HTTP client timeout would be worse.
+const CLI_TELEMETRY_DRAIN: std::time::Duration = std::time::Duration::from_secs(5);
+
+async fn run_cli_login_steps(
+    config: &crate::agent::config::Config,
+    auth_manager: &Arc<AuthManager>,
+    oauth: bool,
+    device_auth: bool,
+) -> anyhow::Result<()> {
     let login_override = LoginTransportOverride::from_flags(oauth, device_auth);
 
     // Mirror `run_auth_flow_inner`'s precedence: enterprise OIDC (oidc=Some,
@@ -886,15 +993,11 @@ pub async fn run_cli_login(
     // supports the device flow. Without this guard, `grok login` on an
     // enterprise-OIDC deployment would wrongly enter the device branch (which
     // requires `oauth2`) and error.
-    let authenticated = if devbox {
-        super::devbox_login::run_devbox_login(config).await?
-    } else if cli_should_use_device(&config.grok_com_config, login_override).await {
+    let authenticated = if cli_should_use_device(&config.grok_com_config, login_override).await {
         if config.grok_com_config.oauth2.is_none() {
             // No OIDC and no oauth2 here, so `--oauth` can't help.
             anyhow::bail!("Sign-in is not available for this deployment. Set XAI_API_KEY instead.");
         }
-        let grok_home = grok_home::grok_home();
-        let auth_manager = Arc::new(AuthManager::new(&grok_home, config.grok_com_config.clone()));
         // Route through the shared inner flow (not `run_device_code_login`
         // directly) so the external auth provider and devbox auto-migration run
         // before the interactive device login. `force_interactive` skips the
@@ -903,7 +1006,7 @@ pub async fn run_cli_login(
         // Already resolved/logged above; pass `Preresolved(true)` so the inner flow
         // honors device without a second fetch or a duplicate `cli`-attributed log.
         let (auth, did_auth) = run_auth_flow_interactive(
-            &auth_manager,
+            auth_manager,
             &config.grok_com_config,
             None,
             None,
@@ -923,21 +1026,35 @@ pub async fn run_cli_login(
             );
         }
         // Loopback. `reauth=true` clears creds up front (legacy-scope hygiene),
-        // so abandoning logs you out — unlike the device branch above.
+        // so abandoning logs you out — unlike the device branch above. Calls
+        // `run_auth_flow` rather than `ensure_authenticated_with_override`,
+        // which would build a second `AuthManager`; with `reauth` set and no
+        // message prefix, the rest of that wrapper is a no-op.
         // Already resolved/logged above; pass `Preresolved(false)` so the inner
         // flow honors loopback without a duplicate `cli`-attributed log.
-        ensure_authenticated_with_override(
+        let (auth, did_auth) = run_auth_flow(
+            auth_manager,
             &config.grok_com_config,
             true,
             None,
+            None,
+            None,
             LoginTransportOverride::Preresolved(false),
         )
-        .await?
+        .await?;
+        if did_auth {
+            report_signed_in(&auth);
+        }
+        auth
     };
 
-    // Sync this principal's config now rather than waiting for the background
-    // tick. Stay quiet about absence/failure during login — confirm only when
-    // config was actually applied; `grok setup` reports the no-config case.
+    apply_post_login_config(authenticated).await
+}
+
+/// Sync this principal's config now rather than waiting for the background
+/// tick. Stay quiet about absence/failure during login — confirm only when
+/// config was actually applied; `grok setup` reports the no-config case.
+async fn apply_post_login_config(authenticated: GrokAuth) -> anyhow::Result<()> {
     let outcome = crate::managed_config::post_login_sync(Some(authenticated)).await;
     match outcome {
         crate::managed_config::ManagedConfigSync::Updated { is_team: true } => {
@@ -1047,6 +1164,54 @@ mod tests {
     use crate::auth::config::XAI_OAUTH2_ISSUER;
     use chrono::Utc;
 
+    /// `os_error` and the reqwest classification are covered in
+    /// `agent-tui-http`; what's local is which `LoginFailureKind` each maps to,
+    /// and that a decode failure never reads as a transport one.
+    #[test]
+    fn failure_kinds_map_one_to_one() {
+        assert_eq!(
+            failure_kind(TransportFailureKind::Unreachable, false),
+            LoginFailureKind::TransportConnect
+        );
+        assert_eq!(
+            failure_kind(TransportFailureKind::Interrupted, false),
+            LoginFailureKind::TransportInterrupted
+        );
+        assert_eq!(
+            failure_kind(TransportFailureKind::Permanent, false),
+            LoginFailureKind::TransportPermanent
+        );
+        assert_eq!(
+            failure_kind(TransportFailureKind::Interrupted, true),
+            LoginFailureKind::Decode
+        );
+    }
+
+    /// A login that never reached the network is not a transport failure. The
+    /// positive path needs a real `reqwest::Error`, and building a client here
+    /// flips `jsonwebtoken` into its "no CryptoProvider" panic and breaks
+    /// unrelated auth tests, so classification is covered in `agent-tui-http`.
+    #[test]
+    fn non_http_login_failures_are_not_reported() {
+        let abandoned = anyhow::anyhow!("Login timed out after 10 minutes. Please try again.");
+        assert!(login_failure_event(&abandoned).is_none());
+
+        let nested = abandoned.context("Login failed. Please try again.");
+        assert!(login_failure_event(&nested).is_none());
+    }
+
+    /// Run `f` with `GROK_LOGIN_DEVICE_FLOW` set to `value` (unset for `None`).
+    /// `EnvVarGuard` serializes the process env and restores it on drop, so
+    /// `resolve_device_flow` reads the env tier from a known state.
+    fn with_device_flow_env<T>(value: Option<bool>, f: impl FnOnce() -> T) -> T {
+        let _guard = match value {
+            Some(true) => EnvVarGuard::set("GROK_LOGIN_DEVICE_FLOW", "true"),
+            Some(false) => EnvVarGuard::set("GROK_LOGIN_DEVICE_FLOW", "false"),
+            None => EnvVarGuard::remove("GROK_LOGIN_DEVICE_FLOW"),
+        };
+        f()
+    }
+
     // A grok.com first-party (x.ai-issuer) OIDC session — `is_xai_auth()` true.
     fn oidc_session(key: &str, refresh: Option<&str>) -> GrokAuth {
         GrokAuth {
@@ -1137,6 +1302,49 @@ mod tests {
         assert_eq!(auth.map(|a| a.key), Some("xai-ext-token".to_string()));
     }
 
+    #[tokio::test]
+    async fn interactive_login_carries_no_expired_flag_even_over_a_stale_credential() {
+        let echo_env = "printf '%s' \"e=${GROK_AUTH_EXPIRED:-unset}\"";
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = Arc::new(
+            AuthManager::new(dir.path(), GrokComConfig::default())
+                .with_proxy_base_url(&dead_proxy_url()),
+        );
+        mgr.hot_swap(GrokAuth {
+            expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
+            ..oidc_session("stale-token", None)
+        });
+
+        let (auth, _) = run_external_auth_provider(echo_env, &mgr, true, None)
+            .await
+            .expect("provider output must parse");
+        assert_eq!(
+            auth.key, "e=unset",
+            "a login over an expired credential must not tell the binary to take its silent path"
+        );
+    }
+
+    /// The script is the one published in `README.md`, which operators copy.
+    #[tokio::test]
+    async fn a_provider_written_to_the_published_contract_can_sign_in_after_an_expiry() {
+        let conforming =
+            r#"if [ "$GROK_AUTH_EXPIRED" = "1" ]; then exit 1; else printf '%s' sso-token; fi"#;
+        let dir = tempfile::tempdir().unwrap();
+        let mgr = Arc::new(
+            AuthManager::new(dir.path(), GrokComConfig::default())
+                .with_proxy_base_url(&dead_proxy_url()),
+        );
+        mgr.hot_swap(GrokAuth {
+            expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
+            ..oidc_session("stale-token", None)
+        });
+
+        let (auth, _) = run_external_auth_provider(conforming, &mgr, true, None)
+            .await
+            .expect("the sign-in run must reach the binary's interactive branch");
+        assert_eq!(auth.key, "sso-token");
+    }
+
     /// External-provider output is team-pinned before persist (parity with OIDC
     /// / device-code): a wrong-team token is rejected and nothing is written.
     #[tokio::test]
@@ -1183,8 +1391,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn external_reauth_without_prev_auth_enriches_inline() {
-        // Regression: reauth clears the manager before the provider runs with
-        // is_refresh=true; flags must then come from /user, not default empty.
+        // Regression: reauth clears the manager before the provider runs over
+        // a stale credential; flags must then come from /user, not default
+        // empty.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let app = axum::Router::new().route(

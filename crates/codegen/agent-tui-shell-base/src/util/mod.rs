@@ -276,6 +276,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn kill_process_by_pid_terminates_live_child() {
+        #[allow(clippy::disallowed_methods)]
         let mut child = std::process::Command::new("sleep")
             .arg("60")
             .spawn()
@@ -292,5 +293,23 @@ mod tests {
     fn is_grok_process_self_true_impossible_pid_false() {
         assert!(is_grok_process(std::process::id()));
         assert!(!is_grok_process(u32::MAX));
+    }
+    #[test]
+    fn is_grok_process_strict_self_true_impossible_pid_false() {
+        assert!(is_grok_process_strict(std::process::id()));
+        assert!(!is_grok_process_strict(u32::MAX));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn kill_process_with_signal_sigkill_terminates_live_child() {
+        #[allow(clippy::disallowed_methods)]
+        let mut child = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id();
+        kill_process_with_signal(pid, KillSignal::Kill).expect("sigkill should succeed");
+        let status = child.wait().expect("wait child");
+        assert!(!status.success(), "sleep was killed, not exited cleanly");
     }
 }

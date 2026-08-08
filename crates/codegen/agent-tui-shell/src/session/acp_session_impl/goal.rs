@@ -113,29 +113,59 @@ impl SessionActor {
     /// rely on `goal_update_rx` for the channel half.
     pub(super) async fn drain_goal_updates_with_extra(
         &self,
-        current_tokens: i64,
-        purpose: DrainPurpose,
-        extra: Vec<agent_tui_tools::implementations::grok_build::update_goal::UpdateGoalEnvelope>,
-    ) {
-        use agent_tui_tools::implementations::grok_build::update_goal::{
-            RejectReason, UpdateGoalAck,
+    ) -> Result<crate::session::goal_evaluator::GoalEvaluatorVerdict, String> {
+        use crate::session::goal_evaluator::{
+            bounded_goal_transcript, build_goal_evaluator_request, parse_goal_evaluator_verdict,
         };
-        // The `update_goal` tool and its `GoalUpdateHandle` are always
-        // registered (see `spawn_session_actor`), so a model can call
-        // `update_goal` in a session that never entered goal mode — e.g. any
-        // plain eval/coding rollout. When the harness is disabled there is no
-        // orchestration to update, but every envelope must still be answered:
-        // dropping the ack oneshot here surfaces to the tool as the misleading
-        // `harness_no_ack` ("Goal-update harness dropped the response channel")
-        // error. Reject cleanly instead, draining both the drainer-supplied
-        // `extra` envelopes and any channel-buffered ones so no ack receiver is
-        // left hanging.
-        if !self.goal_harness_enabled() {
-            let reject = || UpdateGoalAck::Rejected {
-                reason: RejectReason::HarnessDisabled,
-                detail: "Goal mode is not active for this session (no /goal run in \
-                         progress); update_goal has no effect."
-                    .to_string(),
+        let (objective, plan_file) = {
+            let tracker = self.goal_tracker.lock();
+            let snapshot = tracker
+                .snapshot()
+                .ok_or_else(|| "goal state disappeared before evaluation".to_string())?;
+            (snapshot.objective.clone(), snapshot.plan_file.clone())
+        };
+        let transcript = bounded_goal_transcript(&self.chat_state_handle.get_conversation().await);
+        let plan = match plan_file {
+            Some(path) => tokio::fs::read_to_string(path)
+                .await
+                .ok()
+                .map(|text| agent_tui_tools::util::truncate_str(&text, 16 * 1024).to_owned()),
+            None => None,
+        };
+        let active_model = self
+            .chat_state_handle
+            .get_sampling_config()
+            .await
+            .map(|config| config.model)
+            .filter(|model| !model.is_empty())
+            .unwrap_or_else(|| self.models_manager.current_model_id().0.to_string());
+        let session_id = self.session_info.id.to_string();
+        let mut last_error = String::new();
+        for _ in 0..2 {
+            let client = match self.prepare_chat_completion(false).await {
+                Ok(client) => client,
+                Err(error) => {
+                    last_error = format!("could not prepare evaluator client: {error}");
+                    continue;
+                }
+            };
+            let request = build_goal_evaluator_request(
+                &objective,
+                &transcript,
+                plan.as_deref(),
+                active_model.clone(),
+                &session_id,
+            );
+            let response = match client.conversation_collect(request).await {
+                Ok(response) => response,
+                Err(error) => {
+                    let _ = self
+                        .chat_state_handle
+                        .mark_usage_incomplete(true, true)
+                        .await;
+                    last_error = format!("goal evaluator request failed: {error}");
+                    continue;
+                }
             };
             for (_input, ack_tx) in extra {
                 send_ack(ack_tx, reject());

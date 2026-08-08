@@ -23,12 +23,30 @@ pub fn bootstrap(
     auth_manager: &Arc<AuthManager>,
     prefetched: Option<IndexMap<String, ModelEntry>>,
 ) -> Result<(AgentConfig, ModelsManager), String> {
-    // Fail closed before any policy is read: a tampered managed policy must not run unmanaged.
+    // Remote kill-switch before the gate (settings-only prefetch — no managed-config
+    // sync, so a live server cannot heal a tampered policy before fail-closed).
+    agent_tui_telemetry::startup::enter(agent_tui_telemetry::startup::StartupPhase::Bootstrap);
+    let mut cfg = cfg.clone();
+    {
+        let _timer = crate::instrumentation_timer!("startup.bootstrap.remote_settings");
+        ensure_remote_settings_side_effects(&mut cfg, false);
+    }
     crate::managed_config::managed_policy_gate()?;
-    let cfg = resolve_config(cfg, auth_manager);
-    cfg.validate_model_filters()?;
-    init_process(&cfg, auth_manager);
-    let models_manager = ModelsManager::from_config(&cfg, prefetched, auth_manager.clone())?;
+    let cfg = {
+        let _timer = crate::instrumentation_timer!("startup.bootstrap.resolve_config");
+        let cfg = resolve_config(&cfg, auth_manager);
+        cfg.validate_model_filters()?;
+        cfg
+    };
+    {
+        let _timer = crate::instrumentation_timer!("startup.bootstrap.init_process");
+        init_process(&cfg, auth_manager);
+    }
+    agent_tui_telemetry::startup::enter(agent_tui_telemetry::startup::StartupPhase::ModelCatalog);
+    let models_manager = {
+        let _timer = crate::instrumentation_timer!("startup.bootstrap.models_manager");
+        ModelsManager::from_config(&cfg, prefetched, auth_manager.clone())?
+    };
 
     // Refresh on every auth refresh — the FSEvents watcher can silently die after
     // macOS sleep, stranding the catalog on bundled defaults.
@@ -128,6 +146,13 @@ fn init_process(cfg: &AgentConfig, auth_manager: &AuthManager) {
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| {
+        // Every agent mode (stdio/headless/leader and the in-process TUI
+        // agent) passes through here, so diagnostic uploads always carry
+        // the version stamp and the resource ceilings in effect.
+        agent_tui_telemetry::unified_log::set_version(agent_tui_version::VERSION);
+        let limits = crate::util::limits::ProcessLimits::read();
+        limits.log();
+
         if !cfg!(test) {
             // Clear a logged-out team's files before the background sync runs.
             crate::managed_config::clear_orphan();
@@ -168,6 +193,8 @@ fn init_process(cfg: &AgentConfig, auth_manager: &AuthManager) {
             );
         }
         update_telemetry_config(cfg, auth_manager);
+        // Emitted here: the event needs the client update_telemetry_config installs.
+        agent_tui_telemetry::session_ctx::log_event(limits.into_event());
     });
 }
 

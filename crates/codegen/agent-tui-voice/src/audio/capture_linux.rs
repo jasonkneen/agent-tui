@@ -141,7 +141,12 @@ fn spawn_recorder(sample_rate: u32) -> Result<(Recorder, Child), VoiceError> {
         .args(recorder.args(sample_rate))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    // setsid detach via the sanctioned helper (workspace subprocess rule): the
+    // recorder writes to a pipe and must not share the pager's controlling TTY.
+    agent_tui_tty_utils::detach_std_command(&mut cmd);
+    #[allow(clippy::disallowed_methods)] // recorder owned by the capture handle, killed on stop
+    let mut child = cmd
         .spawn()
         .map_err(|e| VoiceError::Config(format!("failed to start {}: {e}", recorder.program())))?;
 

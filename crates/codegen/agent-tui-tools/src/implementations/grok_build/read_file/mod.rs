@@ -105,7 +105,7 @@ pub(crate) const DESCRIPTION_FULL: &str = r#"Read a file.
 Usage:
 - The target_file parameter can be a relative path in the workspace or an absolute path
 - By default, it reads up to {max_lines_read} lines starting from the beginning of the file
-- Results are returned with line numbers starting at 1. The format is: LINE_NUMBER→LINE_CONTENT
+- Line numbers (1-based) appear as anchors in the format LINE_NUMBER→LINE_CONTENT on the first returned line and on every 10th line of the file; the lines in between show content only. Count from the nearest anchor when referring to a specific line
 - This tool can read PDF files (.pdf), PowerPoint files (.pptx), Jupyter notebooks (.ipynb files), and image files (e.g. PNG, JPG, etc).
 - When reading an image file the contents are presented visually as this tool uses multimodal LLMs."#;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -573,7 +573,7 @@ impl agent_tui_tool_runtime::Tool for ReadFileTool {
     ) -> agent_tui_tool_types::ToolDescription {
         agent_tui_tool_types::ToolDescription::new(
             "read_file",
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
     fn capabilities(&self) -> agent_tui_tool_protocol::ToolCapabilities {

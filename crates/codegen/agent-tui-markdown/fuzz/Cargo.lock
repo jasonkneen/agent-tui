@@ -1137,7 +1137,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7249219f66ced02969388cf2bb044a09756a083d0fab1e566056b04d9fbcaa5"
 
 [[package]]
-name = "agent-tui-markdown"
+name = "xai-grok-markdown"
 version = "0.1.0"
 dependencies = [
  "anstyle",
@@ -1152,11 +1152,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "agent-tui-markdown-fuzz"
+name = "xai-grok-markdown-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
- "agent-tui-markdown",
+ "xai-grok-markdown",
 ]
 
 [[package]]

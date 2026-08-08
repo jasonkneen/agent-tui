@@ -6,4 +6,4 @@
 //! `crate::session::inference_metrics::InferenceLatencyStats` for any
 //! call-sites that still spell it that way.
 
-pub use agent_tui_sampler::{InferenceLatencyStats, compute_percentiles};
+pub(crate) use agent_tui_sampler::{InferenceLatencyStats, compute_percentiles};

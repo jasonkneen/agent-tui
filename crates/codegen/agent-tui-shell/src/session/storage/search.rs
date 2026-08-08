@@ -1,83 +1,44 @@
 //! Session search orchestration: querying and background indexing.
 //!
-//! Mirrors the memory system's architecture:
-//! - `execute_search()` runs queries via `search_fts::SessionSearchIndex`
-//! - `SearchIndexManager` indexes sessions in the background (debounced)
-//! - `notify_session_updated()` is the public hook for session save paths
-//!
-//! The index is bootstrapped (all sessions indexed) on first search.
-//! After that, individual sessions are re-indexed on save/title update
-//! via `notify_session_updated()`. Because the SQLite DB is shared with
-//! other concurrently running grok processes (which may wipe or downgrade
-//! it — older binaries drop-and-restamp the schema on open), every
-//! subsequent search re-verifies the on-disk completed-bootstrap marker
-//! and re-runs the full bootstrap when it is missing.
+//! The FTS index is bootstrapped on first search and updated per session via
+//! `notify_session_updated()`. The SQLite DB is shared with other grok
+//! processes (older binaries may wipe or downgrade it on open), so every
+//! search re-verifies the on-disk completed-bootstrap marker, and the
+//! bootstrap itself is cross-process single-flight.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{self, BufRead, Seek};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-use super::search_fts::{SessionDoc, SessionSearchIndex, SessionSearchRow};
-use super::search_remote_sync;
-use super::{
-    ContentPeek, PromptExtractEvent, RawLinePeek, RawParamsPeek, StorageAdapter,
-    XAI_SESSION_UPDATE_METHOD, collect_prompts_from_events,
+use super::StorageAdapter;
+use super::search_bootstrap::{
+    BootstrapOutcome, BootstrapProgress, BootstrappingGuard, bootstrap_with_lease,
+    has_completed_bootstrap_marker, try_bootstrap_with_lease,
 };
+use super::search_content::{
+    UpsertOutcome, build_session_doc, collect_all_indexable_content_single_pass,
+    upsert_unless_unchanged,
+};
+use super::search_db::{
+    HealAwareLogCounter, log_session_index_failure, search_db_path, with_search_index,
+};
+use super::search_fts::{META_KEY_BOOTSTRAP_CLAIM, META_KEY_LAST_BOOTSTRAP, SessionSearchRow};
+#[cfg(test)]
+use super::search_fts::{META_KEY_SCHEMA_VERSION, SessionSearchIndex};
+use super::search_recovery;
 use crate::session::info::Info;
 use crate::session::persistence::Summary;
-use crate::session::wire_tags::{REWIND_MARKER, USER_MESSAGE_CHUNK};
 use agent_client_protocol as acp;
 
 const SEARCH_INDEX_DEBOUNCE_MS: u64 = 500;
-const SEARCH_CONTENT_CHAR_LIMIT: usize = 200_000;
 const BOOTSTRAP_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(50);
-
-/// Configuration for bootstrap resource limits.
-///
-/// Phase 1-3 use hardcoded defaults via `BootstrapConfig::default()`.
-/// User-configurable overrides via `~/.grok/settings.json` are deferred
-/// to a follow-up.
-struct BootstrapConfig {
-    /// Max concurrent sessions being indexed (default: 4).
-    /// Used by the parallel bootstrap pipeline.
-    max_concurrent: usize,
-    /// Per-session timeout (default: 30 seconds).
-    /// Wraps the `spawn_blocking` await — if the timeout fires, the pipeline
-    /// moves on but the blocking task continues to completion.
-    per_session_timeout: Duration,
-    /// Max `updates.jsonl` size to index during bootstrap (default: 30 MB).
-    /// Sessions exceeding this are skipped and indexed incrementally later.
-    max_file_size: u64,
-}
-
-impl Default for BootstrapConfig {
-    fn default() -> Self {
-        Self {
-            max_concurrent: 4,
-            per_session_timeout: Duration::from_secs(30),
-            max_file_size: 30 * 1024 * 1024, // 30 MB
-        }
-    }
-}
-
-/// Pre-check: skip sessions with excessively large updates files.
-///
-/// Returns `true` if the file at `updates_path` exceeds `max_size` bytes.
-/// Returns `false` if the file doesn't exist or can't be stat'd — let the
-/// indexer handle those cases.
-fn should_skip_session(updates_path: &Path, max_size: u64) -> bool {
-    match std::fs::metadata(updates_path) {
-        Ok(meta) => meta.len() > max_size,
-        Err(_) => false,
-    }
-}
 
 /// Internal search request (deserialized from the ACP extension params).
 #[derive(Debug, Clone)]
@@ -95,9 +56,9 @@ pub struct SessionSearchResponse {
     pub results: Vec<SessionSearchRow>,
     pub next_offset: Option<usize>,
     pub total_estimate: Option<usize>,
-    /// True when the FTS5 index is still being bootstrapped. Callers
-    /// should re-query after a delay to get results from newly indexed
-    /// sessions.
+    /// True while the index is still bootstrapping; callers should re-query.
+    /// Also true when a live claim exists without a completion marker, so a
+    /// peer mid-rebuild or a dead claimant within its lease is visible.
     pub bootstrapping: bool,
 }
 
@@ -110,10 +71,8 @@ struct SessionSearchKey {
 enum SearchIndexJob {
     Upsert(SessionSearchKey),
     BootstrapAll,
-    /// Dispatched for every `BootstrapOnce` after the first: re-verify the
-    /// on-disk completed-bootstrap marker, then either clear the eager
-    /// `bootstrapping` flag (index intact) or re-run the full bootstrap
-    /// (see [`has_completed_bootstrap_marker`]).
+    /// Re-verify the on-disk completed-bootstrap marker; re-run the full
+    /// bootstrap when it is missing.
     RecheckBootstrap,
 }
 
@@ -125,41 +84,19 @@ enum SearchManagerCmd {
 struct SearchManagerState {
     workers: HashMap<PathBuf, mpsc::UnboundedSender<SearchIndexJob>>,
     bootstrapped: HashSet<PathBuf>,
-    #[expect(dead_code, reason = "carried for future use by worker tasks")]
-    progress: Arc<BootstrapProgress>,
 }
 
 /// Singleton that manages background session indexing.
 ///
 /// Requires an active tokio runtime on first access (spawns tasks).
-///
-/// TODO: When multiple grok processes run concurrently, they each have
-/// their own `SearchIndexManager` writing to the same SQLite database.
-/// WAL mode prevents corruption, but redundant work is done. Consider
-/// adding reindex claim coordination (like the memory system's
-/// `try_claim_reindex()` / `release_claim()` pattern) if this becomes
-/// a problem.
 pub struct SearchIndexManager {
     tx: mpsc::UnboundedSender<SearchManagerCmd>,
-    progress: Arc<BootstrapProgress>,
+    pub(super) progress: Arc<BootstrapProgress>,
 }
 
 /// Global singleton — lazily started on first use.
 pub static SEARCH_INDEX_MANAGER: LazyLock<SearchIndexManager> =
     LazyLock::new(SearchIndexManager::start);
-
-#[derive(Default)]
-pub struct BootstrapProgress {
-    pub bootstrapping: AtomicBool,
-    pub indexed: AtomicU64,
-    pub total: AtomicU64,
-    /// Sessions skipped due to size limit or timeout.
-    pub skipped: AtomicU64,
-    /// Sessions skipped because content hash was unchanged.
-    pub unchanged: AtomicU64,
-    /// Total bytes of `updates.jsonl` read during this bootstrap.
-    pub bytes_read: AtomicU64,
-}
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -176,14 +113,12 @@ pub struct SearchIndexStatus {
 impl SearchIndexManager {
     fn start() -> Self {
         let progress = Arc::new(BootstrapProgress::default());
-        let progress_clone = progress.clone();
         let (tx, mut rx) = mpsc::unbounded_channel::<SearchManagerCmd>();
 
         tokio::spawn(async move {
             let mut state = SearchManagerState {
                 workers: HashMap::new(),
                 bootstrapped: HashSet::new(),
-                progress: progress_clone,
             };
             while let Some(cmd) = rx.recv().await {
                 match cmd {
@@ -194,12 +129,8 @@ impl SearchIndexManager {
                         if state.bootstrapped.insert(root.clone()) {
                             Self::dispatch(&mut state, root, SearchIndexJob::BootstrapAll);
                         } else {
-                            // Already bootstrapped this process — but the DB
-                            // is shared, so don't trust the in-memory flag:
-                            // re-verify the on-disk marker (the job also
-                            // undoes the eager flag set).
-                            // Dispatch through the worker channel so it sequences
-                            // after any in-flight BootstrapAll.
+                            // The DB is shared: re-verify the on-disk marker,
+                            // sequenced after any in-flight BootstrapAll.
                             Self::dispatch(&mut state, root, SearchIndexJob::RecheckBootstrap);
                         }
                     }
@@ -210,22 +141,17 @@ impl SearchIndexManager {
         Self { tx, progress }
     }
 
-    /// Queue a bootstrap of all sessions. Idempotent per root_dir, except
-    /// that repeat calls re-verify the on-disk completed-bootstrap marker
-    /// and re-bootstrap when it is missing (see
-    /// [`SearchIndexJob::RecheckBootstrap`]).
-    ///
-    /// Sets `bootstrapping` eagerly so callers polling the flag see `true`
-    /// before the background task even starts processing.
+    /// Queue a bootstrap of all sessions (idempotent per root; repeat calls
+    /// re-verify the on-disk marker). Sets `bootstrapping` eagerly so
+    /// pollers see `true` before the background task starts.
     pub fn bootstrap_once(&self, root: PathBuf) {
-        self.progress.bootstrapping.store(true, Ordering::Release);
+        self.progress.begin_bootstrapping();
         let _ = self.tx.send(SearchManagerCmd::BootstrapOnce { root });
     }
 
-    /// Get current bootstrap progress status.
     pub fn status(&self) -> SearchIndexStatus {
         SearchIndexStatus {
-            bootstrapping: self.progress.bootstrapping.load(Ordering::Relaxed),
+            bootstrapping: self.progress.is_bootstrapping(),
             indexed: self.progress.indexed.load(Ordering::Relaxed),
             total: self.progress.total.load(Ordering::Relaxed),
             skipped: self.progress.skipped.load(Ordering::Relaxed),
@@ -261,35 +187,13 @@ impl SearchIndexManager {
 }
 
 /// Trigger indexing for a session that was just saved or updated.
-///
-/// This is the public hook to call from session persistence paths
-/// (e.g., after `update_session_title`, after each prompt turn).
 pub fn notify_session_updated(session_id: &str, cwd: &str) {
     let root = crate::util::grok_home::grok_home();
     SEARCH_INDEX_MANAGER.enqueue(root, session_id.to_string(), cwd.to_string());
 }
 
-fn search_db_path(root_dir: &Path) -> PathBuf {
-    let sessions = root_dir.join("sessions");
-    // Best-effort: the journal-mode classifier statfs's the parent dir.
-    let _ = std::fs::create_dir_all(&sessions);
-    let path = sessions.join("session_search.sqlite");
-    // Pre-resolve the per-host sibling (network mounts) so search_remote_sync's
-    // raw file ops (exists/compress/replace) target the same file the index
-    // opens; resolution is idempotent, so the open re-resolving is a no-op.
-    agent_tui_sqlite_journal::JournalMode::for_db_path(&path).effective_db_path(&path)
-}
-
-fn sqlite_to_io_error(error: rusqlite::Error) -> io::Error {
-    io::Error::other(format!("sqlite error: {error}"))
-}
-
-/// Execute a session search query.
-///
-/// On first call, triggers a background bootstrap that indexes all
-/// existing sessions. Waits up to [`BOOTSTRAP_WAIT_TIMEOUT`] for the
-/// bootstrap to complete so the query runs against a populated index.
-/// Subsequent calls skip the wait (bootstrap is already done).
+/// Execute a session search query, waiting up to [`BOOTSTRAP_WAIT_TIMEOUT`]
+/// for a first-call bootstrap so the query runs against a populated index.
 pub async fn execute_search(
     root_dir: &Path,
     req: &SessionSearchRequest,
@@ -306,12 +210,9 @@ pub async fn execute_search(
 
     SEARCH_INDEX_MANAGER.bootstrap_once(root_dir.to_path_buf());
 
+    let epoch = search_recovery::CacheEpoch::now();
     let deadline = tokio::time::Instant::now() + BOOTSTRAP_WAIT_TIMEOUT;
-    while SEARCH_INDEX_MANAGER
-        .progress
-        .bootstrapping
-        .load(Ordering::Acquire)
-    {
+    while SEARCH_INDEX_MANAGER.progress.is_bootstrapping() {
         if tokio::time::Instant::now() >= deadline {
             break;
         }
@@ -324,23 +225,30 @@ pub async fn execute_search(
     let include_content = req.include_content;
     let query_owned = query.to_string();
 
-    let qr = tokio::task::spawn_blocking(move || {
-        let index = SessionSearchIndex::open_or_create(&db_path).map_err(sqlite_to_io_error)?;
-        index
-            .query(&query_owned, cwd.as_deref(), limit, offset, include_content)
-            .map_err(sqlite_to_io_error)
+    let (query_result, claim_in_flight) = tokio::task::spawn_blocking(move || {
+        with_search_index(&db_path, |index| {
+            let result =
+                index.query(&query_owned, cwd.as_deref(), limit, offset, include_content)?;
+            let claim_in_flight = index.get_meta(META_KEY_BOOTSTRAP_CLAIM)?.is_some()
+                && index.get_meta(META_KEY_LAST_BOOTSTRAP)?.is_none();
+            Ok((result, claim_in_flight))
+        })
     })
     .await
     .map_err(io::Error::other)??;
 
+    let healed = epoch.changed();
+    if healed {
+        SEARCH_INDEX_MANAGER.bootstrap_once(root_dir.to_path_buf());
+    }
+
     Ok(SessionSearchResponse {
-        results: qr.results,
-        next_offset: qr.next_offset,
-        total_estimate: qr.total_estimate,
-        bootstrapping: SEARCH_INDEX_MANAGER
-            .progress
-            .bootstrapping
-            .load(Ordering::Relaxed),
+        results: query_result.results,
+        next_offset: query_result.next_offset,
+        total_estimate: query_result.total_estimate,
+        bootstrapping: healed
+            || SEARCH_INDEX_MANAGER.progress.is_bootstrapping()
+            || claim_in_flight,
     })
 }
 
@@ -377,12 +285,7 @@ async fn run_worker(
     }
 }
 
-fn clear_bootstrapping_flag() {
-    SEARCH_INDEX_MANAGER
-        .progress
-        .bootstrapping
-        .store(false, Ordering::Release);
-}
+static BOOTSTRAP_FAIL_LOG: HealAwareLogCounter = HealAwareLogCounter::new(4);
 
 async fn handle_job(
     root_dir: &Path,
@@ -396,60 +299,57 @@ async fn handle_job(
             pending.insert(key, Instant::now() + debounce);
         }
         SearchIndexJob::BootstrapAll => {
-            if let Err(e) = reindex_all(root_dir, storage).await {
-                tracing::warn!(error = %e, "session search bootstrap failed");
-                clear_bootstrapping_flag();
+            let _bootstrapping = BootstrappingGuard::new(&SEARCH_INDEX_MANAGER.progress);
+            match bootstrap_with_lease(root_dir, storage, &SEARCH_INDEX_MANAGER.progress).await {
+                Ok(BootstrapOutcome::Done) => {}
+                Ok(BootstrapOutcome::RunAgain) => {
+                    SEARCH_INDEX_MANAGER.bootstrap_once(root_dir.to_path_buf());
+                }
+                Err(e) => BOOTSTRAP_FAIL_LOG.warn(
+                    "bootstrap failures",
+                    "session search bootstrap failed",
+                    None,
+                    Some(&e),
+                ),
             }
         }
-        SearchIndexJob::RecheckBootstrap => match has_completed_bootstrap_marker(root_dir).await {
-            Some(true) => clear_bootstrapping_flag(),
-            Some(false) => {
-                // Marker genuinely absent (index wiped/downgraded/bootstrap
-                // never completed — see `has_completed_bootstrap_marker`):
-                // without a re-run this process would keep searching an
-                // empty index for its whole lifetime.
-                tracing::info!(
-                    "session search index missing completed-bootstrap marker; re-running bootstrap"
-                );
-                if let Err(e) = reindex_all(root_dir, storage).await {
-                    tracing::warn!(error = %e, "session search re-bootstrap failed");
-                    clear_bootstrapping_flag();
+        SearchIndexJob::RecheckBootstrap => {
+            let _bootstrapping = BootstrappingGuard::new(&SEARCH_INDEX_MANAGER.progress);
+            match has_completed_bootstrap_marker(root_dir).await {
+                Some(true) => {}
+                Some(false) => {
+                    tracing::info!(
+                        "session search index missing completed-bootstrap marker; entering bootstrap gate"
+                    );
+                    match try_bootstrap_with_lease(
+                        root_dir,
+                        storage,
+                        &SEARCH_INDEX_MANAGER.progress,
+                    )
+                    .await
+                    {
+                        Ok(BootstrapOutcome::Done) => {}
+                        Ok(BootstrapOutcome::RunAgain) => {
+                            SEARCH_INDEX_MANAGER.bootstrap_once(root_dir.to_path_buf());
+                        }
+                        Err(e) => BOOTSTRAP_FAIL_LOG.warn(
+                            "bootstrap failures",
+                            "session search re-bootstrap failed",
+                            None,
+                            Some(&e),
+                        ),
+                    }
+                }
+                // Transient read failure: rebuilding on every one would be a
+                // reindex storm; the next search retries the probe.
+                None => {
+                    tracing::debug!(
+                        "session search bootstrap marker unreadable; skipping re-bootstrap"
+                    );
                 }
             }
-            None => {
-                // Transient read failure (busy/locked DB, I/O): rebuilding on
-                // every such search would be a reindex storm. Skip; the next
-                // search retries the probe.
-                tracing::debug!(
-                    "session search bootstrap marker unreadable; skipping re-bootstrap"
-                );
-                clear_bootstrapping_flag();
-            }
-        },
+        }
     }
-}
-
-/// Tri-state probe for the completed-bootstrap marker (`last_bootstrap_at`
-/// in the `meta` table, written at the end of [`reindex_all`]):
-/// `Some(true)` marker present, `Some(false)` genuinely absent (bootstrap
-/// needed), `None` transient read failure (busy/locked DB — must not be
-/// mistaken for absence, or every search under contention would trigger a
-/// full rebuild).
-///
-/// Opening the DB here is itself the healing step for a downgraded index:
-/// `open_or_create` performs the upgrade drop, which deletes the marker in
-/// the same transaction (see [`SessionSearchIndex::open_or_create`]), so
-/// this returns `Some(false)` and the caller re-runs the full bootstrap.
-async fn has_completed_bootstrap_marker(root_dir: &Path) -> Option<bool> {
-    let db_path = search_db_path(root_dir);
-    tokio::task::spawn_blocking(move || {
-        search_remote_sync::try_read_last_bootstrap_at(&db_path)
-            .map(|marker| marker.is_some())
-            .ok()
-    })
-    .await
-    .ok()
-    .flatten()
 }
 
 async fn flush_ready(
@@ -466,24 +366,13 @@ async fn flush_ready(
     for key in ready {
         pending.remove(&key);
         if let Err(e) = upsert_by_key(root_dir, storage, &key).await {
-            tracing::warn!(
-                error = %e,
-                session_id = %key.session_id,
-                "failed upserting session in search index"
+            log_session_index_failure(
+                &key.session_id,
+                &e,
+                "failed upserting session in search index",
             );
         }
     }
-}
-
-/// Outcome of a single session upsert.
-#[derive(Debug)]
-enum UpsertOutcome {
-    /// Content was indexed (new or changed).
-    Indexed { bytes_read: u64 },
-    /// Content hash matched existing index entry — no update needed.
-    Unchanged { bytes_read: u64 },
-    /// No updates file available (storage backend doesn't expose paths).
-    NoContent,
 }
 
 async fn upsert_by_key(
@@ -513,9 +402,6 @@ async fn upsert_session(
     storage: &dyn StorageAdapter,
     info: &Info,
 ) -> io::Result<UpsertOutcome> {
-    // Single-pass direct file I/O: bypass StorageAdapter and open updates.jsonl
-    // once, extracting prompts, assistant text, and tool metadata in one pass.
-    // Reduces I/O by 3x vs the old 3-call pattern.
     let (content, bytes_read) = if let Some(updates_path) = storage.updates_file_path(info) {
         tokio::task::spawn_blocking(move || {
             collect_all_indexable_content_single_pass(&updates_path)
@@ -523,24 +409,15 @@ async fn upsert_session(
         .await
         .map_err(io::Error::other)??
     } else {
-        // Storage backend doesn't expose file paths — no content to index
         return Ok(UpsertOutcome::NoContent);
     };
-    let doc = build_session_doc(summary, content, bytes_read);
+    let doc = build_session_doc(summary, content);
     let db_path = search_db_path(root_dir);
 
     tokio::task::spawn_blocking(move || {
-        let index = SessionSearchIndex::open_or_create(&db_path).map_err(sqlite_to_io_error)?;
-
-        // Skip if content hasn't changed
-        if let Ok(Some(existing_hash)) = index.get_content_hash(&doc.session_id)
-            && existing_hash == doc.content_hash
-        {
-            return Ok(UpsertOutcome::Unchanged { bytes_read });
-        }
-
-        index.upsert_doc(&doc).map_err(sqlite_to_io_error)?;
-        Ok(UpsertOutcome::Indexed { bytes_read })
+        with_search_index(&db_path, |index| {
+            upsert_unless_unchanged(index, &doc, bytes_read)
+        })
     })
     .await
     .map_err(io::Error::other)?
@@ -550,8 +427,7 @@ async fn delete_session(root_dir: &Path, session_id: &str) -> io::Result<()> {
     let db_path = search_db_path(root_dir);
     let session_id = session_id.to_string();
     tokio::task::spawn_blocking(move || {
-        let index = SessionSearchIndex::open_or_create(&db_path).map_err(sqlite_to_io_error)?;
-        index.delete_doc(&session_id).map_err(sqlite_to_io_error)
+        with_search_index(&db_path, |index| index.delete_doc(&session_id))
     })
     .await
     .map_err(io::Error::other)?
@@ -1286,6 +1162,7 @@ fn build_session_doc(summary: &Summary, content: String, last_indexed_offset: u6
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::storage::search_content::test_summary;
 
     #[tokio::test]
     async fn test_execute_search_empty_query() {
@@ -1750,7 +1627,7 @@ mod tests {
     #[test]
     fn test_bootstrap_progress_extended_defaults() {
         let progress = BootstrapProgress::default();
-        assert!(!progress.bootstrapping.load(Ordering::Relaxed));
+        assert!(!progress.is_bootstrapping());
         assert_eq!(progress.indexed.load(Ordering::Relaxed), 0);
         assert_eq!(progress.total.load(Ordering::Relaxed), 0);
         assert_eq!(progress.skipped.load(Ordering::Relaxed), 0);
@@ -1940,10 +1817,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         SEARCH_INDEX_MANAGER.bootstrap_once(tmp.path().to_path_buf());
         assert!(
-            SEARCH_INDEX_MANAGER
-                .progress
-                .bootstrapping
-                .load(Ordering::Acquire),
+            SEARCH_INDEX_MANAGER.progress.is_bootstrapping(),
             "bootstrapping flag must be true immediately after bootstrap_once()",
         );
     }
@@ -1960,48 +1834,6 @@ mod tests {
         };
         let resp = execute_search(tmp.path(), &req).await.unwrap();
         assert!(resp.results.is_empty());
-    }
-
-    // ── bootstrap freshness recheck tests ──────────────────────────────────
-    // These test the free functions directly (per-tmp-root DB state), not the
-    // global SEARCH_INDEX_MANAGER, whose `bootstrapping` flag is process-wide
-    // and racy across parallel tests (see NOTE above).
-
-    /// The predicate behind `SearchIndexJob::RecheckBootstrap`: a completed
-    /// bootstrap leaves `last_bootstrap_at`; the upgrade drop in
-    /// `open_or_create` deletes it, so the probe's own open detects a
-    /// downgraded index.
-    #[tokio::test]
-    async fn test_has_completed_bootstrap_marker_lifecycle() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let root = tmp.path();
-        let db_path = search_db_path(root);
-
-        // No DB file at all → genuinely absent (not a read error).
-        assert_eq!(has_completed_bootstrap_marker(root).await, Some(false));
-
-        // A completed bootstrap at the current schema version → marker set.
-        search_remote_sync::write_last_bootstrap_at(&db_path).unwrap();
-        assert_eq!(has_completed_bootstrap_marker(root).await, Some(true));
-
-        // Simulate an older (pre-ratchet) binary having wiped and re-stamped
-        // the DB: version row regressed below current, `last_bootstrap_at`
-        // still recent.
-        {
-            let index = SessionSearchIndex::open_or_create(&db_path).unwrap();
-            index
-                .set_meta("session_search_schema_version", "3")
-                .unwrap();
-        }
-        assert_eq!(
-            has_completed_bootstrap_marker(root).await,
-            Some(false),
-            "a downgraded index must not count as bootstrapped even with a recent marker"
-        );
-
-        // A subsequent completed bootstrap restores the marker.
-        search_remote_sync::write_last_bootstrap_at(&db_path).unwrap();
-        assert_eq!(has_completed_bootstrap_marker(root).await, Some(true));
     }
 
     /// End-to-end recheck healing: `RecheckBootstrap` on a marker-less index
@@ -2043,7 +1875,7 @@ mod tests {
         let db_path = search_db_path(tmp.path());
 
         let summary = test_summary("stub", "/ws", "");
-        let stub = build_session_doc(&summary, String::new(), 0);
+        let stub = build_session_doc(&summary, String::new());
         {
             let index = SessionSearchIndex::open_or_create(&db_path).unwrap();
             index.upsert_doc(&stub).unwrap();
@@ -2053,9 +1885,7 @@ mod tests {
                 index.get_content_hash("stub").unwrap().as_deref(),
                 Some(stub.content_hash.as_str())
             );
-            index
-                .set_meta("session_search_schema_version", "3")
-                .unwrap();
+            index.set_meta(META_KEY_SCHEMA_VERSION, "3").unwrap();
         }
 
         let index = SessionSearchIndex::open_or_create(&db_path).unwrap();
@@ -2065,9 +1895,4 @@ mod tests {
             "the upgrade drop must clear stub rows so their stale hashes cannot block re-indexing"
         );
     }
-
-    // Note: tests for upsert_session_blocking (delta path, truncation
-    // fallback, rewind fallback, no-new-bytes skip) are deferred until
-    // the delta indexing is wired into upsert_session. The delta content
-    // collection function (collect_delta_content) is tested above.
 }

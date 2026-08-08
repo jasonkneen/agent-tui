@@ -1,15 +1,13 @@
-//! Fork and project-selection dispatchers and fork placeholder builders.
+//! Fork dispatchers and fork placeholder builders.
 use super::lifecycle::{dispatch_new_session_inner_with_id, refuse_chat_mode_build_agent};
 use crate::acp::tracker::AcpUpdateTracker;
 use crate::app::actions::Effect;
 use crate::app::agent::{AgentCommand, AgentId, AgentSession, AgentState};
-use crate::app::agent_view::{AgentView, McpInitProgress};
+use crate::app::agent_view::AgentView;
 use crate::app::app_view::{ActiveView, AppView};
 use crate::app::dispatch::ctx::{SwitchCause, switch_to_agent};
 use crate::app::dispatch::modes::inherit_auto_mode;
-use crate::app::dispatch::prompt::{
-    consume_chat_kind, dispatch_send_prompt, supersede_open_reload_window,
-};
+use crate::app::dispatch::prompt::supersede_open_reload_window;
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::SessionEvent;
 use crate::scrollback::state::ScrollbackState;
@@ -212,6 +210,7 @@ pub(in crate::app::dispatch) fn dispatch_fork_resolved(
         agent.apply_app_scoped_gates(
             app.sharing_enabled,
             app.usage_visible,
+            !app.has_external_auth_provider,
             app.chat_mode,
             app.screen_mode,
             &app.active_announcements,
@@ -502,6 +501,7 @@ pub(in crate::app::dispatch) fn handle_worktree_forked(
     code_restored: bool,
     restore_summary: Option<String>,
     restore_degree: Option<agent_tui_workspace::session::git::RestoreDegree>,
+    resume_session_id: Option<String>,
 ) -> Vec<Effect> {
     let session_id_str = session_id.0.to_string();
     let pending_entry = std::mem::take(&mut app.deferred_startup.pending_chat);
@@ -548,20 +548,29 @@ pub(in crate::app::dispatch) fn handle_worktree_forked(
         let effective_chat = conversation_entry || app.chat_mode;
         agent.chat_kind = effective_chat;
         agent.apply_credit_balance(app.credit_balance.clone(), app.auto_topup.clone());
-        return vec![Effect::LoadSession {
-            agent_id,
-            session_id: session_id_str,
-            session_cwd: Some(session_cwd),
-            chat_kind: conversation_entry,
-        }];
+    } else {
+        return vec![];
     }
-    vec![]
+    if let Some(resume_id) = resume_session_id.as_deref() {
+        crate::app::event_loop::retarget_suppress_code_restore(
+            app,
+            resume_id,
+            session_id_str.clone(),
+        );
+    }
+    vec![Effect::LoadSession {
+        agent_id,
+        session_id: session_id_str,
+        session_cwd: Some(session_cwd),
+        chat_kind: conversation_entry,
+    }]
 }
 pub(in crate::app::dispatch) fn handle_fork_session_ready(
     app: &mut AppView,
     agent_id: AgentId,
     new_session_id: acp::SessionId,
     cwd: std::path::PathBuf,
+    parent_session_id: acp::SessionId,
 ) -> Vec<Effect> {
     let session_id_str = new_session_id.0.to_string();
     let pending_entry = std::mem::take(&mut app.deferred_startup.pending_chat);
@@ -586,14 +595,20 @@ pub(in crate::app::dispatch) fn handle_fork_session_ready(
         agent.session.cwd = cwd.clone();
         let effective_chat = conversation_entry || app.chat_mode;
         agent.chat_kind = effective_chat;
-        return vec![Effect::LoadSession {
-            agent_id,
-            session_id: session_id_str,
-            session_cwd: Some(cwd),
-            chat_kind: conversation_entry,
-        }];
+    } else {
+        return vec![];
     }
-    vec![]
+    crate::app::event_loop::retarget_suppress_code_restore(
+        app,
+        parent_session_id.0.as_ref(),
+        session_id_str.clone(),
+    );
+    vec![Effect::LoadSession {
+        agent_id,
+        session_id: session_id_str,
+        session_cwd: Some(cwd),
+        chat_kind: conversation_entry,
+    }]
 }
 pub(in crate::app::dispatch) fn handle_fork_session_failed(
     app: &mut AppView,

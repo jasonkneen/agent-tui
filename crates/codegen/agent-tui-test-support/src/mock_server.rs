@@ -1,13 +1,13 @@
-//! Mock inference server with request logging and automatic cleanup.
+//! Mock inference server. Logs every request and shuts down on drop.
 //!
-//! Serves `/v1/chat/completions`, `/v1/responses`, and `/v1/messages` in one
-//! of two response modes: echo (default — streams `Echo: <last user message>`)
-//! or a fixed text set via [`MockInferenceServer::set_response`] (streamed
-//! with byte-exact reconstruction). A per-path FIFO of [`ScriptedResponse`]s
-//! (see [`MockInferenceServer::enqueue_response`]) overrides the mode for
-//! exact status/body/SSE control. `/v1/models` and `/v1/settings` return
-//! configurable responses (settings is 404 until set). All requests are
-//! logged — bodies and headers — for assertion in tests.
+//! Serves the three inference endpoints (`/v1/chat/completions`,
+//! `/v1/responses`, `/v1/messages`) plus `/v1/models`, `/v1/settings`,
+//! `/v1/user`, `/v1/storage`, and `/v1/privacy/coding-data-retention`.
+//!
+//! The inference endpoints answer from the first source that matches: a named
+//! expectation, then the path's [`ScriptedResponse`] queue, then the active
+//! mode, which echoes the last user message until
+//! [`MockInferenceServer::set_response`] replaces it with a fixed text.
 
 use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
@@ -35,10 +35,8 @@ pub struct LogEntry {
     pub method: String,
     pub path: String,
     pub body: Option<Value>,
-    /// Value of the `Authorization` header, if present.
     pub authorization: Option<String>,
-    /// Request headers (lowercase names, arrival order), captured on the
-    /// inference POST endpoints; the GET endpoints log an empty list.
+    /// Lowercase names in arrival order. Empty for the GET endpoints.
     pub headers: Vec<(String, String)>,
 }
 
@@ -53,9 +51,13 @@ impl LogEntry {
     }
 }
 
+/// An entry holds a whole conversation, so the log evicts oldest first.
+const MAX_LOGGED_REQUESTS: usize = 1024;
+
 pub struct RequestLog {
     count: AtomicU32,
     entries: std::sync::Mutex<Vec<LogEntry>>,
+    keep_entries: AtomicBool,
 }
 
 impl RequestLog {
@@ -63,6 +65,7 @@ impl RequestLog {
         Self {
             count: AtomicU32::new(0),
             entries: std::sync::Mutex::new(Vec::new()),
+            keep_entries: AtomicBool::new(true),
         }
     }
 
@@ -75,7 +78,14 @@ impl RequestLog {
         headers: Vec<(String, String)>,
     ) {
         self.count.fetch_add(1, Ordering::SeqCst);
-        self.entries.lock().unwrap().push(LogEntry {
+        if !self.keep_entries.load(Ordering::SeqCst) {
+            return;
+        }
+        let mut entries = self.entries.lock().unwrap();
+        if entries.len() >= MAX_LOGGED_REQUESTS {
+            entries.remove(0);
+        }
+        entries.push(LogEntry {
             method: method.to_string(),
             path: path.to_string(),
             body: body.cloned(),
@@ -85,28 +95,19 @@ impl RequestLog {
     }
 }
 
-type ScriptQueues = Arc<std::sync::Mutex<HashMap<String, VecDeque<ScriptedResponse>>>>;
-
-/// A model entry for the mock `/v1/models` endpoint.
+/// A model served by `/v1/models`. Each field is emitted under its camelCase
+/// name when set, at the top level except for `agent_type`, which goes in
+/// `_meta`.
 #[derive(Debug, Clone)]
 pub struct MockModelEntry {
-    /// Model ID (e.g. `"test-model"`).
     pub id: String,
-    /// Optional agent type (e.g. `"cursor"`).
-    /// Emitted as `agentType` inside `_meta` when set.
     pub agent_type: Option<String>,
-    /// Optional API backend (e.g. `"messages"`). Emitted as `apiBackend`
-    /// when set; absent means the shell's default backend.
     pub api_backend: Option<String>,
-    /// Emitted as `supportsBackendSearch` when true.
     pub supports_backend_search: bool,
-    /// Emitted as `supportsReasoningEffort` (top-level) when true.
     pub supports_reasoning_effort: bool,
-    /// Emitted as `reasoningEffort` (top-level) when set.
     pub reasoning_effort: Option<String>,
-    /// Emitted as `reasoningEfforts` (top-level) when non-empty. Each entry is a
-    /// raw JSON option (a table `{ "value": ..., "id"?, "label"?, ... }` or a
-    /// bare value string), matching what `parse_remote_model_value` reads.
+    /// Each entry is a table carrying a `value` key, or a bare value string.
+    /// `parse_remote_model_value` defines the full shape.
     pub reasoning_efforts: Vec<Value>,
 }
 
@@ -184,12 +185,10 @@ impl MockModelEntry {
     }
 }
 
-/// What the inference endpoints stream back.
 enum ResponseMode {
-    /// Echo the last user message as `Echo: <msg>` (whitespace-collapsing).
+    /// `Echo: <last user message>`, with whitespace collapsed.
     Echo,
-    /// Stream a fixed text whose deltas reconstruct it byte-for-byte
-    /// (newlines preserved — required for fenced code blocks).
+    /// Deltas reconstruct the text byte for byte, newlines included.
     Fixed(String),
 }
 
@@ -262,24 +261,19 @@ fn paced_events(
     })
 }
 
-/// Max body bytes retained on each accepted [`StorageUpload`] (keeps large
-/// e2e artifacts from ballooning test memory; meta/small dumps stay intact).
 const STORAGE_BODY_CAPTURE_CAP: usize = 256 * 1024;
 
-/// One accepted (HTTP 200) mock `/v1/storage` upload.
+/// An upload `/v1/storage` accepted.
 #[derive(Debug, Clone)]
 pub struct StorageUpload {
     pub path: String,
     pub size: usize,
-    /// Request body when `size <= 256 KiB`; empty for larger payloads.
+    /// Empty when `size` exceeds `STORAGE_BODY_CAPTURE_CAP`.
     pub body: Vec<u8>,
-    /// `Authorization` header value as sent (e.g. `Bearer …`).
     pub authorization: Option<String>,
 }
 
-/// Mock `/v1/storage` state: a flippable 401 gate plus a record of accepted
-/// uploads, so e2e tests can simulate an auth outage window and assert the
-/// trace upload queue parks, then drains after the gate heals.
+/// A 401 gate tests can flip, plus the uploads accepted through it.
 #[derive(Default)]
 struct StorageState {
     unauthorized: AtomicBool,
@@ -297,34 +291,27 @@ pub struct MockInferenceServer {
     models: Arc<std::sync::RwLock<Vec<Value>>>,
     settings: Arc<std::sync::RwLock<Option<Value>>>,
     response_mode: Arc<std::sync::RwLock<ResponseMode>>,
-    scripted: ScriptQueues,
-    /// Per-agent-turn assistant texts (see [`set_agent_turns`]).
-    ///
-    /// [`set_agent_turns`]: Self::set_agent_turns
+    overrides: InferenceOverrides,
+    /// One assistant text per agent turn, consumed in order.
     agent_turns: Arc<std::sync::Mutex<VecDeque<String>>>,
-    /// `stop_reason` emitted by the `/v1/messages` terminal `message_delta`.
+    /// `stop_reason` on the `/v1/messages` terminal `message_delta`.
     messages_stop_reason: Arc<std::sync::RwLock<String>>,
     /// Optional per-SSE-event delay on all inference endpoints. `None`
     /// (default) streams instantly; `Some(d)` holds the turn "streaming" long
     /// enough for tests to interact with it mid-flight (e.g. Esc-cancel).
     chunk_delay: Arc<std::sync::RwLock<Option<Duration>>>,
-    /// Mock `/v1/storage` 401 gate + accepted-upload record.
     storage: Arc<StorageState>,
-    /// Opt-in barrier holding agent turns' terminal event (see
-    /// [`Self::hold_agent_completions`]). Inert until a test holds it.
-    completion_gate: Arc<CompletionGate>,
-    /// See [`Self::set_user_subscription_tier`].
+    /// When set, `/v1/models` and `/v1/settings` never respond.
+    hang: Arc<std::sync::atomic::AtomicBool>,
     user_tier: Arc<std::sync::RwLock<Option<String>>>,
 }
 
 impl MockInferenceServer {
-    /// Start with a single default `test-model` (no agent_type).
+    /// Serves one `test-model` with no agent type.
     pub async fn start() -> anyhow::Result<Self> {
         Self::start_with_models(vec![MockModelEntry::new("test-model")]).await
     }
 
-    /// Start with custom models. Use [`MockModelEntry::with_agent_type`] to
-    /// configure models with specific harness types for agent-type tests.
     pub async fn start_with_models(models: Vec<MockModelEntry>) -> anyhow::Result<Self> {
         Self::start_inner(models, None).await
     }
@@ -410,24 +397,18 @@ impl MockInferenceServer {
         })
     }
 
-    /// Replace the model list at runtime. The next `/v1/models` request
-    /// (e.g. during session resume) will return the new list.
     pub fn set_models(&self, models: Vec<MockModelEntry>) {
         let mut guard = self.models.write().unwrap();
         *guard = models.iter().map(MockModelEntry::to_json).collect();
     }
 
-    /// Stream this fixed text from all inference endpoints instead of echoing
-    /// the user message. Deltas reconstruct the text byte-for-byte (newlines
-    /// preserved). Subsequent calls replace the text.
+    /// Stream this text instead of echoing. Deltas reconstruct it byte for byte.
     pub fn set_response(&self, text: impl Into<String>) {
         *self.response_mode.write().unwrap() = ResponseMode::Fixed(text.into());
     }
 
-    /// Queue a [`ScriptedResponse`] for the next request on `path` (e.g.
-    /// `"/v1/chat/completions"`). Scripts are consumed FIFO per path by the
-    /// three inference endpoints; when a path's queue is empty, requests fall
-    /// back to the active response mode (echo/fixed).
+    /// Consumed FIFO per `path`, e.g. `"/v1/chat/completions"`. An empty queue
+    /// falls back to the response mode.
     pub fn enqueue_response(&self, path: impl Into<String>, response: ScriptedResponse) {
         // Fail at the call site, not at serve time.
         response.validate();
@@ -439,66 +420,54 @@ impl MockInferenceServer {
             .push_back(response);
     }
 
-    /// Queue one byte-exact response per agent turn, consumed FIFO. Only
-    /// requests carrying 2+ tools count as agent turns, so aux requests
-    /// (title/classifier) never steal a turn; an empty queue falls back to
-    /// the active response mode.
+    /// Queue one byte-exact response per foreground turn.
     pub fn set_agent_turns(&self, turns: impl IntoIterator<Item = String>) {
         *self.agent_turns.lock().unwrap() = turns.into_iter().collect();
     }
 
-    /// Replace the settings at runtime. The next `GET /v1/settings` request
-    /// will return the new value as JSON. Until set, `/v1/settings` returns 404.
+    /// Until this is called, `GET /v1/settings` returns 404.
     pub fn set_settings(&self, settings: impl serde::Serialize) {
         let value = serde_json::to_value(settings).expect("serialize settings");
         let mut guard = self.settings.write().unwrap();
         *guard = Some(value);
     }
 
-    /// Preset `/v1/settings` to the minimal `{"allow_access": true}` payload
-    /// that opens the subscription gate (clients treat a missing field as
-    /// `false` and would sit on the upsell screen).
+    /// The smallest settings payload that opens the subscription gate. Without
+    /// it a client sits on the upsell screen.
     pub fn preset_allow_access(&self) {
         self.set_settings(json!({ "allow_access": true }));
     }
 
-    /// Set the `subscriptionTier` served by `GET /v1/user`. `None`
-    /// (default) omits the field, which the shell treats as "no qualifying
-    /// subscription" (free tier).
+    /// Stand in for a black-holed backend.
+    pub fn set_hang(&self, hang: bool) {
+        self.hang.store(hang, std::sync::atomic::Ordering::Release);
+    }
+
+    /// The `subscriptionTier` on `GET /v1/user`. `None`, the default, omits the
+    /// field, which the shell reads as the free tier.
     pub fn set_user_subscription_tier(&self, tier: Option<&str>) {
         *self.user_tier.write().unwrap() = tier.map(str::to_owned);
     }
 
-    /// Set the `stop_reason` emitted by the `/v1/messages` terminal
-    /// `message_delta` (default `"end_turn"`).
+    /// Defaults to `"end_turn"`.
     pub fn set_messages_stop_reason(&self, stop_reason: impl Into<String>) {
         *self.messages_stop_reason.write().unwrap() = stop_reason.into();
     }
 
-    /// Pace all inference SSE streams: each event is emitted after `delay`.
-    /// `None` (default) restores instant streaming. Lets PTY e2e tests hold a
-    /// turn visibly "streaming" long enough to interact with it mid-flight
-    /// (e.g. Esc-cancel). Applies to requests started after the call.
+    /// Emit each SSE event after `delay`, so a test can hold a turn visibly
+    /// streaming. `None` restores instant streaming. Applies to requests
+    /// started after the call.
     pub fn set_chunk_delay(&self, delay: Option<Duration>) {
         *self.chunk_delay.write().unwrap() = delay;
     }
 
-    /// Hold every agent turn's terminal SSE event until
-    /// [`release_agent_completions`] is called, keeping the turn
-    /// deterministically "streaming-but-not-complete". Lets a test interact
-    /// with a running turn (e.g. queue edits/removals) without racing turn
-    /// end. Content deltas still stream normally; only completion is gated.
-    /// Inert for tests that never call this.
-    ///
-    /// [`release_agent_completions`]: Self::release_agent_completions
+    /// Hold foreground terminal SSE events until
+    /// [`Self::release_agent_completions`]. Prefer per-expectation blocking.
     pub fn hold_agent_completions(&self) {
         self.completion_gate.hold();
     }
 
-    /// Release a hold set by [`hold_agent_completions`], letting held (and
-    /// future) agent turns emit their terminal event and complete.
-    ///
-    /// [`hold_agent_completions`]: Self::hold_agent_completions
+    /// Let held and future agent turns emit their terminal event.
     pub fn release_agent_completions(&self) {
         self.completion_gate.release();
     }
@@ -510,6 +479,11 @@ impl MockInferenceServer {
 
     pub fn request_count(&self) -> u32 {
         self.log.count.load(Ordering::SeqCst)
+    }
+
+    /// Stop retaining entries. [`Self::request_count`] stays exact.
+    pub fn set_keep_requests(&self, enabled: bool) {
+        self.log.keep_entries.store(enabled, Ordering::SeqCst);
     }
 
     pub fn requests(&self) -> Vec<LogEntry> {
@@ -596,8 +570,7 @@ impl MockInferenceServer {
             })
     }
 
-    /// Flip the mock `/v1/storage` 401 gate. While `true`, every upload is
-    /// rejected with 401 (the auth-outage window the park-on-401 e2e drives).
+    /// While closed, every `/v1/storage` upload is rejected with 401.
     pub fn set_storage_unauthorized(&self, unauthorized: bool) {
         self.storage
             .unauthorized
@@ -609,14 +582,13 @@ impl MockInferenceServer {
         self.storage.request_count.load(Ordering::SeqCst)
     }
 
-    /// Snapshot of accepted (HTTP 200) `/v1/storage` uploads.
+    /// Only the uploads that were accepted.
     pub fn storage_uploads(&self) -> Vec<StorageUpload> {
         self.storage.uploads.lock().unwrap().clone()
     }
 
-    /// Mock `/v1/storage` upload: count the attempt, reject with 401 while the
-    /// gate is closed, else record the upload and mirror the proxy's
-    /// `UploadResponse` JSON shape.
+    /// Counts the attempt, then either rejects it or records it and answers in
+    /// the proxy's `UploadResponse` shape.
     fn storage_upload_handler(
         storage: &StorageState,
         headers: &HeaderMap,
@@ -1018,12 +990,13 @@ impl MockInferenceServer {
                         let scripted = scripted_settings.clone();
                         async move {
                             log.record("GET", "/v1/settings", None, None, Vec::new());
-                            // Scripted one-shots take precedence (FIFO), so a
-                            // test can serve a transient payload (e.g. one
-                            // stale gated snapshot) and fall back to the
-                            // steady-state `set_settings` value afterwards.
-                            if let Some(s) = Self::pop_scripted(&scripted, "/v1/settings") {
-                                return s.into_response_paced(None);
+                            if hang.load(std::sync::atomic::Ordering::Acquire) {
+                                tokio::time::sleep(Duration::from_secs(3600)).await;
+                            }
+                            // Scripts take precedence, so a test can serve a
+                            // transient payload before the steady-state value.
+                            if let Some(s) = overrides.pop_scripted("/v1/settings") {
+                                return s.into_response_paced(None, None).await;
                             }
                             let maybe = settings.read().unwrap().clone();
                             match maybe {
@@ -1041,9 +1014,8 @@ impl MockInferenceServer {
                         let log = log.clone();
                         let user_tier = user_tier.clone();
                         async move {
-                            // Keep the query string in the log so tests can
-                            // count `?include=subscription` checks separately
-                            // from plain enrichment fetches.
+                            // Log the query string so a test can count
+                            // `?include=subscription` on its own.
                             let path = match query {
                                 Some(q) if !q.is_empty() => format!("/v1/user?{q}"),
                                 _ => "/v1/user".to_owned(),
@@ -1072,9 +1044,8 @@ impl MockInferenceServer {
                     }
                 }),
             )
-            // The shell probes these before/alongside per-file uploads. Answer
-            // 404 ("old proxy") so it falls back to plain `POST /v1/storage`,
-            // which is the path the park-on-401 e2e exercises.
+            // 404 reads as an old proxy, so the shell falls back to a plain
+            // `POST /v1/storage`.
             .route(
                 "/v1/storage/exists",
                 get(|| async { StatusCode::NOT_FOUND }),
@@ -1175,6 +1146,502 @@ mod tests {
             .send()
             .await
             .expect("POST /v1/chat/completions")
+    }
+
+    async fn post_foreground(
+        server: &MockInferenceServer,
+        endpoint: InferenceEndpoint,
+        request_id: &str,
+        content: &str,
+    ) -> reqwest::Response {
+        reqwest::Client::new()
+            .post(endpoint_url(server, endpoint))
+            .header("x-grok-req-id", request_id)
+            .header("x-grok-turn-idx", "1")
+            .json(&foreground_body(endpoint, content))
+            .send()
+            .await
+            .expect("POST foreground inference request")
+    }
+
+    async fn read_foreground(
+        server: &MockInferenceServer,
+        endpoint: InferenceEndpoint,
+        request_id: &str,
+        content: &str,
+    ) -> (reqwest::StatusCode, String) {
+        let response = post_foreground(server, endpoint, request_id, content).await;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .expect("read foreground response body");
+        (status, body)
+    }
+
+    async fn read_foreground_body(
+        server: &MockInferenceServer,
+        endpoint: InferenceEndpoint,
+        request_id: &str,
+        body: Value,
+    ) -> (reqwest::StatusCode, String) {
+        let response = reqwest::Client::new()
+            .post(endpoint_url(server, endpoint))
+            .header("x-grok-req-id", request_id)
+            .header("x-grok-turn-idx", "1")
+            .json(&body)
+            .send()
+            .await
+            .expect("POST foreground inference request");
+        let status = response.status();
+        let body = response.text().await.expect("read inference response body");
+        (status, body)
+    }
+
+    #[test]
+    fn explicit_request_headers_override_tool_count_heuristic() {
+        let overrides = InferenceOverrides::new(None);
+        let body = foreground_body(InferenceEndpoint::ChatCompletions, "title");
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-grok-req-id", "title-request".parse().unwrap());
+        assert!(
+            !overrides
+                .classify(InferenceEndpoint::ChatCompletions, &headers, &body)
+                .is_foreground()
+        );
+
+        headers.insert("x-grok-turn-idx", "1".parse().unwrap());
+        assert!(
+            overrides
+                .classify(InferenceEndpoint::ChatCompletions, &headers, &body)
+                .is_foreground()
+        );
+
+        headers.insert("x-grok-req-id", "".parse().unwrap());
+        headers.insert("x-grok-turn-idx", "".parse().unwrap());
+        assert!(
+            overrides
+                .classify(InferenceEndpoint::ChatCompletions, &headers, &body)
+                .is_foreground()
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_entries_keeps_the_count_exact() {
+        let server = MockInferenceServer::start().await.unwrap();
+        post_chat(&server, "kept").await;
+        let counted = server.request_count();
+        let kept = server.requests().len();
+
+        server.set_keep_requests(false);
+        post_chat(&server, "dropped").await;
+
+        assert_eq!(server.request_count(), counted + 1);
+        let entries = server.requests();
+        assert_eq!(entries.len(), kept);
+        assert!(
+            format!("{:?}", entries.last().unwrap().body).contains("kept"),
+            "the surviving entry should be the one recorded before the switch"
+        );
+    }
+
+    #[tokio::test]
+    async fn auxiliary_request_does_not_consume_foreground_expectation() {
+        let server = MockInferenceServer::start().await.unwrap();
+        let mut expected = server.expect_response(
+            "foreground turn",
+            InferenceRequestMatcher::foreground(InferenceEndpoint::ChatCompletions),
+            ScriptedResponse::text(209, "foreground"),
+        );
+
+        let aux = post_chat(&server, "generate a title").await;
+        assert_eq!(aux.status(), 200);
+        assert!(!expected.is_satisfied());
+
+        let (status, body) = read_foreground(
+            &server,
+            InferenceEndpoint::ChatCompletions,
+            "turn-1",
+            "run the task",
+        )
+        .await;
+        assert_eq!(status.as_u16(), 209);
+        assert_eq!(body, "foreground");
+        expected.wait_received().await;
+        expected.wait_satisfied().await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_matching_requests_claim_each_expectation_once() {
+        let server = MockInferenceServer::start().await.unwrap();
+        let mut first = server.expect_response(
+            "first concurrent turn",
+            InferenceRequestMatcher::foreground(InferenceEndpoint::ChatCompletions),
+            ScriptedResponse::text(210, "first"),
+        );
+        let mut second = server.expect_response(
+            "second concurrent turn",
+            InferenceRequestMatcher::foreground(InferenceEndpoint::ChatCompletions),
+            ScriptedResponse::text(211, "second"),
+        );
+
+        let (left, right) = tokio::join!(
+            read_foreground(
+                &server,
+                InferenceEndpoint::ChatCompletions,
+                "concurrent-left",
+                "left",
+            ),
+            read_foreground(
+                &server,
+                InferenceEndpoint::ChatCompletions,
+                "concurrent-right",
+                "right",
+            )
+        );
+        let mut responses = vec![(left.0.as_u16(), left.1), (right.0.as_u16(), right.1)];
+        responses.sort_unstable();
+        assert_eq!(
+            responses,
+            vec![(210, "first".to_owned()), (211, "second".to_owned())]
+        );
+        first.wait_satisfied().await;
+        second.wait_satisfied().await;
+    }
+
+    #[tokio::test]
+    async fn blocked_expectation_reports_lifecycle_and_drop_releases() {
+        let server = MockInferenceServer::start().await.unwrap();
+        let mut expected = server.expect_response_blocked(
+            "blocked foreground turn",
+            InferenceRequestMatcher::foreground(InferenceEndpoint::ChatCompletions),
+            ScriptedResponse::sse(vec![
+                SseEvent::data(r#"{"chunk":1}"#),
+                SseEvent::data("done"),
+            ]),
+        );
+        let request = read_foreground(
+            &server,
+            InferenceEndpoint::ChatCompletions,
+            "blocked-turn",
+            "block me",
+        );
+        tokio::pin!(request);
+
+        tokio::select! {
+            response = &mut request => panic!("blocked expectation completed early: {:?}", response.0),
+            _ = expected.wait_blocked() => {}
+        }
+        assert!(!expected.is_satisfied());
+        let diagnostic = expected.diagnostic();
+        assert!(diagnostic.contains("blocked foreground turn"));
+        assert!(diagnostic.contains("Blocked"));
+        drop(expected);
+        let (status, _) = tokio::time::timeout(Duration::from_secs(1), request)
+            .await
+            .expect("dropping handle releases blocked response");
+        assert_eq!(status.as_u16(), 200);
+    }
+
+    #[tokio::test]
+    async fn concurrent_retry_obeys_same_barrier_and_primary_owns_satisfaction() {
+        let server = MockInferenceServer::start().await.unwrap();
+        let mut expected = server.expect_response_blocked(
+            "blocked retry",
+            InferenceRequestMatcher::foreground(InferenceEndpoint::Responses),
+            ScriptedResponse::sse(vec![SseEvent::data("chunk"), SseEvent::data("terminal")]),
+        );
+        let first = read_foreground(
+            &server,
+            InferenceEndpoint::Responses,
+            "same-call",
+            "same body",
+        );
+        tokio::pin!(first);
+        tokio::select! {
+            response = &mut first => panic!("primary completed before barrier: {:?}", response.0),
+            _ = expected.wait_blocked() => {}
+        }
+
+        let retry = read_foreground(
+            &server,
+            InferenceEndpoint::Responses,
+            "same-call",
+            "same body",
+        );
+        tokio::pin!(retry);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut retry)
+                .await
+                .is_err(),
+            "retry bypassed the shared release barrier"
+        );
+        assert!(!expected.is_satisfied());
+
+        expected.release();
+        let ((first_status, _), (retry_status, _)) = tokio::join!(first, retry);
+        assert_eq!(first_status.as_u16(), 200);
+        assert_eq!(retry_status.as_u16(), 200);
+        expected.wait_satisfied().await;
+    }
+
+    #[tokio::test]
+    async fn release_only_signals_and_late_blocked_waiters_still_succeed() {
+        let server = MockInferenceServer::start().await.unwrap();
+        let mut expected = server.expect_response_blocked(
+            "release ownership",
+            InferenceRequestMatcher::foreground(InferenceEndpoint::Responses),
+            ScriptedResponse::json(200, json!({ "ok": true })),
+        );
+        let request = read_foreground(
+            &server,
+            InferenceEndpoint::Responses,
+            "release-ownership",
+            "hello",
+        );
+        tokio::pin!(request);
+        tokio::select! {
+            response = &mut request => panic!("response completed before barrier: {:?}", response.0),
+            _ = expected.wait_blocked() => {}
+        }
+
+        expected.release();
+        assert!(!expected.is_satisfied());
+        let (status, _) = request.await;
+        assert_eq!(status.as_u16(), 200);
+        expected.wait_satisfied().await;
+        expected.wait_blocked().await;
+    }
+
+    #[tokio::test]
+    async fn overlapping_duplicate_replays_but_sequential_identical_request_claims_next() {
+        let server = MockInferenceServer::start().await.unwrap();
+        let mut first = server.expect_response_blocked(
+            "overlapping call",
+            InferenceRequestMatcher::foreground(InferenceEndpoint::Responses),
+            ScriptedResponse::sse(vec![SseEvent::data("first"), SseEvent::data("terminal")]),
+        );
+        let mut second = server.expect_response(
+            "later identical call",
+            InferenceRequestMatcher::foreground(InferenceEndpoint::Responses),
+            ScriptedResponse::text(215, "second expectation"),
+        );
+
+        let primary = read_foreground(
+            &server,
+            InferenceEndpoint::Responses,
+            "turn-id",
+            "same body",
+        );
+        tokio::pin!(primary);
+        tokio::select! {
+            response = &mut primary => panic!("primary completed before barrier: {:?}", response.0),
+            _ = first.wait_blocked() => {}
+        }
+        let replay = tokio::spawn({
+            let url = endpoint_url(&server, InferenceEndpoint::Responses);
+            let body = foreground_body(InferenceEndpoint::Responses, "same body");
+            async move {
+                let response = reqwest::Client::new()
+                    .post(url)
+                    .header("x-grok-req-id", "turn-id")
+                    .header("x-grok-turn-idx", "1")
+                    .json(&body)
+                    .send()
+                    .await
+                    .expect("POST overlapping duplicate");
+                let status = response.status();
+                let body = response.text().await.expect("read overlapping duplicate");
+                (status, body)
+            }
+        });
+        first.wait_claims(2).await;
+        assert!(
+            !replay.is_finished(),
+            "overlapping duplicate bypassed shared barrier"
+        );
+        first.release();
+        let (primary_result, replay_result) = tokio::join!(primary, replay);
+        let (primary_status, _) = primary_result;
+        let (replay_status, _) = replay_result.expect("replay task");
+        assert_eq!(primary_status.as_u16(), 200);
+        assert_eq!(replay_status.as_u16(), 200);
+        first.wait_satisfied().await;
+
+        let (status, body) = read_foreground(
+            &server,
+            InferenceEndpoint::Responses,
+            "turn-id",
+            "same body",
+        )
+        .await;
+        assert_eq!(status.as_u16(), 215);
+        assert_eq!(body, "second expectation");
+        second.wait_satisfied().await;
+    }
+
+    #[tokio::test]
+    async fn changed_body_followup_claims_next_expectation() {
+        let server = MockInferenceServer::start().await.unwrap();
+        let mut first = server.expect_response(
+            "tool call",
+            InferenceRequestMatcher::foreground(InferenceEndpoint::Responses),
+            ScriptedResponse::text(214, "tool-call-script"),
+        );
+        let mut followup = server.expect_response(
+            "tool follow-up",
+            InferenceRequestMatcher::foreground(InferenceEndpoint::Responses),
+            ScriptedResponse::text(215, "follow-up-script"),
+        );
+        let first_body = foreground_body(InferenceEndpoint::Responses, "run tool");
+        let (status, body) =
+            read_foreground_body(&server, InferenceEndpoint::Responses, "turn-id", first_body)
+                .await;
+        assert_eq!(status.as_u16(), 214);
+        assert_eq!(body, "tool-call-script");
+        first.wait_satisfied().await;
+
+        let mut followup_body = foreground_body(InferenceEndpoint::Responses, "run tool");
+        followup_body["input"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "type": "function_call_output", "call_id": "call_1", "output": "done" }));
+        let (status, body) = read_foreground_body(
+            &server,
+            InferenceEndpoint::Responses,
+            "turn-id",
+            followup_body,
+        )
+        .await;
+        assert_eq!(status.as_u16(), 215);
+        assert_eq!(body, "follow-up-script");
+        followup.wait_satisfied().await;
+    }
+
+    #[tokio::test]
+    async fn cancelling_primary_cleans_up_without_satisfying_or_replaying() {
+        let server = MockInferenceServer::start().await.unwrap();
+        let mut cancelled = server.expect_response_blocked(
+            "cancel primary",
+            InferenceRequestMatcher::foreground(InferenceEndpoint::Responses),
+            ScriptedResponse::sse(vec![SseEvent::data("chunk"), SseEvent::data("terminal")]),
+        );
+        let mut next = server.expect_response(
+            "after cancellation",
+            InferenceRequestMatcher::foreground(InferenceEndpoint::Responses),
+            ScriptedResponse::text(216, "next expectation"),
+        );
+        let request = Box::pin(read_foreground(
+            &server,
+            InferenceEndpoint::Responses,
+            "cancel-primary",
+            "same body",
+        ));
+        let mut request = request;
+        tokio::select! {
+            response = &mut request => panic!("primary completed before cancellation: {:?}", response.0),
+            _ = cancelled.wait_blocked() => {}
+        }
+        drop(request);
+        assert!(!cancelled.is_satisfied());
+
+        let (status, body) = read_foreground(
+            &server,
+            InferenceEndpoint::Responses,
+            "cancel-primary",
+            "same body",
+        )
+        .await;
+        assert_eq!(status.as_u16(), 216);
+        assert_eq!(body, "next expectation");
+        next.wait_satisfied().await;
+    }
+
+    #[tokio::test]
+    async fn cancelling_replay_waits_for_primary_before_satisfaction() {
+        let server = MockInferenceServer::start().await.unwrap();
+        let mut expected = server.expect_response_blocked(
+            "cancel replay",
+            InferenceRequestMatcher::foreground(InferenceEndpoint::Responses),
+            ScriptedResponse::sse(vec![SseEvent::data("chunk"), SseEvent::data("terminal")]),
+        );
+        let primary = read_foreground(
+            &server,
+            InferenceEndpoint::Responses,
+            "cancel-replay",
+            "same body",
+        );
+        tokio::pin!(primary);
+        tokio::select! {
+            response = &mut primary => panic!("primary completed before barrier: {:?}", response.0),
+            _ = expected.wait_blocked() => {}
+        }
+
+        let replay = tokio::spawn({
+            let url = endpoint_url(&server, InferenceEndpoint::Responses);
+            let body = foreground_body(InferenceEndpoint::Responses, "same body");
+            async move {
+                reqwest::Client::new()
+                    .post(url)
+                    .header("x-grok-req-id", "cancel-replay")
+                    .header("x-grok-turn-idx", "1")
+                    .json(&body)
+                    .send()
+                    .await
+                    .expect("POST replay cancellation")
+                    .text()
+                    .await
+                    .expect("read replay cancellation")
+            }
+        });
+        expected.wait_claims(2).await;
+        assert!(!replay.is_finished(), "replay bypassed shared barrier");
+        replay.abort();
+        let _ = replay.await;
+        assert!(!expected.is_satisfied());
+
+        expected.release();
+        let (status, _) = primary.await;
+        assert_eq!(status.as_u16(), 200);
+        expected.wait_satisfied().await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "duplicate inference expectation name `duplicate`")]
+    async fn duplicate_expectation_names_are_rejected() {
+        let server = MockInferenceServer::start().await.unwrap();
+        let _first = server.expect_response(
+            "duplicate",
+            InferenceRequestMatcher::foreground(InferenceEndpoint::Responses),
+            ScriptedResponse::text(200, "first"),
+        );
+        let _second = server.expect_response(
+            "duplicate",
+            InferenceRequestMatcher::auxiliary(InferenceEndpoint::Responses),
+            ScriptedResponse::text(200, "second"),
+        );
+    }
+
+    #[tokio::test]
+    async fn unsatisfied_expectation_diagnostic_includes_name_and_state() {
+        let server = MockInferenceServer::start().await.unwrap();
+        let expected = server.expect_response(
+            "must receive a foreground turn",
+            InferenceRequestMatcher::foreground(InferenceEndpoint::Responses),
+            ScriptedResponse::text(200, "unused"),
+        );
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            expected.assert_satisfied();
+        }))
+        .expect_err("unsatisfied expectation must panic");
+        let message = panic
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+            .unwrap_or_default();
+        assert!(message.contains("must receive a foreground turn"));
+        assert!(message.contains("Pending"));
     }
 
     #[tokio::test]

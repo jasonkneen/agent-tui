@@ -1286,6 +1286,134 @@ fn acquire_init_lock(grok_home: &std::path::Path) -> std::io::Result<std::fs::Fi
     ))
 }
 
+fn is_default_skills_plugin_subdir(plugin_subdir: &str) -> bool {
+    plugin_subdir == "default-skills"
+}
+
+fn default_skills_repo_keys<'a>(
+    repos: impl IntoIterator<
+        Item = (
+            &'a str,
+            &'a agent_tui_agent::plugins::install_registry::InstalledRepo,
+        ),
+    >,
+) -> Vec<&'a str> {
+    repos
+        .into_iter()
+        .filter_map(|(key, repo)| {
+            repo.marketplace
+                .as_ref()
+                .filter(|mp| is_default_skills_plugin_subdir(&mp.plugin_subdir))
+                .map(|_| key)
+        })
+        .collect()
+}
+
+fn set_default_skills_installs_purged(config_path: &std::path::Path) -> std::io::Result<()> {
+    set_marketplace_bool_flag(config_path, "default_skills_installs_purged")
+}
+
+fn read_default_skills_installs_purged(config_path: &std::path::Path) -> bool {
+    read_marketplace_bool_flag(config_path, "default_skills_installs_purged")
+}
+
+/// One-shot purge of legacy marketplace `default-skills` installs.
+///
+/// Gated by sticky `default_skills_installs_purged` in config.toml. Best-effort:
+/// errors are logged and never block startup.
+pub(crate) fn purge_default_skills_installs(grok_home: &std::path::Path) {
+    purge_default_skills_installs_impl(grok_home, || {
+        agent_tui_agent::plugins::install_registry::InstallRegistry::try_load_from(
+            agent_tui_agent::plugins::install_registry::InstallRegistry::resolve_install_dir(),
+        )
+    });
+}
+
+fn purge_default_skills_installs_impl(
+    grok_home: &std::path::Path,
+    load_registry: impl FnOnce() -> Result<
+        agent_tui_agent::plugins::install_registry::InstallRegistry,
+        agent_tui_agent::plugins::install_registry::InstallError,
+    >,
+) {
+    let config_path = grok_home.join("config.toml");
+
+    if read_default_skills_installs_purged(&config_path) {
+        return;
+    }
+
+    let _lock = match acquire_init_lock(grok_home) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %grok_home.join(".config-init.lock").display(),
+                "skipping default-skills purge: failed to acquire init lock"
+            );
+            return;
+        }
+    };
+
+    if read_default_skills_installs_purged(&config_path) {
+        return;
+    }
+
+    let mut registry = match load_registry() {
+        Ok(reg) => reg,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "skipping default-skills purge: failed to load install registry"
+            );
+            return;
+        }
+    };
+    let keys: Vec<String> = default_skills_repo_keys(registry.list())
+        .into_iter()
+        .map(|k| k.to_string())
+        .collect();
+
+    for key in &keys {
+        let path = registry
+            .get_repo(key)
+            .map(|r| r.path.clone())
+            .unwrap_or_else(|| registry.install_dir().join(key));
+        if path.exists()
+            && let Err(e) = std::fs::remove_dir_all(&path)
+        {
+            let _ = std::fs::remove_file(&path);
+            if path.exists() {
+                tracing::warn!(
+                    error = %e,
+                    path = %path.display(),
+                    repo_key = %key,
+                    "failed to remove default-skills install dir"
+                );
+            }
+        }
+        registry.remove(key);
+    }
+
+    if !keys.is_empty() {
+        if let Err(e) = registry.save() {
+            tracing::warn!(error = %e, "failed to save registry after default-skills purge");
+            return;
+        }
+        tracing::info!(
+            count = keys.len(),
+            "purged legacy default-skills marketplace installs"
+        );
+    }
+
+    if let Err(e) = set_default_skills_installs_purged(&config_path) {
+        tracing::warn!(
+            error = %e,
+            path = %config_path.display(),
+            "failed to set default_skills_installs_purged flag"
+        );
+    }
+}
+
 /// Auto-register the official xAI marketplace source on first run.
 ///
 /// Gated by the caller (`init_process`); see
@@ -1293,7 +1421,7 @@ fn acquire_init_lock(grok_home: &std::path::Path) -> std::io::Result<std::fs::Fi
 /// `official_marketplace_auto_installed` is set. Under a process-wide flock it
 /// adds the source (or just sets the flag if it's already present in config.toml
 /// or a JSON store). Best-effort: errors are logged and never block startup.
-pub fn ensure_official_marketplace_source(grok_home: &std::path::Path) {
+pub(crate) fn ensure_official_marketplace_source(grok_home: &std::path::Path) {
     let config_path = grok_home.join("config.toml");
 
     if read_official_marketplace_auto_installed(&config_path) {

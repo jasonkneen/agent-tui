@@ -60,7 +60,15 @@ impl OidcRefresher {
         &self,
         message: String,
         tried_key: Option<String>,
+        network_unreachable: bool,
     ) -> RefreshOutcome {
+        // Never reached the IdP → proves nothing about the credential: don't
+        // consume the escalation budget (and don't reset it — only real
+        // refresh progress does). See `OidcRefreshResult::Failed`.
+        if network_unreachable {
+            tracing::debug!(%message, "auth: transient refresh failure (network unreachable), not counted toward escalation");
+            return RefreshOutcome::transient(message);
+        }
         let escalate = {
             let mut budget = self.transient_budget.lock();
             // Re-arm when the credential changes so a fresh token never inherits
@@ -106,8 +114,8 @@ impl OidcRefresher {
                 "oidc refresh: disk has valid AT, adopting instead of consuming RT",
                 None,
                 Some(serde_json::json!({
-                    "disk_key_prefix": crate::auth::token_suffix(&disk_now.key),
-                    "tried_key_prefix": crate::auth::token_suffix(&tried.key),
+                    "disk_key_prefix": agent_tui_auth::bearer_suffix(&disk_now.key),
+                    "tried_key_prefix": agent_tui_auth::bearer_suffix(&tried.key),
                 })),
             );
             self.note_refresh_progress();
@@ -127,11 +135,11 @@ impl OidcRefresher {
                 "tried_rt_prefix": tried
                     .refresh_token
                     .as_deref()
-                    .map(crate::auth::token_suffix),
+                    .map(agent_tui_auth::bearer_suffix),
                 "disk_rt_prefix": disk_now
                     .refresh_token
                     .as_deref()
-                    .map(crate::auth::token_suffix),
+                    .map(agent_tui_auth::bearer_suffix),
             })),
         );
 
@@ -146,12 +154,9 @@ impl OidcRefresher {
                     None,
                     Some(serde_json::json!({ "reason": format!("{reason:?}") })),
                 );
-                Some(RefreshOutcome::permanent(
-                    reason,
-                    Some(disk_now.key.clone()),
-                ))
+                Some(RefreshOutcome::permanent_for(reason, &disk_now))
             }
-            OidcRefreshResult::Failed => {
+            OidcRefreshResult::Failed { .. } => {
                 Some(RefreshOutcome::transient("OIDC disk-retry refresh failed"))
             }
         }
@@ -185,7 +190,7 @@ impl TokenRefresher for OidcRefresher {
                 "oidc refresh: sibling refreshed, adopting valid disk AT",
                 None,
                 Some(serde_json::json!({
-                    "disk_key_prefix": crate::auth::token_suffix(&d.key),
+                    "disk_key_prefix": agent_tui_auth::bearer_suffix(&d.key),
                 })),
             );
             self.note_refresh_progress();
@@ -214,9 +219,13 @@ impl TokenRefresher for OidcRefresher {
             })),
         );
 
-        // Snapshot for diagnostic upload on failure.
-        let pre_token = crate::auth::model::token_suffix(&auth.key).to_owned();
-        let pre_email = auth.email.clone().unwrap_or_else(|| "unknown".into());
+        // Snapshot for diagnostic upload on failure (user id, never email).
+        let pre_token = agent_tui_auth::bearer_suffix(&auth.key).to_owned();
+        let pre_user_id = if auth.user_id.is_empty() {
+            "unknown".into()
+        } else {
+            auth.user_id.clone()
+        };
 
         match crate::auth::oidc::oidc_token_exchange(&auth).await {
             OidcRefreshResult::Success(new_auth) => {
@@ -235,13 +244,16 @@ impl TokenRefresher for OidcRefresher {
                 if let Some(uploader) = &self.diagnostic_uploader {
                     spawn_diagnostic_upload(uploader, pre_token, pre_email, &self.upload_in_flight);
                 }
-                RefreshOutcome::permanent(reason, Some(auth.key.clone()))
+                RefreshOutcome::permanent_for(reason, &auth)
             }
-            OidcRefreshResult::Failed => {
+            OidcRefreshResult::Failed {
+                network_unreachable,
+            } => {
                 tracing::warn!(
                     refresh_reason = ?reason,
                     user_id = %auth.user_id,
                     has_refresh_token = auth.refresh_token.is_some(),
+                    network_unreachable,
                     issuer = ?auth.oidc_issuer,
                     client_id = ?auth.oidc_client_id,
                     expires_at = ?auth.expires_at,
@@ -253,6 +265,7 @@ impl TokenRefresher for OidcRefresher {
                     Some(serde_json::json!({
                         "has_refresh_token": auth.refresh_token.is_some(),
                         "auth_mode": format!("{:?}", auth.auth_mode),
+                        "network_unreachable": network_unreachable,
                         "issuer": auth.oidc_issuer,
                         "client_id": auth.oidc_client_id,
                         "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
@@ -264,6 +277,7 @@ impl TokenRefresher for OidcRefresher {
                 self.record_transient_failure(
                     "OIDC token refresh failed".into(),
                     Some(auth.key.clone()),
+                    network_unreachable,
                 )
             }
         }

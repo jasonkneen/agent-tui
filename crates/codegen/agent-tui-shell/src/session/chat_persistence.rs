@@ -15,13 +15,13 @@ use super::persistence::PersistenceMsg;
 /// - `persist_message` → `PersistenceMsg::Chat`
 /// - `replace_history` → `PersistenceMsg::ReplaceChatHistory`
 /// - `flush` → `PersistenceMsg::Flush`
-pub struct ChannelChatPersistence {
+pub(crate) struct ChannelChatPersistence {
     tx: mpsc::UnboundedSender<PersistenceMsg>,
 }
 
 impl ChannelChatPersistence {
     /// Create a new `ChannelChatPersistence` wrapping the given persistence channel.
-    pub fn new(tx: mpsc::UnboundedSender<PersistenceMsg>) -> Self {
+    pub(crate) fn new(tx: mpsc::UnboundedSender<PersistenceMsg>) -> Self {
         Self { tx }
     }
 }

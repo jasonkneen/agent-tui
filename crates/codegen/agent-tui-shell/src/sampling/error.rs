@@ -40,12 +40,25 @@ pub fn rate_limited_user_message(is_api_key_auth: bool) -> &'static str {
     }
 }
 
+/// User-facing copy for capacity/overload failures (stream `overloaded_error`,
+/// HTTP 529, proxy-wrapped 5xx). See [`SamplingError::is_overloaded`].
+pub const OVERLOADED_USER_MESSAGE: &str = "Model is temporarily overloaded. Try again in a moment.";
+
 /// Map a `SamplingError` to an ACP `Error` for client-facing responses.
 /// This stays in agent-tui-shell because it depends on `agent_client_protocol::Error`.
-pub fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
+pub(crate) fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
     use reqwest::StatusCode;
+    // Capacity/overload gets the same short copy on every surface. Message
+    // only, `data` deliberately unset: `Display` appends JSON-encoded `data`,
+    // and this string is meant for direct display.
+    if err.is_overloaded() {
+        return acp::Error::new(
+            acp::ErrorCode::InternalError.into(),
+            OVERLOADED_USER_MESSAGE,
+        );
+    }
     match err {
-        SamplingError::Auth(msg) => acp::Error::auth_required().data(msg),
+        SamplingError::Auth { message, .. } => acp::Error::auth_required().data(message),
         SamplingError::InvalidConfiguration(msg) => acp::Error::invalid_params().data(msg),
         SamplingError::Http(e) => {
             acp::Error::internal_error().data(format!("http client init failed: {e}"))
@@ -113,7 +126,10 @@ pub fn map_sampling_err_to_acp(err: SamplingError) -> acp::Error {
     }
 }
 
-pub fn error_data_with_status(message: String, http_status: Option<u16>) -> serde_json::Value {
+pub(crate) fn error_data_with_status(
+    message: String,
+    http_status: Option<u16>,
+) -> serde_json::Value {
     match http_status {
         Some(sc) => serde_json::json!({ "message": message, "http_status": sc }),
         None => serde_json::Value::String(message),
@@ -121,7 +137,7 @@ pub fn error_data_with_status(message: String, http_status: Option<u16>) -> serd
 }
 
 /// Terminal-failure `acp::Error.data`: max-tokens truncation carries an `error_kind` marker (the kind's stable `as_str` name); other kinds keep the legacy shape.
-pub fn terminal_error_data(
+pub(crate) fn terminal_error_data(
     message: String,
     http_status: Option<u16>,
     kind: agent_tui_sampler::SamplingErrorKind,
@@ -223,7 +239,7 @@ pub fn prompt_usage_from_error(
 /// notification from a prompt result. Rate-limit errors produce
 /// `("rate_limit", null)` so the client shows its own upgrade message;
 /// other errors produce `("error", <detail>)`.
-pub fn prompt_complete_fields(
+pub(crate) fn prompt_complete_fields(
     result: &std::result::Result<acp::StopReason, acp::Error>,
 ) -> (serde_json::Value, serde_json::Value) {
     match result {
@@ -260,6 +276,7 @@ mod tests {
                 total_tokens: 4,
                 reasoning_tokens: 0,
                 cached_prompt_tokens: 0,
+                cache_creation_prompt_tokens: 0,
             },
             None,
             Some(10),
@@ -332,6 +349,124 @@ mod tests {
                 .contains("https://docs.x.ai/developers/rate-limits#rate-limit-tiers")
         );
         assert!(!RATE_LIMITED_USER_MESSAGE_API_KEY.contains("Upgrade your account"));
+    }
+
+    #[test]
+    fn format_rate_limited_surfaces_nonempty_server_detail() {
+        let body = "The service is temporarily at capacity. Please retry your request shortly.";
+        // Production detail is SamplingError::Api Display (prefixed).
+        let wire = format!("API error (status 429 Too Many Requests): {body}");
+        assert_eq!(format_rate_limited_user_message(Some(&wire), false), body);
+        assert_eq!(format_rate_limited_user_message(Some(&wire), true), body);
+
+        // Team console rate-limit copy has no personal SuperGrok upsell — surface as-is.
+        let team = "resource-exhausted: Too many requests for team abc. See https://console.x.ai/team/default/rate-limits.";
+        let team_wire = format!("API error (status 429 Too Many Requests): {team}");
+        assert_eq!(
+            format_rate_limited_user_message(Some(&team_wire), true),
+            team
+        );
+        assert_eq!(
+            format_rate_limited_user_message(Some("slow down"), false),
+            "slow down"
+        );
+    }
+
+    #[test]
+    fn format_rate_limited_api_key_rewrites_consumer_subscription_upsell() {
+        let body = "Some resource has been exhausted: You are sending requests too quickly. \
+             Please slow down, or upgrade to a Grok subscription for higher limits: \
+             https://grok.com/supergrok";
+        let wire = format!("API error (status 429 Too Many Requests): {body}");
+        // OAuth keeps the IC body (personal plan upgrade is correct).
+        assert_eq!(format_rate_limited_user_message(Some(&wire), false), body);
+        // API key must not push grok.com SuperGrok — team credits / rate-limit tiers.
+        assert_eq!(
+            format_rate_limited_user_message(Some(&wire), true),
+            RATE_LIMITED_USER_MESSAGE_API_KEY
+        );
+    }
+
+    #[test]
+    fn format_rate_limited_strips_api_error_display_prefix() {
+        let body = "The service is temporarily at capacity.";
+        let wire = format!("API error (status 429 Too Many Requests): {body}");
+        assert_eq!(format_rate_limited_user_message(Some(&wire), false), body);
+        assert!(!format_rate_limited_user_message(Some(&wire), false).contains("API error"));
+    }
+
+    #[test]
+    fn is_free_usage_exhausted_error_sniffs_well_known_code() {
+        assert!(is_free_usage_exhausted_error(
+            "subscription:free-usage-exhausted: You have used all your free usage."
+        ));
+        assert!(is_free_usage_exhausted_error(
+            "API error (status 429): subscription:free-usage-exhausted quota hit"
+        ));
+        assert!(!is_free_usage_exhausted_error("throttled"));
+        assert!(!is_free_usage_exhausted_error(
+            "The service is temporarily at capacity."
+        ));
+    }
+
+    #[test]
+    fn format_rate_limited_free_usage_uses_paywall_copy() {
+        let wire = "API error (status 429 Too Many Requests): \
+            subscription:free-usage-exhausted: You have used all your free usage.";
+        assert_eq!(
+            format_rate_limited_user_message(Some(wire), false),
+            FREE_USAGE_USER_MESSAGE
+        );
+        // Free-usage code is consumer-only; still wins for API-key callers.
+        assert_eq!(
+            format_rate_limited_user_message(Some(wire), true),
+            FREE_USAGE_USER_MESSAGE
+        );
+    }
+
+    #[test]
+    fn format_rate_limited_empty_detail_uses_auth_aware_fallback() {
+        assert_eq!(
+            format_rate_limited_user_message(None, false),
+            RATE_LIMITED_USER_MESSAGE_OAUTH
+        );
+        assert_eq!(
+            format_rate_limited_user_message(Some(""), false),
+            RATE_LIMITED_USER_MESSAGE_OAUTH
+        );
+        assert_eq!(
+            format_rate_limited_user_message(None, true),
+            RATE_LIMITED_USER_MESSAGE_API_KEY
+        );
+        assert_eq!(
+            format_rate_limited_user_message(Some("   "), true),
+            RATE_LIMITED_USER_MESSAGE_API_KEY
+        );
+    }
+
+    #[test]
+    fn overload_maps_to_display_message_without_data() {
+        let err = SamplingError::StreamError {
+            error_type: "overloaded_error".into(),
+            message: "Overloaded".into(),
+        };
+        let acp_err = map_sampling_err_to_acp(err);
+        assert_eq!(acp_err.code, acp::ErrorCode::InternalError);
+        assert_eq!(acp_err.message, OVERLOADED_USER_MESSAGE);
+        // Display appends JSON-encoded `data`; direct-display copy must not
+        // carry any.
+        assert_eq!(acp_err.data, None);
+
+        let err_529 = SamplingError::Api {
+            status: StatusCode::from_u16(529).expect("valid status"),
+            message: "capacity".into(),
+            model_metadata: None,
+            retry_after_secs: None,
+            should_retry: None,
+        };
+        let acp_529 = map_sampling_err_to_acp(err_529);
+        assert_eq!(acp_529.message, OVERLOADED_USER_MESSAGE);
+        assert_eq!(acp_529.data, None);
     }
 
     #[test]

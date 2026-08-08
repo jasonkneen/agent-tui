@@ -7,6 +7,8 @@ description = "Actor-based sampling/inference layer for xAI grok (HTTP streaming
 
 [dependencies]
 # Internal
+agent-tui-auth = { workspace = true }
+agent-tui-extra-ca = { workspace = true }
 agent-tui-sampling-types = { path = "../agent-tui-sampling-types" }
 agent-tui-version = { workspace = true }
 

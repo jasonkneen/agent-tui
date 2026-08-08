@@ -94,7 +94,7 @@ pub(crate) fn with_alpha_test_key(
     let _ = url;
     builder
 }
-pub fn is_configured(config: &GrokComConfig) -> bool {
+pub(crate) fn is_configured(config: &GrokComConfig) -> bool {
     config.oidc.is_some()
 }
 /// Peek at the unverified access token JWT to extract the `principal_type`
@@ -475,6 +475,7 @@ pub(super) async fn refresh_tokens(
         token_endpoint = % token_endpoint, principal_type = ? principal_type,
         principal_id = ? principal_id, "OIDC: refreshing token"
     );
+    let probe = super::refresh::SuspendProbe::start();
     (|| {
         refresh_tokens_once(
             token_endpoint,
@@ -485,7 +486,23 @@ pub(super) async fn refresh_tokens(
         )
     })
     .retry(refresh_retry_policy())
-    .when(is_transient_refresh_error)
+    .when(move |err: &anyhow::Error| {
+        if !is_transient_refresh_error(err) {
+            return false;
+        }
+        if probe.straddled_past_grace() {
+            crate::unified_log::warn(
+                "auth.refresh.retry_suppressed_suspend",
+                None,
+                Some(serde_json::json!({
+                    "suspended_ms": probe.suspended_ms(),
+                    "error": err.to_string(),
+                })),
+            );
+            return false;
+        }
+        true
+    })
     .await
 }
 /// One unretried POST to `token_endpoint`. Errors carry the typed
@@ -525,9 +542,12 @@ async fn refresh_tokens_once(
             .ok()
             .and_then(|v| v.get("error")?.as_str().map(str::to_owned));
         tracing::warn!(
-            http_status = status, oauth2_error = ? error_code, rt_prefix = crate
-            ::auth::token_suffix(refresh_token), client_id = % client_id, principal_type
-            = ? principal_type, "OIDC: token refresh HTTP error"
+            http_status = status,
+            oauth2_error = ?error_code,
+            rt_prefix = agent_tui_auth::bearer_suffix(refresh_token),
+            client_id = %client_id,
+            principal_type = ?principal_type,
+            "OIDC: token refresh HTTP error"
         );
         return Err(anyhow::Error::new(OidcError::TokenRefreshHttp {
             status,

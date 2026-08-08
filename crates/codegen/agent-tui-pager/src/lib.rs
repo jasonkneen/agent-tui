@@ -10,8 +10,10 @@ pub mod completions_cmd;
 mod config_toml_edit;
 pub mod diagnostics;
 pub mod diff;
+pub mod disk_usage_cmd;
 pub mod docs;
 pub mod export_cmd;
+pub(crate) mod fs_size;
 pub mod git_info;
 pub mod headless;
 pub mod hyperlink_route;
@@ -41,7 +43,6 @@ pub mod notifications;
 #[allow(unused_imports, unused_macros)]
 pub mod obf;
 pub mod plugin_cmd;
-pub mod project_picker;
 pub mod pty_wrap;
 pub mod product_profile;
 pub mod runtime_addon;

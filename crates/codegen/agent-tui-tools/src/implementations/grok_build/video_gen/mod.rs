@@ -201,23 +201,26 @@ impl VideoGenClient {
             Ok::<(), agent_tui_tool_runtime::ToolError>(())
         })?;
 
-        let http = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()
-            .map_err(|e| {
-                agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
-                    "Failed to build HTTP client: {e}"
-                ))
-            })?;
+        let http = agent_tui_extra_ca::with_extra_root_certificates(
+            reqwest::Client::builder().default_headers(headers),
+        )
+        .build()
+        .map_err(|e| {
+            agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
+                "Failed to build HTTP client: {e}"
+            ))
+        })?;
 
-        let download_http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(VIDEO_DOWNLOAD_TIMEOUT_SECS))
-            .build()
-            .map_err(|e| {
-                agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
-                    "Failed to build download client: {e}"
-                ))
-            })?;
+        let download_http = agent_tui_extra_ca::with_extra_root_certificates(
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(VIDEO_DOWNLOAD_TIMEOUT_SECS)),
+        )
+        .build()
+        .map_err(|e| {
+            agent_tui_tool_runtime::ToolError::invalid_arguments(format!(
+                "Failed to build download client: {e}"
+            ))
+        })?;
 
         Ok(Self {
             http,
@@ -1001,7 +1004,7 @@ impl agent_tui_tool_runtime::Tool for ImageToVideoTool {
     ) -> agent_tui_tool_types::ToolDescription {
         agent_tui_tool_types::ToolDescription::new(
             IMAGE_TO_VIDEO_TOOL_NAME,
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
 
@@ -1097,7 +1100,7 @@ impl agent_tui_tool_runtime::Tool for ReferenceToVideoTool {
     ) -> agent_tui_tool_types::ToolDescription {
         agent_tui_tool_types::ToolDescription::new(
             REFERENCE_TO_VIDEO_TOOL_NAME,
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
 

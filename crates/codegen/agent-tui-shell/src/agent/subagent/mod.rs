@@ -35,6 +35,14 @@ use std::sync::OnceLock;
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
+use agent_tui_file_utils::events::types::CancellationCategory;
+use agent_tui_agent::config::{McpInheritance, ModelOverride, PermissionMode};
+use agent_tui_sampling_types::conversation::ConversationItem;
+use agent_tui_subagent_resolution::ResumeSourceData;
+use agent_tui_tools::implementations::grok_build::monitor::types::MonitorEventBuffer;
+use agent_tui_tools::implementations::grok_build::task::coordinator::{
+    ChildCompletion, ChildControl, ChildRunOutput, LocalBoxFuture, StartedChild, SubagentProgress,
+};
 use agent_tui_tools::implementations::grok_build::task::types::*;
 use agent_tui_workspace::file_system::AsyncFileSystem;
 use agent_tui_hunk_tracker::HunkTrackerHandle;
@@ -116,7 +124,7 @@ impl AutoCompactThresholdTiers {
     /// Slice the parent's `Config` into the four tier inputs we'll resolve
     /// against later. Only fields relevant to the auto-compact threshold
     /// are captured; the parent's `Config` is not held by reference.
-    pub fn capture(cfg: &crate::agent::config::Config) -> Self {
+    pub(crate) fn capture(cfg: &crate::agent::config::Config) -> Self {
         let user_per_model = cfg
             .config_models
             .iter()
@@ -139,11 +147,12 @@ impl AutoCompactThresholdTiers {
 pub(crate) struct SubagentSpawnContext {
     /// Parent's LSP runtime — inherited via ToolContext, same as fs/terminal.
     pub lsp: Option<std::sync::Arc<dyn agent_tui_tools::implementations::lsp::LspBackend>>,
-    #[expect(
-        dead_code,
-        reason = "unused in production; remove expect when wired or delete the item"
-    )]
-    pub gateway: GatewaySender,
+    /// Root session's process scope, inherited so the subagent's own child
+    /// processes are reaped when the parent session closes. It is the root's
+    /// (not an intermediate parent's) because agent-tui-tools task/coordinator.rs
+    /// `handle_command`'s Spawn arm re-parents nested Spawn requests to the root
+    /// parent, so every subagent resolves back to the root session.
+    pub process_scope: Option<agent_tui_tty_utils::ProcessScope>,
     /// Parent's client-registered hooks, inherited so the subagent's tool calls hit the
     /// same PreToolUse gate and its events fire the same observe hooks over the parent's
     /// connection. Empty when the parent has none. Filled by the coordinator after the
@@ -168,6 +177,8 @@ pub(crate) struct SubagentSpawnContext {
     pub yolo_mode: bool,
     pub subagent_event_tx: mpsc::UnboundedSender<SubagentEvent>,
     pub parent_depth: u32,
+    pub subagents_max_depth: u32,
+    pub workflow_max_concurrent_agents: usize,
     /// Inference idle timeout (secs), resolved from the parent's model config at spawn-context creation time.
     pub inference_idle_timeout_secs: u64,
     /// Tier inputs for resolving `auto_compact_threshold_percent` at
@@ -369,10 +380,16 @@ pub(crate) struct SubagentSpawnContext {
     pub parent_blocking_wait_depth: Arc<std::sync::atomic::AtomicUsize>,
 }
 impl SubagentSpawnContext {
-    /// Check if a subagent is enabled via the toggle config.
-    /// Returns `true` if the agent is not in the toggle map (default enabled).
-    fn is_subagent_enabled(&self, name: &str) -> bool {
-        self.subagent_toggle.get(name).copied().unwrap_or(true)
+    /// Would installing a live bearer resolver strip this subagent's only
+    /// credential? A wired resolver is the sampler's sole auth source, so
+    /// with no session key at spawn it must not displace a real fallback
+    /// key (env `XAI_API_KEY`). Keyed on the resolved config key, not the
+    /// session cache alone — the cache is empty in exactly the post-wake /
+    /// mid-refresh states the resolver targets, and gating on it would
+    /// freeze the subagent for life. Shared by all three resolver-wiring
+    /// paths so they cannot drift.
+    fn would_strip_fallback_key(&self, resolved_api_key: Option<&str>) -> bool {
+        self.auth.is_none() && resolved_api_key.is_some()
     }
     /// Resolve `auto_compact_threshold_percent` for the subagent's actual
     /// model id (the one selected by `resolve_subagent_sampling_config`,
@@ -384,7 +401,7 @@ impl SubagentSpawnContext {
     /// catalog used to pick the subagent's `SamplerConfig`); user TOML and
     /// GB global tiers are sourced from the parent's snapshot captured at
     /// spawn-context build time.
-    pub fn resolve_auto_compact_threshold_percent(&self, subagent_model_id: &str) -> u8 {
+    pub(crate) fn resolve_auto_compact_threshold_percent(&self, subagent_model_id: &str) -> u8 {
         let gb_per_model =
             crate::agent::config::find_model_by_id(&self.available_models, subagent_model_id)
                 .and_then(|e| e.info.auto_compact_threshold_percent);
@@ -406,7 +423,7 @@ impl SubagentSpawnContext {
         }
     }
     /// Subagent verbatim-input flag, mirroring `Config::resolve_compaction_verbatim_input` (env > config > remote settings > default `true`).
-    pub fn resolve_compaction_verbatim_input(&self) -> bool {
+    pub(crate) fn resolve_compaction_verbatim_input(&self) -> bool {
         crate::agent::config::BoolFlag::env("GROK_COMPACTION_VERBATIM_INPUT")
             .config(
                 self.agent_config
@@ -422,12 +439,26 @@ impl SubagentSpawnContext {
             .resolve()
             .value
     }
+    pub(crate) fn resolve_compaction_tool_choice(
+        &self,
+    ) -> crate::util::config::CompactionToolChoice {
+        crate::util::config::resolve_compaction_tool_choice_from(
+            crate::agent::config::env_string(crate::util::config::ENV_COMPACTION_TOOL_CHOICE)
+                .as_deref(),
+            self.agent_config
+                .as_ref()
+                .and_then(|c| c.features.compaction_tool_choice.as_deref()),
+            self.remote_settings
+                .as_ref()
+                .and_then(|r| r.compaction_tool_choice.as_deref()),
+        )
+    }
     /// Whether a completed subagent's worktree is snapshotted into a durable ref
     /// and its directory deleted. Resolution mirrors the other subagent gates
     /// (env > config > remote settings > default). Default `false` so it ships dark;
     /// `managed_config.toml` `[features] subagent_worktree_snapshot` is the
     /// per-deployment rollout lever.
-    pub fn resolve_subagent_worktree_snapshot_enabled(&self) -> bool {
+    pub(crate) fn resolve_subagent_worktree_snapshot_enabled(&self) -> bool {
         crate::agent::config::BoolFlag::env("GROK_SUBAGENT_WORKTREE_SNAPSHOT")
             .config(
                 self.agent_config
@@ -448,7 +479,7 @@ impl SubagentSpawnContext {
     /// parent (requirements/env/user/managed from disk; remote from the
     /// parent's snapshot) and follows the session into subagents. Bash stays
     /// on tool defaults, as before that knob existed.
-    pub fn resolve_tool_params_json(
+    pub(crate) fn resolve_tool_params_json(
         &self,
     ) -> crate::session::agent_rebuild::ResolvedToolParamsJson {
         let params = crate::util::config::resolve_ask_user_question_params_from_disk(
@@ -463,73 +494,41 @@ impl SubagentSpawnContext {
         }
     }
 }
-/// A completed subagent entry retained for `TaskOutputTool` polling
-/// and `resume_from` resolution.
-pub(crate) struct CompletedSubagent {
-    pub subagent_id: String,
-    pub parent_session_id: String,
-    pub parent_prompt_id: Option<String>,
-    pub child_session_id: String,
-    pub description: String,
-    pub subagent_type: String,
-    pub persona: Option<String>,
-    pub started_at: std::time::Instant,
-    /// When the subagent moved to the completed map. Used for TTL eviction.
-    pub completed_at: std::time::Instant,
-    pub result: SubagentResult,
-    /// ID of the source subagent this session was resumed from.
-    pub resumed_from: Option<String>,
-    /// Effective cwd used by the child session (worktree path or parent cwd).
-    /// Required to reconstruct `SessionInfo` for `resume_from`.
-    pub child_cwd: String,
-    /// Path to the isolated worktree, if the child used `isolation=worktree`.
-    pub worktree_path: Option<PathBuf>,
-    /// Durable git ref snapshotting the worktree's working state, if captured.
-    pub snapshot_ref: Option<String>,
-    /// Effective model ID used by the child session.
-    pub effective_model_id: String,
-    /// Set when a `block=true` waiter consumed this subagent's result.
-    pub block_waited: bool,
-    /// Set when the model explicitly killed this subagent via the kill tool.
-    pub explicitly_killed: bool,
+/// Shell runtime handle retained while a child is active.
+pub(crate) struct ShellChildRuntime {
+    pub child_handle: SessionHandle,
+    pub _child_thread: SessionThread,
 }
-/// Lightweight entry for subagents that have been requested but are still
-/// initializing (creating worktree, resolving config, spawning session).
-/// Promoted to a full `SubagentTracker` once the child session is ready.
-pub(crate) struct PendingSubagent {
-    pub subagent_id: String,
-    pub subagent_type: String,
-    pub description: String,
-    pub persona: Option<String>,
-    pub parent_prompt_id: Option<String>,
-    pub parent_session_id: String,
-    pub started_at: std::time::Instant,
-    pub run_in_background: bool,
-    /// Mirrors `SubagentRequest::surface_completion`.
-    pub surface_completion: bool,
-    #[expect(
-        dead_code,
-        reason = "unused in production; remove expect when wired or delete the item"
-    )]
-    pub color: Option<agent_tui_agent::config::AgentColor>,
-    /// Spawn-future cancel token; firing it aborts the spawn at the promote
-    /// checkpoint and emits a cancelled `SubagentFinished`.
-    pub cancel_token: CancellationToken,
-}
-/// Parameter bag for `SubagentCoordinator::record_failure_completion`.
-struct FailureCompletion<'a> {
-    subagent_id: String,
-    subagent_type: String,
-    description: String,
-    parent_prompt_id: Option<String>,
-    parent_session_id: String,
-    persona: Option<String>,
-    started_at: std::time::Instant,
-    error: &'a str,
-    surface_completion: bool,
-    /// Terminal status `"cancelled"` rather than `"failed"` (pending subagent
-    /// killed mid-initialization).
-    cancelled: bool,
+impl ChildControl for ShellChildRuntime {
+    type ProgressFuture = LocalBoxFuture<SubagentProgress>;
+    fn progress(&self) -> Self::ProgressFuture {
+        let signals = self.child_handle.signals_handle.clone();
+        Box::pin(async move {
+            let snapshot = signals.snapshot().await.unwrap_or_default();
+            SubagentProgress {
+                turn_count: snapshot.turn_count,
+                tool_call_count: snapshot.tool_call_count,
+                tokens_used: snapshot.context_tokens_used,
+                context_window_tokens: snapshot.context_window_tokens,
+                context_usage_pct: snapshot.context_window_usage,
+                tools_used: snapshot.tools_used,
+                error_count: snapshot.error_count,
+            }
+        })
+    }
+    fn cancel(&self) {
+        let _ =
+            self.child_handle
+                .cmd_tx
+                .send(SessionCommand::Cancel(crate::session::CancelOptions {
+                    cancel_subagents: true,
+                    kill_background_tasks: true,
+                    ..Default::default()
+                }));
+        let _ = self.child_handle.cmd_tx.send(SessionCommand::Shutdown(
+            crate::session::ShutdownKind::Graceful,
+        ));
+    }
 }
 /// Shared reply slot for one live blocking `SubagentQueryRequest`.
 ///
@@ -854,13 +853,12 @@ async fn resolve_effective_model_config(
     }
     resolve_subagent_sampling_config(subagent_type, definition_model, ctx).await
 }
-/// Truncate an API key to a safe prefix for logging.
+/// Truncate an API key to a safe prefix for logging. Counts characters, not
+/// bytes: a configured key with a multi-byte character would panic a byte
+/// slice, and this only ever runs to build a log line.
 fn key_prefix(key: &Option<String>) -> String {
     match key {
-        Some(k) => {
-            let len = k.len().min(8);
-            k[..len].to_string()
-        }
+        Some(k) => k.chars().take(8).collect(),
         None => "<none>".to_string(),
     }
 }
@@ -888,6 +886,39 @@ fn log_subagent_model_resolution(
         )),
     );
 }
+/// Session-token bearer resolver for a subagent config, over the parent's
+/// `AuthManager` (wire-valid only). Without it the subagent runs forever on
+/// the `api_key` frozen at spawn and 401s once the parent rotates the token.
+/// Gated exactly like the parent session's resolver
+/// (`auth_method::session_token_auth_gate`); all three subagent config paths
+/// go through this.
+fn session_bearer_resolver(
+    ctx: &SubagentSpawnContext,
+    byok: crate::agent::auth_method::ModelByok,
+    base_url: &str,
+) -> Option<agent_tui_sampler::SharedBearerResolver> {
+    use crate::agent::auth_method;
+    auth_method::session_token_auth_gate(
+        auth_method::is_session_based_method(&ctx.auth_method_id),
+        byok,
+        crate::util::is_xai_api_url(base_url),
+    )
+    .then(|| {
+        crate::auth::credential_provider::WireValidBearerResolver::shared(ctx.auth_manager.clone())
+    })
+}
+/// [`session_bearer_resolver`] for an inherited config, where only the model
+/// string is known: BYOK comes from the catalog memo.
+fn inherited_bearer_resolver(
+    ctx: &SubagentSpawnContext,
+    model: &str,
+    base_url: &str,
+) -> Option<agent_tui_sampler::SharedBearerResolver> {
+    let byok = crate::agent::config::resolve_model_auth_facts_and_provider(model)
+        .0
+        .byok;
+    session_bearer_resolver(ctx, byok, base_url)
+}
 /// Read the parent session's actual current sampling config.
 ///
 /// Prefers the live state from `ChatStateHandle` (authoritative). Falls back
@@ -909,6 +940,8 @@ async fn read_parent_sampling_config(
             let auth_scheme = crate::agent::config::try_resolve_model_credentials(&cfg.model, None)
                 .map(|r| r.auth_scheme)
                 .unwrap_or_default();
+            let inherited_base_url = cfg.base_url.clone();
+            let strip_guard = ctx.would_strip_fallback_key(creds.api_key.as_deref());
             let inherited = agent_tui_sampler::SamplerConfig {
                 api_key: creds.api_key,
                 base_url: cfg.base_url,
@@ -931,7 +964,11 @@ async fn read_parent_sampling_config(
                 user_id: ctx.sampling_config.user_id.clone(),
                 origin_client: ctx.sampling_config.origin_client.clone(),
                 attribution_callback: ctx.attribution_callback.clone(),
-                bearer_resolver: None,
+                bearer_resolver: if strip_guard {
+                    None
+                } else {
+                    inherited_bearer_resolver(ctx, &cfg.model, &inherited_base_url)
+                },
                 supports_backend_search: ctx
                     .models_manager
                     .model_supports_backend_search(ctx.model_id.0.as_ref()),
@@ -975,6 +1012,11 @@ async fn read_parent_sampling_config(
         )),
     );
     let mut fallback = ctx.sampling_config.clone();
+    fallback.bearer_resolver = if ctx.would_strip_fallback_key(fallback.api_key.as_deref()) {
+        None
+    } else {
+        inherited_bearer_resolver(ctx, &fallback.model, &fallback.base_url)
+    };
     fallback.supports_backend_search = ctx
         .models_manager
         .model_supports_backend_search(ctx.model_id.0.as_ref());
@@ -1019,7 +1061,7 @@ fn resolve_model_override_to_config(
     let mut credentials = resolve_credentials(&entry, session_key);
     credentials.auth_type = subagent_auth_type(Some(&entry), &ctx.auth_method_id);
     let resolved_auth_type = credentials.auth_type;
-    let config = sampling_config_for_model(
+    let mut config = sampling_config_for_model(
         &entry,
         credentials,
         ctx.alpha_test_key.clone(),
@@ -1027,6 +1069,21 @@ fn resolve_model_override_to_config(
         ctx.sampling_config.deployment_id.clone(),
         ctx.sampling_config.user_id.clone(),
     );
+    config.bearer_resolver = if !ctx.would_strip_fallback_key(config.api_key.as_deref())
+        && resolved_auth_type == agent_tui_chat_state::AuthType::SessionToken
+    {
+        session_bearer_resolver(
+            ctx,
+            if entry.has_own_credentials() {
+                crate::agent::auth_method::ModelByok::Byok
+            } else {
+                crate::agent::auth_method::ModelByok::NotByok
+            },
+            &config.base_url,
+        )
+    } else {
+        None
+    };
     agent_tui_telemetry::unified_log::debug(
         "subagent resolve_model_override_to_config",
         None,
@@ -1081,7 +1138,7 @@ fn resume_initial_context(
 fn forked_initial_context(
     mut items: Vec<agent_tui_sampling_types::conversation::ConversationItem>,
 ) -> InitialContext {
-    crate::session::storage::jsonl::fork_filter_chat(&mut items);
+    crate::sampling::fork_filter_chat(&mut items);
     if items.is_empty() {
         return InitialContext {
             source: InitialContextSource::New,
@@ -1173,7 +1230,7 @@ fn verbatim_or_normalize_fork(
         };
     }
     let mut filtered = items;
-    crate::session::storage::jsonl::fork_filter_chat(&mut filtered);
+    crate::sampling::fork_filter_chat(&mut filtered);
     if !filtered
         .iter()
         .any(|i| !matches!(i, ConversationItem::System(_)))
@@ -1285,11 +1342,11 @@ async fn bootstrap_initial_context(
             fork_filter: false,
             ..Default::default()
         };
-        return match storage.copy_session_data_sync(
-            &source_session_info,
-            child_session_info,
-            copy_options,
-        ) {
+        use crate::session::storage::StorageAdapter as _;
+        return match storage
+            .copy_session_data(&source_session_info, child_session_info, copy_options)
+            .await
+        {
             Ok(result) => {
                 let conversation = match storage.load_chat_history_from_dir(child_session_dir) {
                     Ok(items) if !items.is_empty() => items,
@@ -1412,7 +1469,11 @@ async fn bootstrap_initial_context(
             fork_filter: true,
             ..Default::default()
         };
-        return match storage.copy_session_data_sync(parent_info, child_session_info, copy_options) {
+        use crate::session::storage::StorageAdapter as _;
+        return match storage
+            .copy_session_data(parent_info, child_session_info, copy_options)
+            .await
+        {
             Ok(result) => {
                 tracing::info!(
                     subagent_id = % request.id, subagent_type = % request.subagent_type,
@@ -2066,10 +2127,19 @@ fn inject_subagent_completed_prompt(
         });
     }
 }
-/// Post-`insert_pending`, pre-`SubagentSpawned` failure: just send via oneshot;
-/// `PendingGuard::drop` handles the queue side effects.
-fn send_failure(request: SubagentRequest, error: &str) {
-    let _ = request.result_tx.send(SubagentResult {
+fn telemetry_owner_kind(
+    request: &SubagentRequest,
+) -> agent_tui_telemetry::events::SubagentOwnerKind {
+    if request.owner.is_workflow() {
+        agent_tui_telemetry::events::SubagentOwnerKind::Workflow
+    } else if request.from_scheduler_loop() {
+        agent_tui_telemetry::events::SubagentOwnerKind::SchedulerLoop
+    } else {
+        agent_tui_telemetry::events::SubagentOwnerKind::Task
+    }
+}
+fn failure_result(request: &SubagentRequest, error: &str) -> SubagentResult {
+    SubagentResult {
         success: false,
         error: Some(error.to_string()),
         ..Default::default()
@@ -2190,8 +2260,10 @@ async fn cancel_pending_subagent_at_promote(
     worktree_freshly_created: bool,
     duration_ms: u64,
     gcs_ctx: &GcsUploadContext,
-) {
-    let _ = child_handle.cmd_tx.send(SessionCommand::Shutdown);
+) -> SubagentResult {
+    let _ = child_cmd_tx.send(SessionCommand::Shutdown(
+        crate::session::ShutdownKind::Graceful,
+    ));
     if worktree_freshly_created
         && let Some(wt_path) = worktree_path
         && let Err(e) = crate::session::worktree::remove_subagent_worktree(wt_path).await
@@ -2464,7 +2536,7 @@ pub(crate) struct SubagentMeta {
 /// locally. Schema is versioned for forward compatibility.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SubagentSessionMetadata {
+pub(crate) struct SubagentSessionMetadata {
     pub schema_version: u32,
     pub session_id: String,
     pub session_kind: String,
@@ -2521,9 +2593,9 @@ pub struct SubagentSessionMetadata {
 }
 impl SubagentSessionMetadata {
     /// Current schema version.
-    pub const SCHEMA_VERSION: u32 = 1;
+    pub(crate) const SCHEMA_VERSION: u32 = 1;
     /// Build from a `SubagentMeta` + additional runtime context.
-    pub fn from_meta(
+    pub(crate) fn from_meta(
         meta: &SubagentMeta,
         model_id: Option<&str>,
         cwd: Option<&str>,

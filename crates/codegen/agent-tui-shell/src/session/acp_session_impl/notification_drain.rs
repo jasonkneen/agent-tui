@@ -96,6 +96,7 @@ impl SessionActor {
             *current_prompt_id = Some(prompt_id.clone());
         }
         state.rewindable = true;
+        state.front_message_committed = false;
         self.agent
             .borrow()
             .tool_bridge()

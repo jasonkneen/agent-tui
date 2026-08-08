@@ -63,7 +63,27 @@ pub struct SubagentRequest {
     /// Harness-only: seed child with normalized parent conversation, then append
     /// `prompt`. Not on TaskToolInput. Successful `resume_from` takes precedence.
     pub fork_context: bool,
-    /// Oneshot channel for the coordinator to send back the result.
+    pub owner: SubagentOwner,
+    pub cancel_token: CancellationToken,
+}
+
+impl SubagentRequest {
+    pub fn from_scheduler_loop(&self) -> bool {
+        self.runtime_overrides.loop_task_id.is_some()
+    }
+
+    /// The caller blocks on the foreground await budget (neither backgrounded
+    /// nor awaiting to completion).
+    pub fn awaits_in_foreground(&self) -> bool {
+        !self.run_in_background && !self.await_to_completion
+    }
+}
+
+/// Spawn command envelope owned by the coordinator mailbox.
+#[derive(Educe)]
+#[educe(Debug)]
+pub struct SubagentSpawnRequest {
+    pub request: Box<SubagentRequest>,
     #[educe(Debug(ignore))]
     pub result_tx: oneshot::Sender<SubagentResult>,
 }
@@ -452,7 +472,11 @@ impl SubagentSnapshotStatus {
 #[derive(Debug, Clone)]
 pub enum SubagentCancelTarget {
     SubagentId(String),
+    /// Turn-scoped cancel (soft cancel / max-turns).
     ParentPromptId(String),
+    /// User Stop / Esc with cancel_subagents — prior-turn background too.
+    ParentSession,
+    WorkflowRunId(String),
 }
 
 /// Cancel request sent by KillTaskTool or session cancellation paths,
@@ -545,6 +569,90 @@ pub struct SubagentMarkUsageNotAppliedRequest {
     pub prompt_id: String,
     #[educe(Debug(ignore))]
     pub respond_to: oneshot::Sender<()>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SubagentRegistryCounts {
+    pub pending: usize,
+    pub active: usize,
+    pub completed: usize,
+    /// Spawns parked at the session's concurrent limit, not yet started.
+    pub queued: usize,
+}
+
+#[derive(Educe)]
+#[educe(Debug)]
+pub struct SubagentRegistryCountsRequest {
+    #[educe(Debug(ignore))]
+    pub respond_to: oneshot::Sender<SubagentRegistryCounts>,
+}
+
+/// Request for full metadata plus a resolved progress snapshot.
+#[derive(Educe)]
+#[educe(Debug)]
+pub struct SubagentInspectRequest {
+    pub subagent_id: String,
+    pub parent_session_id: Option<String>,
+    #[educe(Debug(ignore))]
+    pub respond_to: oneshot::Sender<Option<SubagentInspection>>,
+}
+
+/// Request for all running children owned by one parent session.
+#[derive(Educe)]
+#[educe(Debug)]
+pub struct SubagentListRunningRequest {
+    pub parent_session_id: String,
+    #[educe(Debug(ignore))]
+    pub respond_to: oneshot::Sender<Vec<SubagentInspection>>,
+}
+
+/// Fork/resume provenance retained by the shared coordinator.
+#[derive(Debug, Clone, Default)]
+pub struct SubagentProvenance {
+    pub fork_parent_prompt_id: Option<String>,
+    pub resumed_from: Option<String>,
+}
+
+/// Reference to a child spawned during one parent prompt.
+#[derive(Debug, Clone)]
+pub struct SpawnedSubagentRef {
+    pub subagent_id: String,
+    pub child_session_id: String,
+    pub subagent_type: String,
+    pub description: String,
+    pub persona: Option<String>,
+    pub resumed_from: Option<String>,
+}
+
+/// Request for prompt-scoped spawned-child references.
+#[derive(Educe)]
+#[educe(Debug)]
+pub struct SubagentSpawnedRefsRequest {
+    pub parent_session_id: String,
+    pub prompt_id: String,
+    #[educe(Debug(ignore))]
+    pub respond_to: oneshot::Sender<Vec<SpawnedSubagentRef>>,
+}
+
+/// In-memory source data used by a runtime adapter to resume a child.
+#[derive(Debug, Clone)]
+pub struct SubagentResumeSource {
+    pub subagent_id: String,
+    pub child_session_id: String,
+    pub child_cwd: String,
+    pub worktree_path: Option<String>,
+    pub snapshot_ref: Option<String>,
+    pub subagent_type: String,
+    pub persona: Option<String>,
+    pub model_id: Option<String>,
+}
+
+/// Result of a resume-source lookup.
+#[derive(Debug, Clone)]
+pub enum SubagentResumeLookup {
+    Active,
+    Completed(SubagentResumeSource),
+    Missing,
 }
 
 // Validate-type protocol
@@ -656,6 +764,16 @@ pub enum SubagentEvent {
     Cancel(SubagentCancelRequest),
     ListActive(SubagentListActiveRequest),
     Completions(SubagentCompletionsRequest),
+    /// Discard a closed session's buffered completions and cancel its children.
+    TeardownSession {
+        parent_session_id: String,
+    },
+    /// Re-open Task spawns for a parent session after a prior ParentSession stop.
+    /// Emitted at the start of each user turn so Stop's late-spawn gate does not
+    /// permanently block the next prompt.
+    OpenSpawnAdmission {
+        parent_session_id: String,
+    },
     Outstanding(SubagentOutstandingRequest),
     ClearUsageNotApplied(SubagentClearUsageNotAppliedRequest),
     MarkUsageNotApplied(SubagentMarkUsageNotAppliedRequest),
@@ -665,12 +783,7 @@ pub enum SubagentEvent {
 
 // Resource types
 
-/// Unified sender for all subagent coordinator events.
-///
-/// Cloned into each session's `ToolContext` / `ToolBridge Resources` so
-/// that `TaskTool`, `TaskOutputTool`, `KillTaskTool`, completion
-/// reminders, compaction queries, and turn-end guards all send through
-/// a single channel.
+/// One shared channel to the subagent coordinator, cloned into each session.
 #[derive(Clone, Educe)]
 #[educe(Debug)]
 pub struct SubagentEventSender(#[educe(Debug(ignore))] pub mpsc::UnboundedSender<SubagentEvent>);

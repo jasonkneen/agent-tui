@@ -38,4 +38,17 @@ pub use headless::{
     HeadlessResult, assert_headless_success, assert_no_crashes, run_headless,
     run_headless_with_cmd, stderr_tail,
 };
-pub use mock_server::{MockInferenceServer, MockModelEntry, ScriptedResponse, SseEvent};
+pub use inference_override::{InferenceEndpoint, InferenceExpectation, InferenceRequestMatcher};
+#[cfg(unix)]
+pub use leader::LeaderFixture;
+pub use mock_server::{
+    MockInferenceServer, MockModelEntry, ScriptedResponse, SseEvent, StorageUpload,
+};
+#[cfg(unix)]
+pub use process::process_has_exited_without_reap;
+pub use process::{
+    TestOutput, TestOutputSnapshot, TestProcess, TestProcessConfig, TestProcessState,
+    TestProcessStderr, TestProcessStdout, TestProcessTermination, TestProcessTree, TestStdin,
+};
+pub use resources::{ResourceGrowth, ResourceSnapshot, RssMeasurement, RssOutcome, RssSampler};
+pub use sandbox::{TestSandbox, TestSandboxBuilder};

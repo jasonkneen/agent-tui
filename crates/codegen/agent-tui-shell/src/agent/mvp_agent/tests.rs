@@ -34,6 +34,11 @@ fn jwt_tier_claim_maps_free_and_paid() {
         jwt_tier_claim(&jwt_with_tier(6)).as_deref(),
         Some("supergrok_lite")
     );
+    assert_eq!(
+        jwt_tier_claim(&jwt_with_tier(7)).as_deref(),
+        Some("supergrok_plus")
+    );
+    assert_eq!(jwt_tier_claim(&jwt_with_tier(9)).as_deref(), Some("9"));
     assert_eq!(jwt_tier_claim(&jwt_with_tier(99)).as_deref(), Some("99"));
 }
 fn auth_with_mode(mode: crate::auth::AuthMode, key: &str) -> crate::auth::GrokAuth {
@@ -99,7 +104,9 @@ fn jwt_claim_matches_user_subscription_tier_known_pairs() {
         ("x_premium", "XPremium"),
         ("x_premium_plus", "XPremiumPlus"),
         ("supergrok_heavy", "SuperGrokPro"),
+        ("9", "EnterpriseMystery"),
         ("supergrok_lite", "SuperGrokLite"),
+        ("supergrok_plus", "SuperGrokPlus"),
     ];
     for (claim, user_tier) in cases {
         assert!(
@@ -118,10 +125,22 @@ fn jwt_claim_matches_user_subscription_tier_rejects_stale_and_unknown() {
         "supergrok",
         "SuperGrokPro"
     ));
+    assert!(!jwt_claim_matches_user_subscription_tier(
+        "supergrok",
+        "SuperGrokPlus"
+    ));
+    assert!(!jwt_claim_matches_user_subscription_tier(
+        "supergrok_heavy",
+        "SuperGrokPlus"
+    ));
     assert!(!jwt_claim_matches_user_subscription_tier("free", "GrokPro"));
     assert!(!jwt_claim_matches_user_subscription_tier("", "XPremium"));
     assert!(!jwt_claim_matches_user_subscription_tier(
         "supergrok_heavy",
+        "EnterpriseMystery"
+    ));
+    assert!(!jwt_claim_matches_user_subscription_tier(
+        "0",
         "EnterpriseMystery"
     ));
 }
@@ -354,12 +373,10 @@ fn trace_turn_to_i32_saturates_at_max() {
     let result = i32::try_from(boundary).unwrap_or(i32::MAX);
     assert_eq!(result, i32::MAX);
 }
-/// When remote settings are absent (`None`), default to blocked.
 #[test]
-fn settings_allow_access_none_settings_is_blocked() {
-    assert!(!settings_allow_access(None));
+fn settings_allow_access_none_settings_is_allowed() {
+    assert!(settings_allow_access(None));
 }
-/// When `allow_access` is `Some(true)`, user is allowed.
 #[test]
 fn settings_allow_access_true_is_allowed() {
     let rs = crate::util::config::RemoteSettings {
@@ -368,10 +385,6 @@ fn settings_allow_access_true_is_allowed() {
     };
     assert!(settings_allow_access(Some(&rs)));
 }
-/// When `allow_access` is `Some(false)` (remote settings default / rule
-/// disabled), user stays blocked — even if they hold a qualifying
-/// subscription. This is the regression guard for the bug where
-/// `retry_subscription_check` unconditionally lifted the gate.
 #[test]
 fn settings_allow_access_false_is_blocked() {
     let rs = crate::util::config::RemoteSettings {
@@ -380,18 +393,16 @@ fn settings_allow_access_false_is_blocked() {
     };
     assert!(!settings_allow_access(Some(&rs)));
 }
-/// When `/settings` returned successfully but the field is absent
-/// (`None`), default to blocked (conservative).
 #[test]
-fn settings_allow_access_field_absent_is_blocked() {
+fn settings_allow_access_field_absent_is_allowed() {
     let rs = crate::util::config::RemoteSettings {
         allow_access: None,
         ..Default::default()
     };
-    assert!(!settings_allow_access(Some(&rs)));
+    assert!(settings_allow_access(Some(&rs)));
 }
-/// After allocating a turn number, `session_turn_numbers` holds the next
-/// value (current + 1). This is the value that must be persisted via
+/// After allocating a turn number, the retained (in-memory) turn counter holds
+/// the next value (current + 1). This is the value that must be persisted via
 /// `SetNextTraceTurn` so the counter survives restarts.
 #[test]
 fn allocate_turn_number_advances_counter() {
@@ -466,7 +477,7 @@ async fn upload_harness_trace_turns_numbers_siblings_and_persists_counter() {
         agent.auth_manager.clone(),
     );
     let _ = handle.upload_queue.set(queue);
-    agent.sessions.borrow_mut().insert(sid.clone(), handle);
+    agent.insert_resident(&sid, handle);
     for _ in 0..3 {
         agent.allocate_turn_number(&sid);
     }
@@ -587,7 +598,7 @@ async fn upload_harness_trace_turns_build_per_turn_manifest() {
         agent.auth_manager.clone(),
     );
     let _ = handle.upload_queue.set(queue);
-    agent.sessions.borrow_mut().insert(sid.clone(), handle);
+    agent.insert_resident(&sid, handle);
     let built = agent
         .build_harness_trace_uploads(
             &sid,
@@ -923,6 +934,32 @@ fn read_session_or_init_meta_str_ignores_non_string_values() {
     );
 }
 #[test]
+fn startup_hints_from_meta_prefers_session_request_over_init() {
+    let session = serde_json::json!({
+        "startupHints": { "nonInteractive": true, "deliveryTools": ["srv__post"] }
+    });
+    let init = serde_json::json!({ "startupHints": { "nonInteractive": false } });
+    let hints = startup_hints_from_meta(session.as_object(), init.as_object());
+    assert!(hints.non_interactive);
+    assert_eq!(hints.delivery_tools, vec!["srv__post"]);
+    assert!(startup_hints_from_meta(None, session.as_object()).non_interactive);
+}
+#[test]
+fn startup_hints_from_meta_session_object_wins_whole_not_merged() {
+    let session = serde_json::json!({ "startupHints": { "skipGitStatus": true } });
+    let init = serde_json::json!({ "startupHints": { "nonInteractive": true } });
+    let hints = startup_hints_from_meta(session.as_object(), init.as_object());
+    assert!(hints.skip_git_status);
+    assert!(!hints.non_interactive);
+}
+#[test]
+fn startup_hints_from_meta_unparseable_falls_through_then_defaults() {
+    let bad = serde_json::json!({ "startupHints": "yes" });
+    let init = serde_json::json!({ "startupHints": { "nonInteractive": true } });
+    assert!(startup_hints_from_meta(bad.as_object(), init.as_object()).non_interactive);
+    assert!(!startup_hints_from_meta(None, None).non_interactive);
+}
+#[test]
 fn system_prompt_override_from_meta_prefers_session_and_rejects_empty() {
     let session = serde_json::json!({ "systemPromptOverride" : "from session" });
     let init = serde_json::json!({ "systemPromptOverride" : "from init" });
@@ -1185,39 +1222,29 @@ fn make_test_handle(
         scheduler_handle: None,
     }
 }
-/// lookup_session_model returns the per-session model for each session.
+/// lookup_session_model returns the per-session model when one is known.
 #[tokio::test]
 async fn lookup_session_model_returns_per_session_model() {
-    let sid_a = acp::SessionId::new("sess-a");
-    let sid_b = acp::SessionId::new("sess-b");
     let default_model = acp::ModelId::new("default-model");
-    let sessions: HashMap<acp::SessionId, crate::session::SessionHandle> = [
-        (sid_a.clone(), make_test_handle("grok-3-fast", false, None)),
-        (sid_b.clone(), make_test_handle("codex-mini", false, None)),
-    ]
-    .into();
     assert_eq!(
-        lookup_session_model(&sessions, Some(&sid_a), &default_model)
+        lookup_session_model(Some(acp::ModelId::new("grok-3-fast")), &default_model)
             .0
             .as_ref(),
         "grok-3-fast"
     );
     assert_eq!(
-        lookup_session_model(&sessions, Some(&sid_b), &default_model)
+        lookup_session_model(Some(acp::ModelId::new("codex-mini")), &default_model)
             .0
             .as_ref(),
         "codex-mini"
     );
 }
-/// lookup_session_model falls back to the default when session_id is None.
+/// lookup_session_model falls back to the default when no session model is known.
 #[tokio::test]
 async fn lookup_session_model_fallback_no_session() {
     let default_model = acp::ModelId::new("grok-3");
-    let sessions: HashMap<acp::SessionId, crate::session::SessionHandle> = HashMap::new();
     assert_eq!(
-        lookup_session_model(&sessions, None, &default_model)
-            .0
-            .as_ref(),
+        lookup_session_model(None, &default_model).0.as_ref(),
         "grok-3"
     );
 }
@@ -1234,15 +1261,21 @@ async fn set_session_model_does_not_cross_contaminate() {
     .into();
     sessions.get_mut(&sid_a).unwrap().model_id = acp::ModelId::new("codex-mini");
     assert_eq!(
-        lookup_session_model(&sessions, Some(&sid_a), &default_model)
-            .0
-            .as_ref(),
+        lookup_session_model(
+            sessions.get(&sid_a).map(|h| h.model_id.clone()),
+            &default_model
+        )
+        .0
+        .as_ref(),
         "codex-mini"
     );
     assert_eq!(
-        lookup_session_model(&sessions, Some(&sid_b), &default_model)
-            .0
-            .as_ref(),
+        lookup_session_model(
+            sessions.get(&sid_b).map(|h| h.model_id.clone()),
+            &default_model
+        )
+        .0
+        .as_ref(),
         "grok-3",
         "Session B's model must not be affected by session A's model change"
     );
@@ -1273,17 +1306,14 @@ async fn model_state_prefers_session_reasoning_effort_over_global() {
     let pinned = acp::SessionId::new("sess-pinned");
     let mut handle = make_test_handle("effort-model", false, None);
     handle.reasoning_effort = Some(ReasoningEffort::Xhigh);
-    agent.sessions.borrow_mut().insert(pinned.clone(), handle);
+    agent.insert_resident(&pinned, handle);
     assert_eq!(
         read_effort(&agent.model_state(Some(&pinned))).as_deref(),
         Some("xhigh"),
         "model_state must report the session's own restored effort",
     );
     let unset = acp::SessionId::new("sess-unset");
-    agent
-        .sessions
-        .borrow_mut()
-        .insert(unset.clone(), make_test_handle("effort-model", false, None));
+    agent.insert_resident(&unset, make_test_handle("effort-model", false, None));
     assert_eq!(
         read_effort(&agent.model_state(Some(&unset))).as_deref(),
         Some("low"),
@@ -1307,10 +1337,7 @@ async fn session_config_options_resolves_routing_slug_to_catalog_model() {
         .models_manager
         .insert_test_entry("catalog-key-model", entry);
     let sid = acp::SessionId::new("sess-slug");
-    agent
-        .sessions
-        .borrow_mut()
-        .insert(sid.clone(), make_test_handle("routing-slug", false, None));
+    agent.insert_resident(&sid, make_test_handle("routing-slug", false, None));
     let state = agent.model_state(Some(&sid));
     assert_eq!(state.current_model_id.0.as_ref(), "routing-slug");
     let opts = agent.session_config_options(Some(&sid), &state);
@@ -1345,7 +1372,8 @@ async fn yolo_toggle_scoped_by_client_identifier() {
         ),
     ]
     .into();
-    let updated = apply_yolo_mode_to_matching_sessions(&mut sessions, Some("grok-tui"), true);
+    let updated =
+        apply_yolo_mode_to_matching_sessions(sessions.values_mut(), Some("grok-tui"), true);
     assert_eq!(updated, 1, "exactly one matching session should be updated");
     assert!(
         sessions[&sid_tui].yolo_mode,
@@ -1373,7 +1401,8 @@ async fn yolo_toggle_can_disable_session_started_with_yolo_enabled() {
         ),
     ]
     .into();
-    let updated = apply_yolo_mode_to_matching_sessions(&mut sessions, Some("grok-tui"), false);
+    let updated =
+        apply_yolo_mode_to_matching_sessions(sessions.values_mut(), Some("grok-tui"), false);
     assert_eq!(updated, 1, "only the sender's session should be updated");
     assert!(
         !sessions[&sid_tui].yolo_mode,
@@ -1581,7 +1610,7 @@ async fn ext_method_routes_auth_cleared_and_refreshes_resident_sessions() {
             agent.managed_mcp_cache.lock().await.enable_gateway_tools();
             let sid = acp::SessionId::new("sess-auth-cleared");
             let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
-            agent.sessions.borrow_mut().insert(sid, handle);
+            agent.insert_resident(&sid, handle);
             let params = serde_json::json!({});
             agent
                 .ext_method(acp::ExtRequest::new(
@@ -1599,6 +1628,77 @@ async fn ext_method_routes_auth_cleared_and_refreshes_resident_sessions() {
         })
         .await;
 }
+/// Fresh managed catalog sync must push UpdateMcpServers with the injected
+/// managed connector. The `search_tool` rebuild is a SEPARATE broadcast
+/// (`refresh_mcp_search_index_in_sessions`), so it is not asserted here.
+#[tokio::test(flavor = "current_thread")]
+async fn sync_fresh_managed_mcp_pushes_update() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let agent = build_agent_with_auth(crate::auth::GrokAuth {
+                key: "eligible".into(),
+                auth_mode: crate::auth::AuthMode::WebLogin,
+                ..crate::auth::GrokAuth::test_default()
+            });
+            let sid = acp::SessionId::new("sess-managed-sync");
+            let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
+            agent.insert_resident(&sid, handle);
+            let managed = vec![crate::session::managed_mcp::ManagedMcpConfig {
+                name: "Linear".into(),
+                endpoint: "https://mcp.example.com/linear".into(),
+                headers: std::collections::HashMap::from([(
+                    "Authorization".into(),
+                    "Bearer tok".into(),
+                )]),
+                token_expires_at: None,
+                scope: None,
+                scope_id: None,
+                scope_name: None,
+            }];
+            agent.sync_fresh_managed_mcp_to_sessions(&managed);
+            let first = tokio::time::timeout(std::time::Duration::from_secs(1), cmd_rx.recv())
+                .await
+                .expect("UpdateMcpServers should be sent")
+                .expect("channel should stay open");
+            let SessionCommand::UpdateMcpServers { mcp_servers, .. } = first else {
+                panic!("expected UpdateMcpServers as the first synced command");
+            };
+            let managed_name = crate::session::managed_mcp::to_managed_name("Linear");
+            let linear = mcp_servers
+                .iter()
+                .find_map(|s| match s {
+                    acp::McpServer::Http(http) if http.name == managed_name => Some(http),
+                    _ => None,
+                })
+                .unwrap_or_else(|| {
+                    panic!("merged catalog must contain managed HTTP server {managed_name}")
+                });
+            assert!(
+                linear
+                    .headers
+                    .iter()
+                    .any(|h| h.name == "Authorization" && h.value == "Bearer tok"),
+                "managed server must carry the injected Authorization header"
+            );
+        })
+        .await;
+}
+/// The gateway-catalog refresh broadcast pushes `RefreshMcpSearchIndex` to every
+/// live session (independent of the legacy managed-connector sync).
+#[tokio::test(flavor = "current_thread")]
+async fn refresh_mcp_search_index_broadcasts_to_sessions() {
+    let agent = build_minimal_agent_for_tests();
+    let sid = acp::SessionId::new("sess-search-index");
+    let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
+    agent.insert_resident(&sid, handle);
+    agent.refresh_mcp_search_index_in_sessions();
+    let cmd = tokio::time::timeout(std::time::Duration::from_secs(1), cmd_rx.recv())
+        .await
+        .expect("RefreshMcpSearchIndex should be sent")
+        .expect("channel should stay open");
+    assert!(matches!(cmd, SessionCommand::RefreshMcpSearchIndex));
+}
 /// Build a minimal MvpAgent suitable for testing extension methods.
 fn build_minimal_agent_for_tests() -> MvpAgent {
     use crate::agent::config::Config as AgentConfig;
@@ -1610,6 +1710,57 @@ fn build_minimal_agent_for_tests() -> MvpAgent {
     let gateway = GatewaySender::new(tx);
     let cfg = AgentConfig::default();
     MvpAgent::new(gateway, &cfg, auth_manager, None).expect("valid test config")
+}
+fn session_usage_request(session_id: &str) -> acp::ExtRequest {
+    acp::ExtRequest::new(
+        "x.ai/session/usage",
+        serde_json::value::to_raw_value(&serde_json::json!({ "sessionId": session_id }))
+            .unwrap()
+            .into(),
+    )
+}
+#[tokio::test(flavor = "current_thread")]
+async fn session_usage_unknown_session_is_resource_not_found() {
+    let agent = build_minimal_agent_for_tests();
+    let err = crate::extensions::usage::handle(&agent, &session_usage_request("no-such-session"))
+        .await
+        .expect_err("unknown session");
+    assert_eq!(
+        err.code,
+        acp::Error::resource_not_found(None::<String>).code
+    );
+}
+#[tokio::test(flavor = "current_thread")]
+async fn session_usage_dead_chat_state_actor_fails_closed() {
+    let agent = build_minimal_agent_for_tests();
+    let sid = acp::SessionId::new("usage-dead-actor-sess");
+    let mut handle = make_test_handle("test-model", false, None);
+    handle.info.id = sid.clone();
+    agent.insert_resident(&sid, handle);
+    let err =
+        crate::extensions::usage::handle(&agent, &session_usage_request("usage-dead-actor-sess"))
+            .await
+            .expect_err("dead chat-state actor");
+    assert_eq!(err.code, acp::Error::internal_error().code);
+}
+/// The session responses publish the value THIS session's spawn pinned, so a
+/// client describing `/loop` fires can never contradict what the fires do.
+#[tokio::test(flavor = "current_thread")]
+async fn session_meta_publishes_the_sessions_pinned_scheduler_background_loops() {
+    let agent = build_minimal_agent_for_tests();
+    let sid = acp::SessionId::new("loop-mode-sess");
+    let mut handle = make_test_handle("test-model", false, None);
+    handle.info.id = sid.clone();
+    handle.scheduler_background_loops = false;
+    agent.insert_resident(&sid, handle);
+    let model_state = agent.model_state(Some(&sid));
+    let mut meta = serde_json::Map::new();
+    agent.insert_session_config_meta(&mut meta, &sid, "/tmp".to_string(), None, &model_state);
+    assert_eq!(
+        meta.get(crate::session::SCHEDULER_BACKGROUND_LOOPS_META_KEY),
+        Some(&serde_json::json!(false)),
+        "session meta must carry the handle's pinned value"
+    );
 }
 /// Build a minimal MvpAgent with pre-loaded auth for gate tests.
 fn build_agent_with_auth(auth: crate::auth::GrokAuth) -> MvpAgent {
@@ -1679,6 +1830,9 @@ async fn ensure_plugin_registry_lazily_populates_snapshot() {
         "repeat call must keep the populated snapshot"
     );
 }
+#[cfg(unix)]
+mod process_scope_reclaim;
+mod session_resume_close_tests;
 mod subagent_spawn_context_tests;
 /// No load in flight and no session → the wait returns immediately
 /// (the caller then surfaces "unknown session id" exactly as before).
@@ -1712,12 +1866,12 @@ async fn wait_for_in_flight_load_blocks_until_load_completes() {
                 waiter_agent
                     .wait_for_in_flight_session_load(&waiter_sid)
                     .await;
-                waiter_agent.sessions.borrow().contains_key(&waiter_sid)
+                waiter_agent.is_resident(&waiter_sid)
             });
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             assert!(!waiter.is_finished(), "waiter must block while loading");
             let handle = make_test_handle("test-model", false, None);
-            agent.sessions.borrow_mut().insert(sid.clone(), handle);
+            agent.insert_resident(&sid, handle);
             drop(guard);
             let found_session = tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
                 .await
@@ -1747,7 +1901,7 @@ async fn wait_for_in_flight_load_wakes_on_failed_load() {
                 waiter_agent
                     .wait_for_in_flight_session_load(&waiter_sid)
                     .await;
-                waiter_agent.sessions.borrow().contains_key(&waiter_sid)
+                waiter_agent.is_resident(&waiter_sid)
             });
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             drop(guard);
@@ -1770,12 +1924,12 @@ async fn concurrent_load_guards_do_not_clobber_each_other() {
     let guard_two = agent.begin_session_load(&sid);
     drop(guard_one);
     assert!(
-        agent.loading_sessions.borrow().contains_key(&sid),
+        agent.session_registry.is_attaching(&sid),
         "second load's marker must survive the first guard's drop"
     );
     drop(guard_two);
     assert!(
-        agent.loading_sessions.borrow().is_empty(),
+        agent.session_registry.attaching_count() == 0,
         "all markers removed once every load finished"
     );
 }
@@ -1791,7 +1945,7 @@ async fn resident_activity_reports_needs_input_when_pending() {
     let handle = make_test_handle("grok-3", false, None);
     let pending = handle.pending_interactions.clone();
     let prompt_id = handle.current_prompt_id.clone();
-    agent.sessions.borrow_mut().insert(sid.clone(), handle);
+    agent.insert_resident(&sid, handle);
     assert_eq!(agent.resident_activity(&sid), RosterActivity::Idle);
     *prompt_id.lock().unwrap() = Some("turn-1".to_string());
     assert_eq!(agent.resident_activity(&sid), RosterActivity::Working);
@@ -1847,10 +2001,7 @@ async fn push_roster_activity_delta_broadcasts_overridden_activity() {
     let cfg = AgentConfig::default();
     let agent = MvpAgent::new(gateway, &cfg, auth_manager, None).expect("valid test config");
     let sid = acp::SessionId::new("sess-activity");
-    agent
-        .sessions
-        .borrow_mut()
-        .insert(sid.clone(), make_test_handle("grok-3", false, None));
+    agent.insert_resident(&sid, make_test_handle("grok-3", false, None));
     agent.push_roster_activity_delta(&sid, RosterActivity::Working);
     let changed = drain_roster_changed(&mut rx).expect("turn-start delta emitted");
     assert_eq!(changed.upserted.len(), 1);
@@ -2766,6 +2917,21 @@ fn parse_session_kind_matrix() {
     assert_eq!(parse_session_kind(None), SessionKind::Build, "[none]");
 }
 #[test]
+fn reject_chat_kind_without_feature_errors_without_chat_feature() {
+    use serde_json::json;
+    assert!(
+        reject_chat_kind_without_feature(json!({"x.ai/session": {"kind": "chat"}}).as_object())
+            .is_err()
+    );
+    assert!(reject_chat_kind_without_feature(None).is_ok());
+    assert!(
+        reject_chat_kind_without_feature(
+            json!({ "x.ai/session" : { "kind" : "build" } }).as_object()
+        )
+        .is_ok()
+    );
+}
+#[test]
 fn chat_initial_model_matrix() {
     let cases: &[(&str, bool, Option<&str>, Option<&str>)] = &[
         ("chat_with_model", true, Some("grok-4.5"), Some("grok-4.5")),
@@ -2830,6 +2996,290 @@ fn chat_new_session_model_state_matrix() {
         );
     }
 }
+/// valid `x.ai/local_workspace` → ExistingWorkspace only.
+/// Never reads `envId` / never emits SandboxEnvironment.
+#[cfg(feature = "local-workspace")]
+#[test]
+fn parse_session_computer_sessions_local_workspace_matrix() {
+    use crate::gateway_bridge::ComputerSession;
+    use serde_json::json;
+    fn existing(server_id: &str, cwd: Option<&str>) -> Vec<ComputerSession> {
+        vec![ComputerSession::ExistingWorkspace {
+            server_id: server_id.to_owned(),
+            cwd: cwd.map(str::to_owned),
+        }]
+    }
+    let cases: &[(&str, serde_json::Value, Option<Vec<ComputerSession>>)] = &[
+        (
+            "attach_server_id_on_local",
+            json!({
+                "x.ai/local_workspace": {
+                    "mode": "attach",
+                    "server_id": "lw-attach-1",
+                    "cwd": "/repo",
+                },
+                "envId": "env-must-be-ignored",
+            }),
+            Some(existing("lw-attach-1", Some("/repo"))),
+        ),
+        (
+            "attach_server_id_from_cloud_existing",
+            json!({
+                "x.ai/local_workspace": {
+                    "mode": "attach",
+                    "cwd": "/repo",
+                },
+                "x.ai/cloud_existing_workspace": {
+                    "server_id": "lw-attach-2",
+                    "cwd": "/repo-existing",
+                },
+                "envId": "env-must-be-ignored",
+            }),
+            Some(existing("lw-attach-2", Some("/repo"))),
+        ),
+        (
+            "own_with_server_id_ignores_envid",
+            json!({
+                "x.ai/local_workspace": {
+                    "mode": "own",
+                    "server_id": "lw-own-1",
+                    "cwd": "/Users/me/src",
+                },
+                "envId": "env-must-be-ignored",
+            }),
+            Some(existing("lw-own-1", Some("/Users/me/src"))),
+        ),
+        (
+            "own_without_server_id_no_sandbox_fallback",
+            json!({
+                "x.ai/local_workspace": {
+                    "mode": "own",
+                    "cwd": "/Users/me/src",
+                },
+                "envId": "env-must-be-ignored",
+            }),
+            None,
+        ),
+        (
+            "invalid_mode_falls_through_to_envid",
+            json!({
+                "x.ai/local_workspace": {
+                    "mode": "bogus",
+                    "server_id": "lw-x",
+                },
+                "envId": "env-prod",
+            }),
+            Some(vec![ComputerSession::SandboxEnvironment {
+                environment_id: Some("env-prod".to_owned()),
+            }]),
+        ),
+        (
+            "non_object_local_falls_through_to_envid",
+            json!({
+                "x.ai/local_workspace": "not-an-object",
+                "envId": "env-prod",
+            }),
+            Some(vec![ComputerSession::SandboxEnvironment {
+                environment_id: Some("env-prod".to_owned()),
+            }]),
+        ),
+    ];
+    for (label, meta, expected) in cases {
+        let got = parse_session_computer_sessions(meta.as_object());
+        assert_eq!(
+            got.as_deref(),
+            expected.as_deref(),
+            "[{label}] local_workspace match-table mismatch"
+        );
+    }
+}
+/// Local intent without resolvable server_id fails closed (no silent unstamped start).
+#[cfg(feature = "local-workspace")]
+#[test]
+fn resolve_local_workspace_missing_server_id_fails_closed() {
+    use serde_json::json;
+    let meta = json!({
+        "x.ai/session": { "kind": "chat" },
+        "x.ai/local_workspace": {
+            "mode": "own",
+            "cwd": "/repo",
+        }
+    });
+    let err = resolve_session_computer_sessions(meta.as_object())
+        .expect_err("own without server_id must fail closed");
+    assert_eq!(
+        err.data
+            .as_ref()
+            .and_then(|d| d.get("code"))
+            .and_then(|v| v.as_str()),
+        Some("local_workspace_server_id_missing")
+    );
+}
+/// Supervisor map + reap guard / shutdown_gateway_bridge tear down the entry.
+#[cfg(all(feature = "local-workspace", unix))]
+#[test]
+fn local_workspace_reap_guard_and_shutdown_clear_map() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let sid = gateway_bridge_test_session_id();
+        {
+            let mut guard = agent.new_local_workspace_reap_guard(sid.clone(), true);
+            guard.disarm();
+        }
+        assert!(agent.local_workspace_supervisors.borrow().is_empty());
+        agent.shutdown_gateway_bridge(&sid);
+        assert!(
+            agent
+                .local_workspace_generations
+                .borrow()
+                .get(&sid)
+                .is_none()
+        );
+    });
+}
+/// Pre-bridge crash refresh rewrites handshake stamp from live supervisor id.
+#[cfg(all(feature = "local-workspace", unix))]
+#[test]
+fn refresh_sessions_from_supervisor_overrides_server_id() {
+    use crate::gateway_bridge::ComputerSession;
+    use crate::gateway_bridge::local_workspace_supervisor::test_start_ready_own;
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let sid = gateway_bridge_test_session_id();
+        let original = Some(vec![ComputerSession::ExistingWorkspace {
+            server_id: "lw-stale".into(),
+            cwd: Some("/repo".into()),
+        }]);
+        let unchanged = agent.refresh_sessions_from_supervisor(&sid, original.clone());
+        assert!(matches!(
+            unchanged.as_ref().and_then(|v| v.first()),
+            Some(ComputerSession::ExistingWorkspace { server_id, .. }) if server_id == "lw-stale"
+        ));
+        let (_dir, handle) = test_start_ready_own().await;
+        let live_id = handle.server_id.clone();
+        agent.register_local_workspace_supervisor(sid.clone(), handle);
+        let refreshed = agent.refresh_sessions_from_supervisor(&sid, original);
+        match refreshed.as_ref().and_then(|v| v.first()) {
+            Some(ComputerSession::ExistingWorkspace { server_id, .. }) => {
+                assert_eq!(
+                    server_id, &live_id,
+                    "refresh must use live supervisor server_id"
+                );
+            }
+            other => panic!("expected ExistingWorkspace, got {other:?}"),
+        }
+        agent.shutdown_gateway_bridge(&sid);
+    });
+}
+/// start_own + register stamps server_id into meta and stores the handle.
+#[cfg(all(feature = "local-workspace", unix))]
+#[test]
+fn start_own_registers_and_stamps_server_id() {
+    use crate::gateway_bridge::local_workspace_supervisor::{
+        stamp_server_id_into_meta, test_start_ready_own,
+    };
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let sid = gateway_bridge_test_session_id();
+        let (_dir, handle) = test_start_ready_own().await;
+        let server_id = handle.server_id.clone();
+        let mut meta = acp::Meta::new();
+        meta.insert(
+            "x.ai/local_workspace".into(),
+            serde_json::json!({"mode": "own", "cwd": "/tmp/repo"}),
+        );
+        stamp_server_id_into_meta(&mut meta, &server_id);
+        assert_eq!(
+            meta.get("x.ai/local_workspace")
+                .and_then(|v| v.get("server_id"))
+                .and_then(|v| v.as_str()),
+            Some(server_id.as_str())
+        );
+        agent.register_local_workspace_supervisor(sid.clone(), handle);
+        assert!(
+            agent
+                .local_workspace_supervisors
+                .borrow()
+                .contains_key(&sid),
+            "handle must be registered by SessionId"
+        );
+        assert!(
+            agent
+                .local_workspace_generations
+                .borrow()
+                .get(&sid)
+                .is_some_and(|g| *g >= 1),
+            "arm must bump generation"
+        );
+        agent.shutdown_gateway_bridge(&sid);
+    });
+}
+/// Armed reap guard removes a registered supervisor on drop (session/new failure).
+#[cfg(all(feature = "local-workspace", unix))]
+#[test]
+fn reap_guard_drop_removes_registered_supervisor() {
+    use crate::gateway_bridge::local_workspace_supervisor::test_start_ready_own;
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let sid = gateway_bridge_test_session_id();
+        let (_dir, handle) = test_start_ready_own().await;
+        agent.register_local_workspace_supervisor(sid.clone(), handle);
+        assert!(
+            agent
+                .local_workspace_supervisors
+                .borrow()
+                .contains_key(&sid)
+        );
+        {
+            let _guard = agent.new_local_workspace_reap_guard(sid.clone(), true);
+        }
+        assert!(
+            agent
+                .local_workspace_supervisors
+                .borrow()
+                .get(&sid)
+                .is_none(),
+            "armed guard drop must reap supervisor"
+        );
+        assert!(
+            agent
+                .local_workspace_generations
+                .borrow()
+                .get(&sid)
+                .is_none(),
+            "armed guard drop must invalidate generation"
+        );
+    });
+}
+/// Shutdown generation invalidates a pending restart re-insert.
+#[cfg(all(feature = "local-workspace", unix))]
+#[test]
+fn shutdown_generation_invalidates_stale_restart() {
+    use crate::gateway_bridge::local_workspace_supervisor::test_start_ready_own;
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let sid = gateway_bridge_test_session_id();
+        let (_dir, handle) = test_start_ready_own().await;
+        agent.register_local_workspace_supervisor(sid.clone(), handle);
+        let generation = *agent
+            .local_workspace_generations
+            .borrow()
+            .get(&sid)
+            .expect("generation after register");
+        agent.shutdown_gateway_bridge(&sid);
+        assert!(
+            agent.local_workspace_generations.borrow().get(&sid) != Some(&generation),
+            "shutdown must invalidate generation so stale restart cannot re-insert"
+        );
+        assert!(
+            agent
+                .local_workspace_supervisors
+                .borrow()
+                .get(&sid)
+                .is_none()
+        );
+    });
+}
 /// `spawn_gateway_bridge` uses `tokio::task::spawn_local`.
 fn run_local_for_bridge_test<F, Fut, T>(body: F) -> T
 where
@@ -2871,6 +3321,50 @@ fn chat_session_spawn_options_matches_thin_profile() {
         opts.persistence.is_noop(),
         "K10 thin profile must use PersistenceHandle::noop()"
     );
+    assert!(opts.is_chat_kind);
+}
+/// `remove_session` releases the workspace binding and drains the
+/// per-session side maps. Test agents default to `workspace_ops = None`,
+/// so no other test reaches the release.
+#[tokio::test]
+async fn remove_session_releases_workspace_binding_and_side_maps() {
+    let agent = build_minimal_agent_for_tests();
+    let sid = acp::SessionId::new("test-session-workspace-release");
+    let ops = agent_tui_workspace::WorkspaceOps::for_test();
+    let toolset =
+        std::sync::Arc::new(agent_tui_tools::registry::types::FinalizedToolset::empty_for_test());
+    let toolset_weak = std::sync::Arc::downgrade(&toolset);
+    ops.bind_local_session(
+        sid.0.as_ref(),
+        std::env::temp_dir(),
+        agent_tui_hunk_tracker::HunkTrackerHandle::noop(),
+        toolset,
+        None,
+    )
+    .expect("bind_local_session must succeed");
+    assert!(toolset_weak.upgrade().is_some());
+    *agent.workspace_ops.borrow_mut() = Some(ops);
+    agent
+        .session_registry
+        .set_unavailable_model(&sid, acp::ModelId::new(std::sync::Arc::from("gone-model")));
+    agent.set_turn_number(&sid, 3);
+    let (_permission_tx, permission_rx) =
+        tokio::sync::mpsc::unbounded_channel::<agent_tui_workspace::permission::PermissionEvent>();
+    agent
+        .session_registry
+        .set_permission_receiver(&sid, permission_rx);
+    agent.remove_session(&sid);
+    assert!(
+        toolset_weak.upgrade().is_none(),
+        "the workspace binding must release the toolset"
+    );
+    assert!(agent.session_registry.unavailable_model(&sid).is_none());
+    assert_eq!(agent.session_registry.counts().resident_resources, 0);
+    assert_eq!(
+        agent.session_registry.counts().retained_resources,
+        0,
+        "retained per-session resources must be reclaimed on removal"
+    );
 }
 /// Without a bridge, `ext_method` falls through to the unchanged local
 /// dispatch (`rewind::handle`), which reports the missing session — proving
@@ -2899,20 +3393,72 @@ fn cancel_does_not_forward_to_bridge_in_local_mode() {
         let agent = build_minimal_agent_for_tests();
         let sid = acp::SessionId::new("sess-cancel-local");
         let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
-        agent.sessions.borrow_mut().insert(sid.clone(), handle);
+        agent.insert_resident(&sid, handle);
         agent
             .cancel(acp::CancelNotification::new(sid.clone()))
             .await
             .expect("cancel must succeed");
         let mut saw_local_cancel = false;
         while let Ok(cmd) = cmd_rx.try_recv() {
-            if let SessionCommand::Cancel { .. } = cmd {
+            if let SessionCommand::Cancel(..) = cmd {
                 saw_local_cancel = true;
             }
         }
         assert!(
             saw_local_cancel,
             "local-mode cancel dispatches the local SessionCommand::Cancel with no bridge attached"
+        );
+    });
+}
+/// Regression (post-cancel slot hang, first bad release 0.2.101; see
+/// `dispatch_lock`). SDK e2e shape:
+/// `test_cancel_ends_in_flight_turn_and_frees_slot` (grok-agent-sdk).
+#[test]
+fn cancel_never_overtakes_in_flight_prompt_intake() {
+    use crate::session::SessionCommand;
+    use acp::Agent as _;
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let sid = acp::SessionId::new("sess-cancel-intake-race");
+        let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
+        agent.insert_resident(&sid, handle);
+        let order: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let (intake_parked_tx, intake_parked_rx) = tokio::sync::oneshot::channel::<()>();
+        let driver_order = order.clone();
+        tokio::task::spawn_local(async move {
+            let mut intake_parked_tx = Some(intake_parked_tx);
+            while let Some(cmd) = cmd_rx.recv().await {
+                match cmd {
+                    SessionCommand::GetCurrentPromptMode { .. } => {
+                        if let Some(tx) = intake_parked_tx.take() {
+                            let _ = tx.send(());
+                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        }
+                    }
+                    SessionCommand::Prompt { .. } => driver_order.borrow_mut().push("prompt"),
+                    SessionCommand::Cancel(..) => driver_order.borrow_mut().push("cancel"),
+                    _ => {}
+                }
+            }
+        });
+        let prompt_fut = agent.prompt(acp::PromptRequest::new(
+            sid.clone(),
+            vec![acp::ContentBlock::from("hi")],
+        ));
+        let cancel_fut = async {
+            intake_parked_rx
+                .await
+                .expect("prompt intake reaches the fake actor");
+            let _ = agent
+                .cancel(acp::CancelNotification::new(sid.clone()))
+                .await;
+        };
+        let _ = futures::join!(prompt_fut, cancel_fut);
+        assert_eq!(
+            order.borrow().as_slice(),
+            ["prompt", "cancel"],
+            "cancel must land on the actor mailbox after the prompt it targets"
         );
     });
 }
@@ -3000,6 +3546,256 @@ async fn drive_close(agent: &MvpAgent, session_id: &str) -> Result<acp::ExtRespo
         ))
         .await
 }
+/// Every method `parse_queue_edit_command` accepts must be forwarded from
+/// `ext_notification` to that session's mailbox. Parser-only coverage misses
+/// a dispatch drop.
+#[tokio::test(flavor = "current_thread")]
+async fn ext_notification_forwards_each_queue_method_to_session_actor() {
+    use acp::Agent as _;
+    let agent = build_minimal_agent_for_tests();
+    let sid = acp::SessionId::new("sess-queue-rt");
+    let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
+    agent.insert_resident(&sid, handle);
+    let session_id = sid.0.as_ref();
+    let cases: [(&str, serde_json::Value); 7] = [
+        (
+            "x.ai/queue/remove",
+            serde_json::json!({
+                "sessionId": session_id,
+                "id": "p-remove",
+                "expectedVersion": 3,
+                "owner": "grok-tui",
+            }),
+        ),
+        (
+            "x.ai/queue/reorder",
+            serde_json::json!({
+                "sessionId": session_id,
+                "orderedIds": ["a", "b"],
+            }),
+        ),
+        (
+            "x.ai/queue/clear",
+            serde_json::json!({
+                "sessionId": session_id,
+                "clientIdentifier": "grok-desktop",
+            }),
+        ),
+        (
+            "x.ai/queue/edit",
+            serde_json::json!({
+                "sessionId": session_id,
+                "id": "p-edit",
+                "newText": "rewritten",
+                "owner": "grok-vscode",
+            }),
+        ),
+        (
+            "x.ai/queue/interject",
+            serde_json::json!({
+                "sessionId": session_id,
+                "id": "p-interject",
+                "expectedVersion": 2,
+                "owner": "grok-tui",
+                "newText": "now",
+            }),
+        ),
+        (
+            "x.ai/queue/hold_edit",
+            serde_json::json!({
+                "sessionId": session_id,
+                "id": "p-hold",
+            }),
+        ),
+        (
+            "x.ai/queue/release_edit",
+            serde_json::json!({
+                "sessionId": session_id,
+                "id": "p-release",
+            }),
+        ),
+    ];
+    for (method, params) in cases {
+        let raw = serde_json::value::to_raw_value(&params).expect("serialize queue params");
+        agent
+            .ext_notification(acp::ExtNotification::new(method, raw.into()))
+            .await
+            .unwrap_or_else(|e| panic!("{method} ext_notification failed: {e}"));
+        let cmd = cmd_rx.try_recv().unwrap_or_else(|e| {
+            panic!("{method} must land a SessionCommand on the actor mailbox, try_recv={e}")
+        });
+        match (method, cmd) {
+            (
+                "x.ai/queue/remove",
+                SessionCommand::RemoveQueuedPrompt {
+                    id,
+                    expected_version,
+                    owner,
+                },
+            ) => {
+                assert_eq!(id, "p-remove");
+                assert_eq!(expected_version, 3);
+                assert_eq!(owner.as_deref(), Some("grok-tui"));
+            }
+            ("x.ai/queue/reorder", SessionCommand::ReorderQueue { ordered_ids }) => {
+                assert_eq!(ordered_ids, vec!["a", "b"]);
+            }
+            ("x.ai/queue/clear", SessionCommand::ClearQueue { owner }) => {
+                assert_eq!(owner.as_deref(), Some("grok-desktop"));
+            }
+            (
+                "x.ai/queue/edit",
+                SessionCommand::EditQueuedPrompt {
+                    id,
+                    new_text,
+                    editor,
+                },
+            ) => {
+                assert_eq!(id, "p-edit");
+                assert_eq!(new_text, "rewritten");
+                assert_eq!(editor.as_deref(), Some("grok-vscode"));
+            }
+            (
+                "x.ai/queue/interject",
+                SessionCommand::InterjectQueuedPrompt {
+                    id,
+                    expected_version,
+                    owner,
+                    new_text,
+                },
+            ) => {
+                assert_eq!(id, "p-interject");
+                assert_eq!(expected_version, 2);
+                assert_eq!(owner.as_deref(), Some("grok-tui"));
+                assert_eq!(new_text.as_deref(), Some("now"));
+            }
+            ("x.ai/queue/hold_edit", SessionCommand::HoldCombineEdit { id }) => {
+                assert_eq!(id, "p-hold");
+            }
+            ("x.ai/queue/release_edit", SessionCommand::ReleaseCombineEdit { id }) => {
+                assert_eq!(id, "p-release");
+            }
+            (method, _) => {
+                panic!("{method} dispatched a SessionCommand of the wrong variant")
+            }
+        }
+    }
+    assert!(
+        matches!(
+            cmd_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ),
+        "no extra SessionCommand may remain after the seven queue methods"
+    );
+}
+/// Methods the parser rejects (unknown, outbound `changed`, missing id /
+/// newText) and a missing session must not send a command or panic.
+#[tokio::test(flavor = "current_thread")]
+async fn ext_notification_queue_rejects_unknown_method_missing_id_and_unknown_session() {
+    use acp::Agent as _;
+    let agent = build_minimal_agent_for_tests();
+    let sid = acp::SessionId::new("sess-queue-neg");
+    let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
+    agent.insert_resident(&sid, handle);
+    let session_id = sid.0.as_ref();
+    let negatives: [(&str, serde_json::Value); 9] = [
+        (
+            "x.ai/queue/bogus",
+            serde_json::json!({ "sessionId": session_id, "id": "p1" }),
+        ),
+        (
+            "x.ai/queue/changed",
+            serde_json::json!({
+                "sessionId": session_id,
+                "entries": [{
+                    "id": "p1",
+                    "version": 0,
+                    "kind": "prompt",
+                    "text": "hello",
+                    "position": 0,
+                }],
+            }),
+        ),
+        (
+            "x.ai/queue/hold_edit",
+            serde_json::json!({ "sessionId": session_id }),
+        ),
+        (
+            "x.ai/queue/release_edit",
+            serde_json::json!({ "sessionId": session_id }),
+        ),
+        (
+            "x.ai/queue/remove",
+            serde_json::json!({ "sessionId": session_id }),
+        ),
+        (
+            "x.ai/queue/edit",
+            serde_json::json!({ "sessionId": session_id, "newText": "x" }),
+        ),
+        (
+            "x.ai/queue/edit",
+            serde_json::json!({ "sessionId": session_id, "id": "p-edit" }),
+        ),
+        (
+            "x.ai/queue/interject",
+            serde_json::json!({ "sessionId": session_id }),
+        ),
+        (
+            "x.ai/queue/hold_edit",
+            serde_json::json!({ "sessionId": "no-such-session", "id": "p1" }),
+        ),
+    ];
+    for (method, params) in negatives {
+        let raw = serde_json::value::to_raw_value(&params).expect("serialize queue params");
+        agent
+            .ext_notification(acp::ExtNotification::new(method, raw.into()))
+            .await
+            .unwrap_or_else(|e| panic!("{method} ext_notification must not fail: {e}"));
+        assert!(
+            matches!(
+                cmd_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "{method} must not send a SessionCommand (params={params})"
+        );
+    }
+    let agent_empty = build_minimal_agent_for_tests();
+    let raw = serde_json::value::to_raw_value(&serde_json::json!({
+        "sessionId": "ghost",
+        "id": "p1",
+    }))
+    .expect("serialize");
+    agent_empty
+        .ext_notification(acp::ExtNotification::new(
+            "x.ai/queue/release_edit",
+            raw.into(),
+        ))
+        .await
+        .expect("queue edit for a missing session must not error");
+}
+/// Fire-and-forget: a gone session actor must not turn `ext_notification`
+/// into an error or panic.
+#[tokio::test(flavor = "current_thread")]
+async fn ext_notification_queue_edit_survives_dropped_actor_mailbox() {
+    use acp::Agent as _;
+    let agent = build_minimal_agent_for_tests();
+    let sid = acp::SessionId::new("sess-queue-dead");
+    let (handle, _tx, cmd_rx) = make_live_session_handle(&sid, None);
+    agent.insert_resident(&sid, handle);
+    drop(cmd_rx);
+    let params = serde_json::json!({
+        "sessionId": sid.0.as_ref(),
+        "id": "p-hold",
+    });
+    let raw = serde_json::value::to_raw_value(&params).expect("serialize queue params");
+    agent
+        .ext_notification(acp::ExtNotification::new(
+            "x.ai/queue/hold_edit",
+            raw.into(),
+        ))
+        .await
+        .expect("queue edit must not error when the session actor mailbox is gone");
+}
 /// No-evict keystone: a client disconnecting mid-turn must NOT destroy the
 /// session. The actor stays resident, no `Shutdown` is sent, the resident
 /// session's command channel still **delivers** commands (so a reconnecting
@@ -3012,12 +3808,12 @@ fn disconnect_keeps_live_session_resident_without_finalize() {
         let sid = acp::SessionId::new("sess-live");
         let (_cmd_tx, mut cmd_rx) = {
             let (handle, tx, rx) = make_live_session_handle(&sid, Some("turn-1"));
-            agent.sessions.borrow_mut().insert(sid.clone(), handle);
+            agent.insert_resident(&sid, handle);
             (tx, rx)
         };
         drive_disconnect(&agent, &sid).await;
         assert!(
-            agent.sessions.borrow().contains_key(&sid),
+            agent.is_resident(&sid),
             "live session must stay resident across client disconnect"
         );
         assert!(
@@ -3028,10 +3824,7 @@ fn disconnect_keeps_live_session_resident_without_finalize() {
             "no command may be sent to a session kept resident with live work"
         );
         let resident = agent
-            .sessions
-            .borrow()
-            .get(&sid)
-            .cloned()
+            .resident_handle(&sid)
             .expect("session must still be resident");
         resident
             .cmd_tx
@@ -3065,7 +3858,7 @@ fn disconnect_keeps_resident_on_poisoned_lock() {
         let sid = acp::SessionId::new("sess-poison");
         let (handle, _tx, _rx) = make_live_session_handle(&sid, None);
         let poison_target = handle.current_prompt_id.clone();
-        agent.sessions.borrow_mut().insert(sid.clone(), handle);
+        agent.insert_resident(&sid, handle);
         let _ = std::thread::spawn(move || {
             let _g = poison_target.lock().unwrap();
             panic!("poison current_prompt_id");
@@ -3073,9 +3866,7 @@ fn disconnect_keeps_resident_on_poisoned_lock() {
         .join();
         assert!(
             agent
-                .sessions
-                .borrow()
-                .get(&sid)
+                .resident_handle(&sid)
                 .unwrap()
                 .current_prompt_id
                 .lock()
@@ -3084,12 +3875,52 @@ fn disconnect_keeps_resident_on_poisoned_lock() {
         );
         drive_disconnect(&agent, &sid).await;
         assert!(
-            agent.sessions.borrow().contains_key(&sid),
+            agent.is_resident(&sid),
             "a session with an unknown (poisoned) state must be kept resident"
         );
         assert_eq!(
             agent.session_live_state_for(&sid),
             Some(SessionLiveState::Working),
+        );
+    });
+}
+/// A wedged actor stays tracked. `remove_session` releases everything else but
+/// keeps a still-running thread, because dropping its handle would detach the
+/// thread and leave nothing for the supervisor sweep to find.
+#[test]
+fn remove_session_keeps_a_running_thread_tracked() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        let sid = acp::SessionId::new("sess-wedged");
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        agent.session_registry.set_thread(
+            &sid,
+            crate::session::SessionThread::from_handle(std::thread::spawn(move || {
+                let _ = release_rx.recv();
+            })),
+        );
+        agent.set_turn_number(&sid, 1);
+        agent.remove_session(&sid);
+        assert!(
+            agent.session_registry.has_thread(&sid),
+            "a running actor thread must survive removal for the sweep"
+        );
+        assert_eq!(
+            agent.session_registry.counts().retained_resources,
+            0,
+            "everything except the running thread must be released"
+        );
+        drop(release_tx);
+        for _ in 0..100 {
+            agent.sweep_dead_sessions();
+            if !agent.session_registry.has_thread(&sid) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            !agent.session_registry.has_thread(&sid),
+            "the sweep must reclaim the thread once it exits"
         );
     });
 }
@@ -3104,11 +3935,11 @@ fn disconnect_unloads_idle_session_without_finalize() {
         let agent = build_minimal_agent_for_tests();
         let sid = acp::SessionId::new("sess-idle");
         let (handle, _cmd_tx, cmd_rx) = make_live_session_handle(&sid, None);
-        agent.sessions.borrow_mut().insert(sid.clone(), handle);
+        agent.insert_resident(&sid, handle);
         let mut observed = spawn_fake_actor(cmd_rx, false);
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-        agent.session_threads.borrow_mut().insert(
-            sid.clone(),
+        agent.session_registry.set_thread(
+            &sid,
             crate::session::SessionThread::from_handle(std::thread::spawn(move || {
                 let _ = release_rx.recv();
             })),
@@ -3116,11 +3947,11 @@ fn disconnect_unloads_idle_session_without_finalize() {
         agent.ensure_session_supervisor();
         drive_disconnect(&agent, &sid).await;
         assert!(
-            !agent.sessions.borrow().contains_key(&sid),
+            !agent.is_resident(&sid),
             "idle session must be unloaded from the resident map on disconnect"
         );
         assert!(
-            agent.session_threads.borrow().contains_key(&sid),
+            agent.session_registry.has_thread(&sid),
             "idle-unload must keep the SessionThread for reconnect drain"
         );
         let shutdown = tokio::time::timeout(std::time::Duration::from_secs(1), observed.recv())
@@ -3128,7 +3959,7 @@ fn disconnect_unloads_idle_session_without_finalize() {
             .expect("idle-unload must send a command within 1s")
             .expect("fake actor channel must stay open");
         assert!(
-            matches!(shutdown, TestSessionCommand::Shutdown),
+            matches!(shutdown, TestSessionCommand::Shutdown(_)),
             "idle-unload must send SessionCommand::Shutdown"
         );
         assert!(
@@ -3143,13 +3974,13 @@ fn disconnect_unloads_idle_session_without_finalize() {
         drop(release_tx);
         let deadline = tokio::time::Instant::now() + (SESSION_SUPERVISOR_TICK * 6);
         while tokio::time::Instant::now() < deadline {
-            if !agent.session_threads.borrow().contains_key(&sid) {
+            if !agent.session_registry.has_thread(&sid) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         assert!(
-            !agent.session_threads.borrow().contains_key(&sid),
+            !agent.session_registry.has_thread(&sid),
             "supervisor must drop the finished kept thread"
         );
         assert!(
@@ -3178,11 +4009,11 @@ fn disconnect_keeps_resident_when_actor_reports_busy() {
         let agent = build_minimal_agent_for_tests();
         let sid = acp::SessionId::new("sess-busy");
         let (handle, _cmd_tx, cmd_rx) = make_live_session_handle(&sid, None);
-        agent.sessions.borrow_mut().insert(sid.clone(), handle);
+        agent.insert_resident(&sid, handle);
         let mut observed = spawn_fake_actor(cmd_rx, true);
         drive_disconnect(&agent, &sid).await;
         assert!(
-            agent.sessions.borrow().contains_key(&sid),
+            agent.is_resident(&sid),
             "a between-turns session with queued work (IsBusy=true) must stay resident"
         );
         assert_eq!(
@@ -3215,11 +4046,11 @@ fn disconnect_keeps_resident_when_plan_approval_parked() {
             "exit-plan-mode-resume".to_string(),
             crate::session::pending_interaction::PendingKind::PlanApproval,
         );
-        agent.sessions.borrow_mut().insert(sid.clone(), handle);
+        agent.insert_resident(&sid, handle);
         let mut observed = spawn_fake_actor(cmd_rx, false);
         drive_disconnect(&agent, &sid).await;
         assert!(
-            agent.sessions.borrow().contains_key(&sid),
+            agent.is_resident(&sid),
             "a session with a parked plan-approval must stay resident"
         );
         assert_eq!(
@@ -3252,19 +4083,13 @@ fn disconnect_mixed_batch_keeps_busy_unloads_idle() {
         let sid_idle = acp::SessionId::new("sess-batch-idle");
         let (busy_handle, _busy_tx, busy_rx) = make_live_session_handle(&sid_busy, None);
         let (idle_handle, _idle_tx, idle_rx) = make_live_session_handle(&sid_idle, None);
-        agent
-            .sessions
-            .borrow_mut()
-            .insert(sid_busy.clone(), busy_handle);
-        agent
-            .sessions
-            .borrow_mut()
-            .insert(sid_idle.clone(), idle_handle);
+        agent.insert_resident(&sid_busy, busy_handle);
+        agent.insert_resident(&sid_idle, idle_handle);
         let mut busy_observed = spawn_fake_actor(busy_rx, true);
         let mut idle_observed = spawn_fake_actor(idle_rx, false);
         drive_disconnect_many(&agent, &[&sid_busy, &sid_idle]).await;
         assert!(
-            agent.sessions.borrow().contains_key(&sid_busy),
+            agent.is_resident(&sid_busy),
             "the busy session in the batch must stay resident"
         );
         assert_eq!(
@@ -3273,7 +4098,7 @@ fn disconnect_mixed_batch_keeps_busy_unloads_idle() {
             "the busy session must be Working"
         );
         assert!(
-            !agent.sessions.borrow().contains_key(&sid_idle),
+            !agent.is_resident(&sid_idle),
             "the idle session in the batch must be unloaded"
         );
         assert_eq!(
@@ -3287,7 +4112,7 @@ fn disconnect_mixed_batch_keeps_busy_unloads_idle() {
                 .expect("idle session must receive a command within 1s")
                 .expect("fake actor channel must stay open");
         assert!(
-            matches!(idle_shutdown, TestSessionCommand::Shutdown),
+            matches!(idle_shutdown, TestSessionCommand::Shutdown(_)),
             "the idle session must be sent Shutdown"
         );
         tokio::task::yield_now().await;
@@ -3314,29 +4139,30 @@ fn session_live_state_map_is_bounded_across_cycles() {
         for i in 0..50 {
             let sid = acp::SessionId::new(format!("sess-cycle-{i}"));
             let (handle, _tx, _rx) = make_live_session_handle(&sid, Some("turn"));
-            agent.sessions.borrow_mut().insert(sid.clone(), handle);
+            agent.insert_resident(&sid, handle);
             agent.set_session_live_state(&sid, SessionLiveState::IdleResident);
-            agent.close_session_explicit(&sid);
+            assert_eq!(
+                agent.close_active_session(&sid).await,
+                crate::agent::mvp_agent::session_lifecycle::CloseOutcome::Closed,
+                "cycle {i} must actually close, or the bound below proves nothing"
+            );
         }
         assert_eq!(
-            agent.session_live_state.borrow().len(),
+            agent.session_registry.counts().session_live_state,
             0,
             "terminal closes must leave no residual live-state entries (bounded map)"
         );
     });
 }
-/// Finalize fires on a genuine terminal close — driven through the **real**
-/// `x.ai/session/close` dispatch (`ext_method` → `handle_session_close`),
-/// not the internal helper. Proves finalize was *moved* (not removed) and
-/// guards the handler's `existed` gate. (Finalize assertion is
-/// invocation-level; see note in `finalize_session_replica`.)
+/// Finalize fires on a genuine terminal close, driven through the real
+/// `x.ai/session/close` dispatch rather than the internal helper.
 #[test]
 fn explicit_close_finalizes_the_replica() {
     run_local_for_bridge_test(|| async {
         let agent = build_minimal_agent_for_tests();
         let sid = acp::SessionId::new("sess-close");
         let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, Some("turn-1"));
-        agent.sessions.borrow_mut().insert(sid.clone(), handle);
+        agent.insert_resident(&sid, handle);
         drive_close(&agent, "no-such-session")
             .await
             .expect("close of a missing session must succeed as a no-op");
@@ -3347,9 +4173,29 @@ fn explicit_close_finalizes_the_replica() {
         drive_close(&agent, sid.0.as_ref())
             .await
             .expect("session close must be handled");
+        let Ok(TestSessionCommand::Cancel(options)) = cmd_rx.try_recv() else {
+            panic!("close must send Cancel before anything else");
+        };
+        assert_eq!(
+            (
+                options.cancel_subagents,
+                options.kill_background_tasks,
+                options.rewind_if_no_output,
+                options.trigger.as_ref().map(|t| t.as_str()),
+                options.user_initiated
+            ),
+            (true, true, false, Some("session_close"), false),
+        );
         assert!(
-            matches!(cmd_rx.try_recv(), Ok(TestSessionCommand::Shutdown)),
-            "handle_session_close must send Shutdown to the actor"
+            matches!(
+                cmd_rx.try_recv(),
+                Ok(TestSessionCommand::Shutdown(
+                    crate::session::ShutdownKind::CancelRunningTurn
+                ))
+            ),
+            "close frees the session, so its Shutdown must cancel the running \
+             turn; a graceful one would let the turn answer EndTurn as the \
+             actor tears down"
         );
         assert_eq!(
             agent.finalize_spy.borrow().as_slice(),
@@ -3357,7 +4203,7 @@ fn explicit_close_finalizes_the_replica() {
             "explicit close must finalize the cloud replica exactly once"
         );
         assert!(
-            !agent.sessions.borrow().contains_key(&sid),
+            !agent.is_resident(&sid),
             "explicit close removes the session"
         );
         assert_eq!(
@@ -3389,27 +4235,27 @@ fn supervisor_reaps_panicked_resident_actor() {
         let agent = build_minimal_agent_for_tests();
         let sid = acp::SessionId::new("sess-panic");
         let (handle, _tx, _rx) = make_live_session_handle(&sid, Some("turn-1"));
-        agent.sessions.borrow_mut().insert(sid.clone(), handle);
+        agent.insert_resident(&sid, handle);
         let panic_thread = std::thread::spawn(|| panic!("injected actor panic"));
-        agent.session_threads.borrow_mut().insert(
-            sid.clone(),
+        agent.session_registry.set_thread(
+            &sid,
             crate::session::SessionThread::from_handle(panic_thread),
         );
         agent.set_session_live_state(&sid, SessionLiveState::Working);
         agent.ensure_session_supervisor();
         let deadline = tokio::time::Instant::now() + (SESSION_SUPERVISOR_TICK * 6);
         while tokio::time::Instant::now() < deadline {
-            if !agent.session_threads.borrow().contains_key(&sid) {
+            if !agent.session_registry.has_thread(&sid) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         assert!(
-            !agent.session_threads.borrow().contains_key(&sid),
+            !agent.session_registry.has_thread(&sid),
             "supervisor must reap the dead thread"
         );
         assert!(
-            !agent.sessions.borrow().contains_key(&sid),
+            !agent.is_resident(&sid),
             "reaped session must be removed from the resident map"
         );
         assert_eq!(
@@ -3430,6 +4276,400 @@ fn supervisor_reaps_panicked_resident_actor() {
             "reaping a dead actor must NOT finalize (conversation persists)"
         );
     });
+}
+/// Regression: writeback must self-correct once remote settings arrive
+/// (the field used to be frozen at construction).
+#[tokio::test]
+#[serial_test::serial]
+async fn storage_mode_self_corrects_to_writeback_when_settings_arrive() {
+    let _env = crate::env::EnvVarGuard::remove("GROK_STORAGE_MODE");
+    let auth = crate::auth::GrokAuth {
+        auth_mode: crate::auth::AuthMode::Oidc,
+        oidc_issuer: Some("https://auth.x.ai".to_string()),
+        key: "test-token".to_string(),
+        ..Default::default()
+    };
+    let agent = build_agent_with_auth(auth);
+    agent.cfg.borrow_mut().mode = crate::agent::config::AgentMode::Leader;
+    assert_eq!(agent.storage_mode(), StorageMode::Local);
+    agent.cfg.borrow_mut().remote_settings = Some(crate::util::config::RemoteSettings {
+        writeback_enabled: Some(true),
+        ..Default::default()
+    });
+    agent.on_remote_settings_changed();
+    assert_eq!(agent.storage_mode(), StorageMode::Writeback);
+}
+/// `spawn_settings_reapply` coalesces: while one reapply is in flight,
+/// repeated calls (boot + rapid `/new`) do not spawn overlapping tasks.
+#[test]
+fn spawn_settings_reapply_coalesces_while_in_flight() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        assert_eq!(agent.settings_reapply_spawn_count.get(), 0);
+        agent.spawn_settings_reapply();
+        agent.spawn_settings_reapply();
+        agent.spawn_settings_reapply();
+        assert_eq!(
+            agent.settings_reapply_spawn_count.get(),
+            1,
+            "overlapping settings reapplies must coalesce to a single task"
+        );
+        assert!(agent.settings_reapply_in_flight.get());
+    });
+}
+/// The in-flight guard clears on task completion (via the `ClearOnDrop`
+/// guard, so it also clears on panic), allowing a later reapply to re-spawn.
+#[test]
+fn spawn_settings_reapply_clears_flag_after_completion() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        agent.spawn_settings_reapply();
+        assert_eq!(agent.settings_reapply_spawn_count.get(), 1);
+        assert!(agent.settings_reapply_in_flight.get());
+        let mut cleared = false;
+        for _ in 0..40 {
+            if !agent.settings_reapply_in_flight.get() {
+                cleared = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(
+            cleared,
+            "in-flight flag must clear after the task completes"
+        );
+        agent.spawn_settings_reapply();
+        assert_eq!(
+            agent.settings_reapply_spawn_count.get(),
+            2,
+            "a reapply after completion must spawn again"
+        );
+    });
+}
+/// The post-auth fetch has its own guard, so an in-flight settings reapply
+/// cannot coalesce away a freshly authenticated identity's gate and settings
+/// resolution.
+#[test]
+fn post_auth_settings_not_coalesced_by_in_flight_reapply() {
+    run_local_for_bridge_test(|| async {
+        let agent = build_minimal_agent_for_tests();
+        agent.spawn_settings_reapply();
+        assert!(agent.settings_reapply_in_flight.get());
+        agent.spawn_post_auth_settings(crate::auth::GrokAuth::test_default());
+        assert_eq!(
+            agent.post_auth_settings_spawn_count.get(),
+            1,
+            "post-auth must spawn on its own guard despite an in-flight reapply"
+        );
+        assert!(agent.post_auth_settings_in_flight.get());
+    });
+}
+/// Agent with pre-loaded auth, a gateway receiver (to assert emitted
+/// notifications), and the proxy URL pointed at a mock `/v1/settings`.
+fn build_agent_with_auth_and_proxy(
+    auth: crate::auth::GrokAuth,
+    proxy_url: String,
+    mode: crate::agent::config::AgentMode,
+) -> (
+    MvpAgent,
+    tokio::sync::mpsc::UnboundedReceiver<agent_tui_acp_lib::AcpClientMessage>,
+) {
+    use crate::agent::config::Config as AgentConfig;
+    use crate::auth::{AuthManager, GrokComConfig};
+    let temp_dir = tempfile::tempdir().unwrap();
+    let auth_manager =
+        std::sync::Arc::new(AuthManager::new(temp_dir.path(), GrokComConfig::default()));
+    auth_manager.hot_swap(auth);
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let gateway = GatewaySender::new(tx);
+    let mut cfg = AgentConfig {
+        mode,
+        ..Default::default()
+    };
+    cfg.endpoints.cli_chat_proxy_base_url = Some(proxy_url);
+    let agent = MvpAgent::new(gateway, &cfg, auth_manager, None).expect("valid test config");
+    (agent, rx)
+}
+/// Drain the gateway, returning `true` if any `x.ai/settings/update`
+/// notification was emitted (and acking each so the sender doesn't warn).
+fn drained_settings_update(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<agent_tui_acp_lib::AcpClientMessage>,
+) -> bool {
+    let mut found = false;
+    while let Ok(msg) = rx.try_recv() {
+        if let agent_tui_acp_lib::AcpClientMessage::ExtNotification(args) = msg {
+            if &*args.request.method == "x.ai/settings/update" {
+                found = true;
+            }
+            let _ = args.response_tx.send(Ok(()));
+        }
+    }
+    found
+}
+/// Re-open the process-global external-OTEL gate on drop so a closed gate
+/// never leaks into another test.
+struct RestoreOtelGate;
+impl Drop for RestoreOtelGate {
+    fn drop(&mut self) {
+        agent_tui_telemetry::external::mark_external_otel_settings_resolved();
+    }
+}
+/// Regression: `cfg.remote_settings` is not reset on an account switch, so the
+/// access gate must not read a previous identity's cached `allow_access`. A
+/// mismatched identity stays provisionally open (unknown), like the OTEL gate's
+/// `rearm_on_switch`.
+#[tokio::test]
+async fn access_gate_does_not_leak_verdict_across_identities() {
+    use crate::agent::config::AgentMode;
+    use crate::auth::{GrokAuth, XAI_OAUTH2_ISSUER};
+    let auth_a = GrokAuth {
+        oidc_issuer: Some(XAI_OAUTH2_ISSUER.to_string()),
+        user_id: "user-a".into(),
+        ..GrokAuth::test_default()
+    };
+    let (agent, _rx) = build_agent_with_auth_and_proxy(
+        auth_a,
+        "http://127.0.0.1:1/".to_string(),
+        AgentMode::Leader,
+    );
+    {
+        let mut cfg = agent.cfg.borrow_mut();
+        cfg.remote_settings = Some(crate::util::config::RemoteSettings {
+            allow_access: Some(false),
+            ..Default::default()
+        });
+    }
+    *agent.allow_access_resolved_for.borrow_mut() = Some("user-a".to_string());
+    let auth_b = GrokAuth {
+        oidc_issuer: Some(XAI_OAUTH2_ISSUER.to_string()),
+        user_id: "user-b".into(),
+        ..GrokAuth::test_default()
+    };
+    assert!(auth_b.is_xai_auth(), "precondition: first-party xAI auth");
+    agent.enforce_grok_code_access(&auth_b).await;
+    assert!(
+        agent.tier_allowed.get(),
+        "identity B must not inherit identity A's denied allow_access verdict",
+    );
+}
+/// First-party xAI auth + `writeback_enabled` settings → storage upgrades to
+/// Writeback; the settings arrival also emits `x.ai/settings/update` and opens
+/// the external-OTEL gate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn post_auth_settings_xai_upgrades_writeback_emits_and_opens_gate() {
+    use crate::agent::config::AgentMode;
+    use crate::auth::{GrokAuth, XAI_OAUTH2_ISSUER};
+    let _restore = RestoreOtelGate;
+    let _storage_env = crate::env::EnvVarGuard::remove("GROK_STORAGE_MODE");
+    let server = agent_tui_test_support::MockInferenceServer::start()
+        .await
+        .unwrap();
+    server.set_settings(serde_json::json!({
+        "writeback_enabled": true,
+        "allow_access": true,
+    }));
+    let agent_tui_auth = GrokAuth {
+        oidc_issuer: Some(XAI_OAUTH2_ISSUER.to_string()),
+        ..GrokAuth::test_default()
+    };
+    assert!(agent_tui_auth.is_xai_auth(), "precondition: first-party xAI auth");
+    let (agent, mut rx) =
+        build_agent_with_auth_and_proxy(agent_tui_auth, server.url(), AgentMode::Leader);
+    assert_eq!(
+        agent.storage_mode(),
+        StorageMode::Local,
+        "precondition: leader boots in Local storage mode"
+    );
+    agent_tui_telemetry::external::suppress_external_otel_until_settings();
+    assert!(!agent_tui_telemetry::external::is_settings_gate_open());
+    agent.maybe_fetch_post_auth_settings().await;
+    assert_eq!(
+        agent.storage_mode(),
+        StorageMode::Writeback,
+        "xai auth + writeback_enabled settings must upgrade storage to Writeback"
+    );
+    assert!(
+        agent_tui_telemetry::external::is_settings_gate_open(),
+        "a settings response must open the external-OTEL gate"
+    );
+    assert!(
+        drained_settings_update(&mut rx),
+        "settings arrival must push x.ai/settings/update to clients"
+    );
+}
+/// BYOK auth must not be upgraded to `Writeback` even when the server
+/// advertises it; the push and gate still fire.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn post_auth_settings_non_xai_keeps_local_but_still_emits() {
+    use crate::agent::config::AgentMode;
+    use crate::auth::{AuthMode, GrokAuth};
+    let _restore = RestoreOtelGate;
+    let server = agent_tui_test_support::MockInferenceServer::start()
+        .await
+        .unwrap();
+    server.set_settings(serde_json::json!({
+        "writeback_enabled": true,
+        "allow_access": true,
+    }));
+    let api_auth = GrokAuth {
+        auth_mode: AuthMode::ApiKey,
+        ..GrokAuth::test_default()
+    };
+    assert!(
+        !api_auth.is_xai_auth(),
+        "precondition: non-first-party auth"
+    );
+    let (agent, mut rx) =
+        build_agent_with_auth_and_proxy(api_auth, server.url(), AgentMode::Leader);
+    agent_tui_telemetry::external::suppress_external_otel_until_settings();
+    agent.maybe_fetch_post_auth_settings().await;
+    assert_eq!(
+        agent.storage_mode(),
+        StorageMode::Local,
+        "non-xai auth must stay Local even when writeback is advertised remotely"
+    );
+    assert!(
+        agent_tui_telemetry::external::is_settings_gate_open(),
+        "a settings response must open the gate regardless of auth kind"
+    );
+    assert!(
+        drained_settings_update(&mut rx),
+        "settings arrival must push x.ai/settings/update for non-xai auth too"
+    );
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn post_auth_settings_failure_resolves_gate_onto_local_policy() {
+    use crate::agent::config::AgentMode;
+    use crate::auth::{GrokAuth, XAI_OAUTH2_ISSUER};
+    let _restore = RestoreOtelGate;
+    let server = agent_tui_test_support::MockInferenceServer::start()
+        .await
+        .unwrap();
+    let agent_tui_auth = GrokAuth {
+        oidc_issuer: Some(XAI_OAUTH2_ISSUER.to_string()),
+        ..GrokAuth::test_default()
+    };
+    let (agent, _rx) = build_agent_with_auth_and_proxy(agent_tui_auth, server.url(), AgentMode::Leader);
+    agent_tui_telemetry::external::suppress_external_otel_until_settings();
+    assert!(!agent_tui_telemetry::external::is_settings_gate_open());
+    agent.maybe_fetch_post_auth_settings().await;
+    assert!(
+        agent_tui_telemetry::external::is_settings_gate_open(),
+        "an exhausted fetch is a definitive answer: open on local policy"
+    );
+    assert!(
+        agent.cfg.borrow().remote_settings.is_none(),
+        "opening the gate must not fabricate settings; none were fetched"
+    );
+}
+/// A same-credential refresh must NOT re-suppress a gate already resolved for
+/// that credential; the reason `OtelGate` remembers the identity. With the
+/// gate resolved-open for this identity, a later failing (`Retry`) refresh
+/// leaves it OPEN (regressing the identity guard would re-close it forever).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn same_credential_refresh_does_not_flap_resolved_gate() {
+    use crate::agent::config::AgentMode;
+    use crate::auth::{GrokAuth, XAI_OAUTH2_ISSUER};
+    let _restore = RestoreOtelGate;
+    let server = agent_tui_test_support::MockInferenceServer::start()
+        .await
+        .unwrap();
+    let agent_tui_auth = GrokAuth {
+        oidc_issuer: Some(XAI_OAUTH2_ISSUER.to_string()),
+        ..GrokAuth::test_default()
+    };
+    let (agent, _rx) =
+        build_agent_with_auth_and_proxy(agent_tui_auth.clone(), server.url(), AgentMode::Leader);
+    agent.otel_gate.set_resolved_for(&agent_tui_auth.user_id);
+    agent_tui_telemetry::external::mark_external_otel_settings_resolved();
+    assert!(agent_tui_telemetry::external::is_settings_gate_open());
+    agent.refresh_remote_settings(&agent_tui_auth).await;
+    assert!(
+        agent_tui_telemetry::external::is_settings_gate_open(),
+        "a same-credential refresh must not flap a gate already resolved for it"
+    );
+}
+/// A `/settings` 401 from a token that rotated mid-flight must self-heal:
+/// refresh once and, if the token changed, re-fetch with it. Without the
+/// re-fetch the stale 401 fails OPEN (no remote policy).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn settings_self_heal_refetches_after_token_rotation() {
+    use crate::agent::config::AgentMode;
+    use crate::auth::refresh::{RefreshOutcome, TokenRefresher};
+    use crate::auth::{GrokAuth, XAI_OAUTH2_ISSUER};
+    let _restore = RestoreOtelGate;
+    let server = agent_tui_test_support::MockInferenceServer::start_with_required_auth(
+        vec![agent_tui_test_support::MockModelEntry::new("grok-build")],
+        "rotated-key",
+    )
+    .await
+    .unwrap();
+    server.set_settings(serde_json::json!({ "allow_access": true }));
+    struct RotatingRefresher;
+    #[async_trait::async_trait]
+    impl TokenRefresher for RotatingRefresher {
+        async fn refresh(&self, _r: crate::auth::manager::RefreshReason) -> RefreshOutcome {
+            RefreshOutcome::Success(Box::new(GrokAuth {
+                key: "rotated-key".into(),
+                oidc_issuer: Some(XAI_OAUTH2_ISSUER.to_string()),
+                refresh_token: Some("rt".into()),
+                expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+                ..GrokAuth::test_default()
+            }))
+        }
+    }
+    let stale = GrokAuth {
+        key: "stale-key".into(),
+        oidc_issuer: Some(XAI_OAUTH2_ISSUER.to_string()),
+        refresh_token: Some("rt".into()),
+        expires_at: Some(chrono::Utc::now() - chrono::Duration::hours(1)),
+        ..GrokAuth::test_default()
+    };
+    let (agent, _rx) =
+        build_agent_with_auth_and_proxy(stale.clone(), server.url(), AgentMode::Leader);
+    agent
+        .auth_manager
+        .set_refresher(std::sync::Arc::new(RotatingRefresher));
+    agent_tui_telemetry::external::suppress_external_otel_until_settings();
+    agent.refresh_remote_settings(&stale).await;
+    assert!(
+        agent_tui_telemetry::external::is_settings_gate_open(),
+        "the rotated-token re-fetch must land settings and open the gate"
+    );
+    assert!(
+        agent.cfg.borrow().remote_settings.is_some(),
+        "the re-fetched settings must be stored"
+    );
+}
+/// A logout can land while the detached post-auth fetch is in flight; the
+/// result must not be cached for the logged-out identity.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn settings_not_cached_when_identity_logs_out_during_fetch() {
+    use crate::agent::config::AgentMode;
+    use crate::auth::{GrokAuth, XAI_OAUTH2_ISSUER};
+    let _restore = RestoreOtelGate;
+    let server = agent_tui_test_support::MockInferenceServer::start()
+        .await
+        .unwrap();
+    server.set_settings(serde_json::json!({ "allow_access": true }));
+    let agent_tui_auth = GrokAuth {
+        oidc_issuer: Some(XAI_OAUTH2_ISSUER.to_string()),
+        ..GrokAuth::test_default()
+    };
+    let (agent, _rx) =
+        build_agent_with_auth_and_proxy(agent_tui_auth.clone(), server.url(), AgentMode::Leader);
+    agent.auth_manager.clear_in_memory();
+    agent.refresh_remote_settings(&agent_tui_auth).await;
+    assert!(
+        agent.cfg.borrow().remote_settings.is_none(),
+        "settings fetched for a logged-out identity must not be cached"
+    );
 }
 /// `ensure_session_supervisor` is idempotent: calling it repeatedly spawns
 /// the sweeper loop exactly once.
@@ -3458,15 +4698,19 @@ fn reload_after_terminal_removal_starts_clean() {
         let agent = build_minimal_agent_for_tests();
         let sid = acp::SessionId::new("sess-reload");
         let (handle, _tx, _rx) = make_live_session_handle(&sid, Some("turn-1"));
-        agent.sessions.borrow_mut().insert(sid.clone(), handle);
-        agent.close_session_explicit(&sid);
+        agent.insert_resident(&sid, handle);
+        assert_eq!(
+            agent.close_active_session(&sid).await,
+            crate::agent::mvp_agent::session_lifecycle::CloseOutcome::Closed,
+            "the reload below is only meaningful after a close that happened"
+        );
         assert_eq!(
             agent.session_live_state_for(&sid),
             None,
             "terminal removal must leave no stale state"
         );
         let (handle2, _tx2, _rx2) = make_live_session_handle(&sid, None);
-        agent.sessions.borrow_mut().insert(sid.clone(), handle2);
+        agent.insert_resident(&sid, handle2);
         agent.set_session_live_state(&sid, SessionLiveState::IdleResident);
         assert_eq!(
             agent.session_live_state_for(&sid),
@@ -3512,6 +4756,130 @@ fn folder_trust_on() -> crate::util::config::RemoteSettings {
         ..Default::default()
     }
 }
+#[test]
+#[serial_test::serial]
+fn subagent_spawn_context_reloads_project_definitions_after_trust_changes() {
+    let repo = tempfile::tempdir().unwrap();
+    git2::Repository::init(repo.path()).unwrap();
+    write_project_subagent_definitions(repo.path());
+    run_local_for_bridge_test(|| async {
+        let (agent, _rx) = build_agent_with_gateway_rx();
+        let sid = acp::SessionId::new("roles-personas-trust-transition");
+        let (mut handle, _tx, _cmd_rx) = make_live_session_handle(&sid, None);
+        handle.info.cwd = repo.path().display().to_string();
+        agent.insert_resident(&sid, handle);
+        {
+            let mut cfg = agent.cfg.borrow_mut();
+            cfg.subagent_roles.insert(
+                "refreshed".into(),
+                agent_tui_subagent_resolution::config::SubagentRole {
+                    description: "Refreshed user role".into(),
+                    source_dir: Some(repo.path().join("user-roles")),
+                    ..Default::default()
+                },
+            );
+            cfg.subagent_model_overrides
+                .insert("probe".into(), "refreshed-model".into());
+            cfg.subagent_toggle.insert("probe".into(), false);
+        }
+        crate::agent::folder_trust::record_for_test(repo.path(), false);
+        let untrusted = agent.build_subagent_spawn_context(sid.0.as_ref());
+        assert!(!untrusted.subagent_roles.contains_key("probe"));
+        assert!(!untrusted.subagent_personas.contains_key("probe"));
+        assert_eq!(
+            untrusted
+                .subagent_roles
+                .get("refreshed")
+                .map(|role| role.description.as_str()),
+            Some("Refreshed user role")
+        );
+        assert_eq!(
+            untrusted
+                .subagent_model_overrides
+                .get("probe")
+                .map(String::as_str),
+            Some("refreshed-model")
+        );
+        assert_eq!(untrusted.subagent_toggle.get("probe"), Some(&false));
+        crate::agent::folder_trust::record_for_test(repo.path(), true);
+        let trusted = agent.build_subagent_spawn_context(sid.0.as_ref());
+        assert_eq!(
+            trusted
+                .subagent_roles
+                .get("probe")
+                .map(|role| role.description.as_str()),
+            Some("Project role")
+        );
+        assert!(trusted.subagent_personas.contains_key("probe"));
+        crate::agent::folder_trust::record_for_test(repo.path(), false);
+        let revoked = agent.build_subagent_spawn_context(sid.0.as_ref());
+        assert!(!revoked.subagent_roles.contains_key("probe"));
+        assert!(!revoked.subagent_personas.contains_key("probe"));
+    });
+}
+/// End-to-end gate wiring: project `.grok/roles` / `personas` alone must drive
+/// real `resolve_and_record` untrusted (not a forced `record_for_test` verdict),
+/// keep project defs out of Task spawn context, then re-admit them after grant.
+#[test]
+#[serial_test::serial]
+fn project_roles_personas_gated_via_resolve_and_record_chain() {
+    use agent_tui_test_support::EnvGuard;
+    let home = tempfile::tempdir().unwrap();
+    let _env = EnvGuard::set("GROK_HOME", home.path());
+    let _sim = EnvGuard::set(agent_tui_version::TEST_VERSION_ENV, "0.0-sim");
+    let _flag = EnvGuard::unset("GROK_FOLDER_TRUST");
+    let repo = tempfile::tempdir().unwrap();
+    git2::Repository::init(repo.path()).unwrap();
+    write_project_subagent_definitions(repo.path());
+    run_local_for_bridge_test(|| async {
+        let (agent, _rx) = build_agent_with_gateway_rx();
+        let sid = acp::SessionId::new("roles-personas-resolve-chain");
+        let (mut handle, _tx, _cmd_rx) = make_live_session_handle(&sid, None);
+        handle.info.cwd = repo.path().display().to_string();
+        agent.insert_resident(&sid, handle);
+        let allowed = crate::agent::folder_trust::resolve_and_record(
+            repo.path(),
+            Some(&folder_trust_on()),
+            false,
+        );
+        assert!(
+            !allowed,
+            "roles/personas markers alone must resolve untrusted without a grant"
+        );
+        assert!(
+            !crate::agent::folder_trust::project_scope_allowed(repo.path()),
+            "cached verdict after resolve_and_record must stay untrusted"
+        );
+        let untrusted = agent.build_subagent_spawn_context(sid.0.as_ref());
+        assert!(
+            !untrusted.subagent_roles.contains_key("probe"),
+            "untrusted: project role must stay out of spawn context"
+        );
+        assert!(
+            !untrusted.subagent_personas.contains_key("probe"),
+            "untrusted: project persona must stay out of spawn context"
+        );
+        crate::agent::folder_trust::grant_folder_trust(repo.path());
+        let allowed = crate::agent::folder_trust::resolve_and_record(
+            repo.path(),
+            Some(&folder_trust_on()),
+            false,
+        );
+        assert!(allowed, "store-granted folder must resolve trusted");
+        let trusted = agent.build_subagent_spawn_context(sid.0.as_ref());
+        assert_eq!(
+            trusted
+                .subagent_roles
+                .get("probe")
+                .map(|role| role.description.as_str()),
+            Some("Project role")
+        );
+        assert!(
+            trusted.subagent_personas.contains_key("probe"),
+            "trusted: project persona must enter spawn context after grant"
+        );
+    });
+}
 /// Pull the next `x.ai/folder_trust/request` reverse-request off the gateway and
 /// answer it with `outcome`. Returns the request's decoded params.
 async fn answer_folder_trust_request(
@@ -3556,7 +4924,7 @@ fn interactive_trust_prompt_grant_reloads_project_mcp() {
         let sid = acp::SessionId::new("sess-trust");
         let (mut handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
         handle.info.cwd = repo_path.to_string_lossy().to_string();
-        agent.sessions.borrow_mut().insert(sid.clone(), handle);
+        agent.insert_resident(&sid, handle);
         agent.maybe_spawn_interactive_trust_prompt(&sid, &repo_path, Some(&remote));
         let params = answer_folder_trust_request(&mut gw_rx, "trust").await;
         assert!(
@@ -3631,7 +4999,7 @@ fn interactive_trust_prompt_reject_keeps_gated() {
         let sid = acp::SessionId::new("sess-reject");
         let (mut handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
         handle.info.cwd = repo_path.to_string_lossy().to_string();
-        agent.sessions.borrow_mut().insert(sid.clone(), handle);
+        agent.insert_resident(&sid, handle);
         agent.maybe_spawn_interactive_trust_prompt(&sid, &repo_path, Some(&remote));
         let _ = answer_folder_trust_request(&mut gw_rx, "reject").await;
         assert!(
@@ -3670,7 +5038,7 @@ fn interactive_trust_prompt_dormant_when_feature_off() {
         let sid = acp::SessionId::new("sess-dormant");
         let (mut handle, _tx, _cmd_rx) = make_live_session_handle(&sid, None);
         handle.info.cwd = repo_path.to_string_lossy().to_string();
-        agent.sessions.borrow_mut().insert(sid.clone(), handle);
+        agent.insert_resident(&sid, handle);
         agent.maybe_spawn_interactive_trust_prompt(&sid, &repo_path, Some(&remote));
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(300), gw_rx.recv())
@@ -3697,7 +5065,7 @@ fn interactive_trust_prompt_no_request_without_capability() {
         let sid = acp::SessionId::new("sess-nocap");
         let (mut handle, _tx, _cmd_rx) = make_live_session_handle(&sid, None);
         handle.info.cwd = repo_path.to_string_lossy().to_string();
-        agent.sessions.borrow_mut().insert(sid.clone(), handle);
+        agent.insert_resident(&sid, handle);
         agent.maybe_spawn_interactive_trust_prompt(&sid, &repo_path, Some(&remote));
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(300), gw_rx.recv())
@@ -3726,7 +5094,7 @@ fn interactive_trust_prompt_client_error_fails_closed() {
         let sid = acp::SessionId::new("sess-err");
         let (mut handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
         handle.info.cwd = repo_path.to_string_lossy().to_string();
-        agent.sessions.borrow_mut().insert(sid.clone(), handle);
+        agent.insert_resident(&sid, handle);
         agent.maybe_spawn_interactive_trust_prompt(&sid, &repo_path, Some(&remote));
         let msg = tokio::time::timeout(std::time::Duration::from_secs(2), gw_rx.recv())
             .await
@@ -3767,7 +5135,7 @@ fn interactive_trust_prompt_dedups_same_workspace() {
         let sid = acp::SessionId::new("sess-dedup");
         let (mut handle, _tx, _cmd_rx) = make_live_session_handle(&sid, None);
         handle.info.cwd = repo_path.to_string_lossy().to_string();
-        agent.sessions.borrow_mut().insert(sid.clone(), handle);
+        agent.insert_resident(&sid, handle);
         agent.maybe_spawn_interactive_trust_prompt(&sid, &repo_path, Some(&remote));
         let first = tokio::time::timeout(std::time::Duration::from_secs(2), gw_rx.recv()).await;
         assert!(
@@ -3851,18 +5219,15 @@ fn interactive_trust_prompt_reloads_all_same_workspace_sessions() {
         let sid_root = acp::SessionId::new("sess-root");
         let (mut h_root, _t1, mut rx_root) = make_live_session_handle(&sid_root, None);
         h_root.info.cwd = root.to_string_lossy().to_string();
-        agent.sessions.borrow_mut().insert(sid_root.clone(), h_root);
+        agent.insert_resident(&sid_root, h_root);
         let sid_sub = acp::SessionId::new("sess-sub");
         let (mut h_sub, _t2, mut rx_sub) = make_live_session_handle(&sid_sub, None);
         h_sub.info.cwd = subdir.to_string_lossy().to_string();
-        agent.sessions.borrow_mut().insert(sid_sub.clone(), h_sub);
+        agent.insert_resident(&sid_sub, h_sub);
         let sid_other = acp::SessionId::new("sess-other");
         let (mut h_other, _t3, mut rx_other) = make_live_session_handle(&sid_other, None);
         h_other.info.cwd = other_path.to_string_lossy().to_string();
-        agent
-            .sessions
-            .borrow_mut()
-            .insert(sid_other.clone(), h_other);
+        agent.insert_resident(&sid_other, h_other);
         agent.maybe_spawn_interactive_trust_prompt(&sid_root, &root, Some(&remote));
         let _ = answer_folder_trust_request(&mut gw_rx, "trust").await;
         let root_cmds = drain_reload_commands(&mut rx_root).await;
@@ -3907,7 +5272,7 @@ fn interactive_trust_prompt_reprompts_after_untrust() {
         let sid = acp::SessionId::new("sess-reprompt");
         let (mut handle, _tx, _cmd_rx) = make_live_session_handle(&sid, None);
         handle.info.cwd = repo_path.to_string_lossy().to_string();
-        agent.sessions.borrow_mut().insert(sid.clone(), handle);
+        agent.insert_resident(&sid, handle);
         agent.maybe_spawn_interactive_trust_prompt(&sid, &repo_path, Some(&remote));
         assert!(
             matches!(

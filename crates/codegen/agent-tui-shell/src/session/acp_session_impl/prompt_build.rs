@@ -394,8 +394,32 @@ impl SessionActor {
         let bridge = self.agent.borrow().tool_bridge().clone();
         let (vcs_root, vcs_status) = self.gather_vcs_for_prefix(cwd).await;
         let agents_files = read_agents_config_with_paths(&cwd_str, self.rebuild_spec.compat).await;
-        let (workspace_rules, user_rules) = partition_rules_by_scope(agents_files);
-        let skills = bridge.slash_skills().await;
+        let grok_home = agent_tui_config::grok_home();
+        let vendor_homes = dirs::home_dir()
+            .map(|home_dir| {
+                vec![
+                    (
+                        home_dir.join(".claude"),
+                        self.rebuild_spec.compat.claude.agents,
+                    ),
+                    (
+                        home_dir.join(".cursor"),
+                        self.rebuild_spec.compat.cursor.agents,
+                    ),
+                ]
+            })
+            .unwrap_or_default();
+        let workspace_root = git2::Repository::discover(cwd)
+            .ok()
+            .and_then(|repo| repo.workdir().map(std::path::Path::to_path_buf))
+            .unwrap_or_else(|| cwd.to_path_buf());
+        let (workspace_rules, user_rules) = partition_rules_by_scope(
+            agents_files,
+            &grok_home,
+            &vendor_homes,
+            Some(&workspace_root),
+        );
+        let skills = self.slash_skills_for_resolve().await;
         let mcp_servers = self.gather_mcp_servers(cwd).await;
         let shell = resolve_session_shell();
         let today_local = chrono::Local::now().date_naive();

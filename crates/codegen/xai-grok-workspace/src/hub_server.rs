@@ -60,7 +60,9 @@ static WORKSPACE_RPC_REQUESTS_TOTAL: std::sync::LazyLock<IntCounterVec> =
     std::sync::LazyLock::new(|| {
         register_int_counter_vec!(
             "grok_workspace_rpc_requests_total",
-            "Workspace RPC dispatches, by method and result",
+            "Workspace RPC dispatches, by method and result. Donated per-sandbox \
+             series inflate absolute volume — SLOs must use ratios \
+             (error/total), not increase() counts.",
             &["method", "result"]
         )
         .unwrap()
@@ -71,7 +73,9 @@ static WORKSPACE_RPC_ERRORS_TOTAL: std::sync::LazyLock<IntCounterVec> =
     std::sync::LazyLock::new(|| {
         register_int_counter_vec!(
             "grok_workspace_rpc_errors_total",
-            "Failed workspace RPC dispatches, by method and error kind",
+            "Failed workspace RPC dispatches, by method and error kind. \
+             Donated per-sandbox series inflate absolute volume — compare \
+             error_kind shares or error/total ratios, not raw counts.",
             &["method", "error_kind"]
         )
         .unwrap()
@@ -90,17 +94,13 @@ static WORKSPACE_RPC_DURATION_SECONDS: std::sync::LazyLock<HistogramVec> =
         .unwrap()
     });
 const UNKNOWN_METHOD_LABEL: &str = "unknown";
-/// Prefix of the [`WorkspaceError::HubError`] for an unrecognized method. Shared
-/// by the dispatch default arm and the metric classifier so the "collapse to
-/// `unknown`" decision cannot drift from the error it keys on.
-const UNKNOWN_METHOD_ERR_PREFIX: &str = "unknown workspace method:";
 /// Zero-init this module's metric families. See [`crate::init_metrics`].
 pub(crate) fn init_metrics() {
     WORKSPACE_RPC_REQUESTS_TOTAL
         .with_label_values(&[UNKNOWN_METHOD_LABEL, "error"])
         .inc_by(0);
     WORKSPACE_RPC_ERRORS_TOTAL
-        .with_label_values(&[UNKNOWN_METHOD_LABEL, "hub_error"])
+        .with_label_values(&[UNKNOWN_METHOD_LABEL, "unknown_method"])
         .inc_by(0);
     let _ = WORKSPACE_RPC_DURATION_SECONDS.with_label_values(&[UNKNOWN_METHOD_LABEL]);
 }
@@ -731,6 +731,9 @@ impl WorkspaceRpcHandler {
                 let result = crate::worktree::create_worktree_streaming(&req, &NoOpNotifier).await;
                 serde_json::to_value(result).map_err(|e| WorkspaceError::HubError(e.to_string()))
             }
+            <ReposListReq as WorkspaceRpc>::METHOD => {
+                dispatch_op::<ReposListReq>(params, &self.workspace, None).await
+            }
             <GitStatusExtReq as WorkspaceRpc>::METHOD => {
                 dispatch_op::<GitStatusExtReq>(params, &self.workspace, None).await
             }
@@ -754,6 +757,9 @@ impl WorkspaceRpcHandler {
             }
             <GitCommitReq as WorkspaceRpc>::METHOD => {
                 dispatch_op::<GitCommitReq>(params, &self.workspace, None).await
+            }
+            <GitSyncBaseReq as WorkspaceRpc>::METHOD => {
+                dispatch_op::<GitSyncBaseReq>(params, &self.workspace, None).await
             }
             <GitCheckoutReq as WorkspaceRpc>::METHOD => {
                 dispatch_op::<GitCheckoutReq>(params, &self.workspace, None).await
@@ -927,9 +933,7 @@ impl WorkspaceRpcHandler {
             }
             _ => {
                 tracing::warn!(method, "unknown workspace rpc method");
-                Err(WorkspaceError::HubError(format!(
-                    "{UNKNOWN_METHOD_ERR_PREFIX} {method}"
-                )))
+                Err(WorkspaceError::UnknownMethod(method.to_owned()))
             }
         }
     }
@@ -978,18 +982,11 @@ impl ToolServerHandler for WorkspaceRpcHandler {
             .cloned()
             .unwrap_or(Value::Object(Default::default()));
         let bound_session = ctx.extensions.get::<xai_tool_runtime::SessionContext>();
+        let session_id = bound_session.as_deref().map(|s| s.0.as_str());
         let start = std::time::Instant::now();
-        let result = self
-            .dispatch(
-                method,
-                params,
-                bound_session.as_deref().map(|s| s.0.as_str()),
-            )
-            .await;
-        let is_unknown_method = matches!(
-            &result,
-            Err(WorkspaceError::HubError(msg)) if msg.starts_with(UNKNOWN_METHOD_ERR_PREFIX)
-        );
+        let result = self.dispatch(method, params, session_id).await;
+        let error_kind = result.as_ref().err().map(WorkspaceError::metric_kind);
+        let is_unknown_method = matches!(&result, Err(WorkspaceError::UnknownMethod(_)));
         let method_label = if is_unknown_method {
             UNKNOWN_METHOD_LABEL
         } else {
@@ -998,9 +995,9 @@ impl ToolServerHandler for WorkspaceRpcHandler {
         WORKSPACE_RPC_REQUESTS_TOTAL
             .with_label_values(&[method_label, if result.is_ok() { "ok" } else { "error" }])
             .inc();
-        if let Err(e) = &result {
+        if let Some(error_kind) = error_kind {
             WORKSPACE_RPC_ERRORS_TOTAL
-                .with_label_values(&[method_label, e.metric_kind()])
+                .with_label_values(&[method_label, error_kind])
                 .inc();
         }
         WORKSPACE_RPC_DURATION_SECONDS
@@ -1137,6 +1134,7 @@ impl ToolServerHandler for WorkspaceRpcHandler {
             if let Some(session) = sessions.remove(sid) {
                 session.abort_system_notify_forwarder();
                 session.shutdown_terminal_backend();
+                session.shutdown_browser_service();
                 session.cancel_hunk_tracker();
             }
             let empty = sessions.is_empty();
@@ -1270,15 +1268,18 @@ mod tests {
         assert_eq!(reply, turn_hook::HookReply::default());
     }
     #[tokio::test]
-    async fn dispatch_unknown_method_returns_hub_error() {
+    async fn dispatch_unknown_method_returns_unknown_method_error() {
         let handle = make_handle();
         let handler = WorkspaceRpcHandler::new(handle);
         let result = handler
             .dispatch("workspace.nonexistent", Value::Null, None)
             .await;
-        assert!(
-            matches!(result, Err(WorkspaceError::HubError(msg)) if msg.contains("unknown workspace method"))
-        );
+        match result {
+            Err(WorkspaceError::UnknownMethod(method)) => {
+                assert_eq!(method, "workspace.nonexistent");
+            }
+            other => panic!("expected UnknownMethod, got {other:?}"),
+        }
     }
     /// A hub evict runs the two-phase drain then settles into terminal
     /// ShuttingDown (not a lingering Draining) for an evicted workspace.
@@ -2357,7 +2358,7 @@ mod tests {
             .with_label_values(&[UNKNOWN_METHOD_LABEL, "error"])
             .get();
         let kind_before = WORKSPACE_RPC_ERRORS_TOTAL
-            .with_label_values(&[UNKNOWN_METHOD_LABEL, "hub_error"])
+            .with_label_values(&[UNKNOWN_METHOD_LABEL, "unknown_method"])
             .get();
         let mut stream = handler
             .handle_call(
@@ -2375,7 +2376,7 @@ mod tests {
         );
         assert!(
             WORKSPACE_RPC_ERRORS_TOTAL
-                .with_label_values(&[UNKNOWN_METHOD_LABEL, "hub_error"])
+                .with_label_values(&[UNKNOWN_METHOD_LABEL, "unknown_method"])
                 .get()
                 > kind_before,
             "a failed dispatch must also record its error_kind on the errors counter"
@@ -3175,6 +3176,7 @@ mod tests {
         let handler = WorkspaceRpcHandler::new(make_handle());
         let methods = [
             <WorkspaceInfoReq as WorkspaceRpc>::METHOD,
+            <ReposListReq as WorkspaceRpc>::METHOD,
             <GitStatusReq as WorkspaceRpc>::METHOD,
             <DiscoverSkillsReq as WorkspaceRpc>::METHOD,
             <DiscoverAgentsMdReq as WorkspaceRpc>::METHOD,
@@ -3186,6 +3188,7 @@ mod tests {
             <GitUnstageReq as WorkspaceRpc>::METHOD,
             <GitDiscardReq as WorkspaceRpc>::METHOD,
             <GitCommitReq as WorkspaceRpc>::METHOD,
+            <GitSyncBaseReq as WorkspaceRpc>::METHOD,
             <GitCheckoutReq as WorkspaceRpc>::METHOD,
             <GitStashReq as WorkspaceRpc>::METHOD,
             <GitInfoReq as WorkspaceRpc>::METHOD,

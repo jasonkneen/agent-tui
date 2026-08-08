@@ -17,7 +17,8 @@
 //! independent of leader mode.
 
 use crate::app::actions::Action;
-use crate::slash::command::{AppCtx, CommandExecCtx, CommandResult, SlashCommand};
+use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
+use crate::slash::{ModeSupport, Remedy};
 
 /// Open the Agent Dashboard view.
 pub struct DashboardCommand;
@@ -34,7 +35,7 @@ impl SlashCommand for DashboardCommand {
     /// dashboard is the replacement surface for switching, renaming, and
     /// closing active sessions, so old muscle memory redirects here. As an
     /// alias it inherits the feature-flag gate (`set_dashboard_visible`
-    /// hides by canonical name) and the minimal-mode gates below.
+    /// hides by canonical name) and the minimal-mode gate below.
     fn aliases(&self) -> &[&str] {
         &["agents-dashboard", "sessions"]
     }
@@ -48,18 +49,11 @@ impl SlashCommand for DashboardCommand {
     }
 
     /// The agent dashboard is intentionally out of scope in minimal mode
-    /// (single-session standalone — K14/§6.15). Gated off with a message.
-    fn available_in_minimal(&self) -> bool {
-        false
-    }
-
-    /// Hidden from the completion dropdown in minimal mode: the dashboard
-    /// (and its `/sessions` / `/agents-dashboard` spellings) has nothing to
-    /// open there, so offering it just to refuse at dispatch is noise. A
-    /// fully-typed invocation still resolves and hits the central
-    /// `available_in_minimal` dispatch gate (friendly refusal, fail-closed).
-    fn visible(&self, ctx: &AppCtx) -> bool {
-        !ctx.screen_mode.is_minimal()
+    /// (single-session standalone — K14/§6.15).
+    fn mode_support(&self) -> ModeSupport {
+        ModeSupport::FullscreenOnly(Remedy::SwitchMode {
+            why: "minimal is single-session",
+        })
     }
 
     fn run(&self, _ctx: &mut CommandExecCtx, _args: &str) -> CommandResult {
@@ -72,7 +66,7 @@ mod tests {
     use super::*;
     use crate::acp::model_state::ModelState;
     use crate::app::bundle::BundleState;
-    use crate::slash::command::{AppCtx, CommandExecCtx, CommandResult};
+    use crate::slash::command::{CommandExecCtx, CommandResult};
 
     #[test]
     fn run_returns_open_dashboard_action() {
@@ -83,6 +77,8 @@ mod tests {
             session_id: None,
             bundle_state: &bundle,
             screen_mode: crate::app::ScreenMode::Inline,
+            billing_surface_visible: true,
+            usage_command_visible: true,
             pager_state: crate::settings::PagerLocalSnapshot {
                 multiline_mode: false,
                 yolo_mode: false,
@@ -137,11 +133,5 @@ mod tests {
     fn aliases_include_sessions() {
         let cmd = DashboardCommand;
         assert_eq!(cmd.aliases(), &["agents-dashboard", "sessions"]);
-    }
-
-    #[test]
-    fn not_available_in_minimal() {
-        // The dashboard is out of scope in scrollback-native minimal mode.
-        assert!(!DashboardCommand.available_in_minimal());
     }
 }

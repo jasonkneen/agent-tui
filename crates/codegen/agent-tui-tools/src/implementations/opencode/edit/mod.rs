@@ -44,9 +44,8 @@ use crate::types::tool::{ToolKind, ToolNamespace};
 
 const DESCRIPTION: &str = r#"Performs exact string replacements in files.
 
-Usage:
-- You must use your `${{ tools.by_kind.read }}` tool at least once in the conversation before editing.
-- When editing text from ${{ tools.by_kind.read }} tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + →. Everything after that → separator is the actual file content to match. Never include any part of the line number prefix in the ${{ params.edit.old_string }} or ${{ params.edit.new_string }}.
+Usage:${%- if tools.by_kind.read %}
+- When editing text from ${{ tools.by_kind.read }} tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + ": ". Everything after that ": " separator is the actual file content to match. Never include any part of the line number prefix in the ${{ params.edit.oldString }} or ${{ params.edit.newString }}.${%- endif %}
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
 - The edit will FAIL if `${{ params.edit.old_string }}` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use `${{ params.edit.replace_all }}` to change every instance of `${{ params.edit.old_string }}`.
 - Use `${{ params.edit.replace_all }}` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.
@@ -150,7 +149,7 @@ impl agent_tui_tool_runtime::Tool for EditTool {
     ) -> agent_tui_tool_types::ToolDescription {
         agent_tui_tool_types::ToolDescription::new(
             "edit",
-            crate::types::tool_metadata::ToolMetadata::description_template(self),
+            crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
 

@@ -13,6 +13,11 @@ pub struct PermissionState {
     pub allow_bash_execute: bool,
     pub allowed_bash_commands: HashSet<String>,
     pub disallowed_bash_commands: HashSet<String>,
+    /// Glob patterns the user authored via the "Always allow" pattern editor
+    /// (e.g. `gh api repos/owner/*`). Matched with glob semantics, unlike the
+    /// literal-prefix [`Self::allowed_bash_commands`]; kept separate so a command
+    /// grant that happens to contain shell metacharacters is never a wildcard.
+    pub allowed_bash_globs: HashSet<String>,
     /// Domains the user has approved for `web_fetch`
     /// during this session.
     pub allowed_web_fetch_domains: HashSet<String>,
@@ -24,6 +29,44 @@ pub struct PermissionState {
     /// "always allow" to every tool. Lookup is "tool name starts with
     /// `<prefix>__`".
     pub allowed_mcp_servers: HashSet<String>,
+    /// Version proving server-wide grants were minted from validated qualified IDs.
+    /// Missing or malformed markers are legacy; future integer versions are preserved.
+    #[serde(
+        default = "legacy_mcp_server_grants_version",
+        deserialize_with = "deserialize_mcp_server_grants_version"
+    )]
+    pub(crate) validated_mcp_server_grants_version: i64,
+}
+
+fn legacy_mcp_server_grants_version() -> i64 {
+    0
+}
+
+fn deserialize_mcp_server_grants_version<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = toml::Value::deserialize(deserializer)?;
+    Ok(match value.as_integer() {
+        Some(version) if version >= 0 => version,
+        _ => 0,
+    })
+}
+
+impl Default for PermissionState {
+    fn default() -> Self {
+        Self {
+            edit_policy: EditPolicy::default(),
+            allow_bash_execute: false,
+            allowed_bash_commands: HashSet::new(),
+            disallowed_bash_commands: HashSet::new(),
+            allowed_bash_globs: HashSet::new(),
+            allowed_web_fetch_domains: HashSet::new(),
+            allowed_mcp_tools: HashSet::new(),
+            allowed_mcp_servers: HashSet::new(),
+            validated_mcp_server_grants_version: VALIDATED_MCP_SERVER_GRANTS_VERSION,
+        }
+    }
 }
 
 fn state_dir_for_cwd(cwd: &AbsPathBuf) -> std::path::PathBuf {

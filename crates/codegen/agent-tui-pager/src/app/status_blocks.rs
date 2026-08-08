@@ -182,6 +182,108 @@ fn join_header_rows(header: String, rows: Vec<String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_tui_shell::extensions::notification::{PromptUsage, PromptUsageModel};
+
+    fn model_row(input: u64, output: u64, ticks: Option<i64>) -> PromptUsageModel {
+        PromptUsageModel {
+            input_tokens: input,
+            output_tokens: output,
+            total_tokens: input + output,
+            cached_read_tokens: 0,
+            cache_creation_tokens: 0,
+            reasoning_tokens: 0,
+            model_calls: 1,
+            api_duration_ms: 1_000,
+            cost_usd_ticks: ticks,
+            cost_is_partial: false,
+            cost_missing_calls: 0,
+        }
+    }
+
+    #[test]
+    fn session_usage_block_empty_ledger() {
+        let usage = PromptUsage::default();
+        assert_eq!(
+            session_usage_block_text(&usage),
+            "Session usage: no model calls yet in this session."
+        );
+
+        // Empty but incomplete must not read as a clean zero.
+        let incomplete = PromptUsage {
+            usage_is_incomplete: true,
+            ..Default::default()
+        };
+        assert!(session_usage_block_text(&incomplete).contains("incomplete"));
+    }
+
+    #[test]
+    fn session_usage_block_formats_tokens_and_cost() {
+        let mut totals = model_row(1_234_567, 45_678, Some(12_345_000_000));
+        totals.cached_read_tokens = 1_000_000;
+        totals.reasoning_tokens = 12_000;
+        totals.model_calls = 42;
+        totals.api_duration_ms = 192_000;
+        let usage = PromptUsage {
+            totals,
+            ..Default::default()
+        };
+        let text = session_usage_block_text(&usage);
+        // Snapshot pins content and column alignment together; single-model
+        // sessions must skip the redundant by-model breakdown.
+        insta::assert_snapshot!("session_usage_block_full", text);
+    }
+
+    #[test]
+    fn session_usage_block_lists_models_when_multiple() {
+        let mut usage = PromptUsage {
+            totals: model_row(150, 15, None),
+            ..Default::default()
+        };
+        usage
+            .model_usage
+            .insert("grok-build".into(), model_row(100, 10, None));
+        usage
+            .model_usage
+            .insert("grok-4".into(), model_row(50, 5, None));
+        let text = session_usage_block_text(&usage);
+        assert!(text.contains("By model:"), "{text}");
+        assert!(text.contains("grok-build — 100 in / 10 out"), "{text}");
+        assert!(text.contains("grok-4 — 50 in / 5 out"), "{text}");
+    }
+
+    #[test]
+    fn session_usage_block_absent_cost_is_unknown_not_free() {
+        let usage = PromptUsage {
+            totals: model_row(100, 10, None),
+            ..Default::default()
+        };
+        let text = session_usage_block_text(&usage);
+        insta::assert_snapshot!("session_usage_block_absent_cost", text);
+        // Unknown cost must never read as free.
+        assert!(!text.contains("$0"), "{text}");
+    }
+
+    #[test]
+    fn session_usage_block_flags_partial_and_incomplete() {
+        let mut totals = model_row(100, 10, None);
+        totals.cost_is_partial = true;
+        let usage = PromptUsage {
+            totals,
+            usage_is_incomplete: true,
+            ..Default::default()
+        };
+        let text = session_usage_block_text(&usage);
+        assert!(text.contains("not reported for some calls"), "{text}");
+        assert!(text.contains("usage is incomplete"), "{text}");
+    }
+
+    #[test]
+    fn group_thousands_groups_digits() {
+        assert_eq!(group_thousands(0), "0");
+        assert_eq!(group_thousands(999), "999");
+        assert_eq!(group_thousands(1_000), "1,000");
+        assert_eq!(group_thousands(1_234_567), "1,234,567");
+    }
 
     #[test]
     fn first_nonempty_line_skips_blank_leading_lines() {

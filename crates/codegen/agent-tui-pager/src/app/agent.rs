@@ -163,6 +163,10 @@ pub const BG_TASK_MAX_STDOUT: usize = 10 * 1024 * 1024;
 /// How long to wait for a kill response before auto-clearing `pending_kill`
 /// so the user can retry. Applied to both bg tasks and subagents.
 pub const PENDING_KILL_TIMEOUT_SECS: u64 = 10;
+/// Prefix baked into monitor commands by backends predating the structured
+/// `monitor_description` field (and by reparented monitors). Shared
+/// convention with the shell's task notifications.
+pub const MONITOR_PREFIX: &str = "[monitor] ";
 /// Status of a background task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BgTaskStatus {
@@ -273,6 +277,82 @@ impl BgTaskState {
             self.truncated = true;
         }
         self.stdout_line_count = self.stdout.lines().count();
+    }
+    /// Terminal state recorded when a `TaskCompleted` arrives for a task with
+    /// no `bg_tasks` entry (its `TaskBackgrounded` hasn't arrived yet — short
+    /// bg shells can exit on the terminal's first poll). Keeps the late
+    /// `TaskBackgrounded` from inserting a fresh Running entry that nothing
+    /// would ever complete; see [`Self::absorb_late_backgrounded`].
+    pub fn tombstone_from_snapshot(
+        snapshot: &agent_tui_tools::types::TaskSnapshot,
+        status: BgTaskStatus,
+        description: Option<String>,
+        restored_from_replay: bool,
+    ) -> Self {
+        let is_monitor = matches!(
+            snapshot.kind,
+            agent_tui_tools::computer::types::TaskKind::Monitor
+        ) || snapshot
+            .display_command
+            .as_deref()
+            .is_some_and(|d| d.starts_with(MONITOR_PREFIX));
+        let mut tombstone = Self {
+            task_id: snapshot.task_id.clone(),
+            tool_call_id: String::new(),
+            command: snapshot.command.clone(),
+            description,
+            cwd: snapshot.cwd.clone(),
+            output_file: snapshot.output_file.to_string_lossy().into_owned(),
+            status,
+            start_time: snapshot.start_time,
+            end_time: Some(snapshot.end_time.unwrap_or_else(SystemTime::now)),
+            exit_code: snapshot.exit_code,
+            signal: snapshot.signal.clone(),
+            stdout: String::new(),
+            stdout_line_count: 0,
+            truncated: snapshot.truncated,
+            pending_kill: false,
+            kill_requested_at: None,
+            scrollback_entry_id: None,
+            is_monitor,
+            restored_from_replay,
+        };
+        if !snapshot.output.is_empty() {
+            let end = crate::render::line_utils::floor_char_boundary(
+                &snapshot.output,
+                BG_TASK_MAX_STDOUT,
+            );
+            tombstone.set_stdout(snapshot.output[..end].to_string());
+            if end < snapshot.output.len() {
+                tombstone.truncated = true;
+            }
+        }
+        tombstone
+    }
+    /// Fold a late `TaskBackgrounded` into an already-terminal entry: keep the
+    /// terminal status/exit/timing, backfill only what the completion snapshot
+    /// couldn't know (blank fields, demoted-Execute stdout, scrollback entry).
+    pub fn absorb_late_backgrounded(&mut self, fresh: BgTaskState, entry_id: Option<EntryId>) {
+        self.tool_call_id = fresh.tool_call_id;
+        if self.command.trim().is_empty() {
+            self.command = fresh.command;
+        }
+        if self
+            .description
+            .as_ref()
+            .is_none_or(|d| d.trim().is_empty())
+        {
+            self.description = fresh.description;
+        }
+        self.is_monitor |= fresh.is_monitor;
+        if self.stdout.is_empty() && !fresh.stdout.is_empty() {
+            self.stdout = fresh.stdout;
+            self.stdout_line_count = fresh.stdout_line_count;
+            self.truncated |= fresh.truncated;
+        }
+        if self.scrollback_entry_id.is_none() {
+            self.scrollback_entry_id = entry_id;
+        }
     }
 }
 /// State for a scheduled (loop) task, displayed in the tasks pane.
@@ -576,6 +656,16 @@ impl AgentState {
     pub fn is_turn_running(&self) -> bool {
         matches!(self, Self::TurnRunning)
     }
+    /// Manual `/compact` is in flight (stoppable via session/cancel).
+    pub fn is_compact_running(&self) -> bool {
+        matches!(
+            self,
+            Self::CommandRunning {
+                command: AgentCommand::Compact,
+                ..
+            }
+        )
+    }
     /// Either a turn or command cancel is in progress.
     pub fn is_cancelling(&self) -> bool {
         matches!(self, Self::TurnCancelling | Self::CommandCancelling { .. })
@@ -593,6 +683,16 @@ impl AgentState {
             _ => None,
         }
     }
+}
+/// A model switch stashed while no session exists, applied once the session
+/// id materialises (`apply_deferred_model_switch`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeferredModelSwitch {
+    pub model_id: acp::ModelId,
+    pub effort: Option<ReasoningEffort>,
+    /// Displayed model at stash time — the rollback target
+    /// (`Effect::SwitchModel.prev_model_id`) if the switch fails.
+    pub prev_model_id: Option<acp::ModelId>,
 }
 /// Per-agent business logic (ACP session, models, state).
 ///
@@ -695,7 +795,7 @@ pub struct AgentSession {
     /// applies live remote switches and updates this field to match.
     pub user_model_preference: Option<acp::ModelId>,
     /// `/model X [effort]` issued before the session was ready, applied on SessionCreated.
-    pub deferred_model_switch: Option<(acp::ModelId, Option<ReasoningEffort>)>,
+    pub deferred_model_switch: Option<DeferredModelSwitch>,
     /// Central bg task state, keyed by task_id.
     pub bg_tasks: BTreeMap<String, BgTaskState>,
     /// Correlation map: tool_call_id → task_id.
@@ -860,6 +960,18 @@ impl AgentSession {
     /// Finish a running command, return to Idle.
     pub fn finish_command(&mut self) {
         self.state = AgentState::Idle;
+    }
+    /// Mark an in-flight `/compact` as cancelling (waiting for CompactComplete).
+    pub fn cancel_compact_command(&mut self) {
+        if let AgentState::CommandRunning {
+            command: AgentCommand::Compact,
+            ..
+        } = &self.state
+        {
+            self.state = AgentState::CommandCancelling {
+                command: AgentCommand::Compact,
+            };
+        }
     }
     /// Push a prompt onto the back of the queue. Returns the assigned ID.
     pub fn enqueue_prompt(&mut self, text: String) -> u64 {
@@ -1444,5 +1556,275 @@ mod tests {
         let e3 = s.dequeue_prompt().unwrap();
         assert!(e3.wire_blocks.is_none());
         assert_eq!(e3.kind, QueueEntryKind::BashCommand);
+    }
+    #[test]
+    fn dequeue_combined_prompt_merges_three_consecutive_prompts() {
+        let mut s = test_session();
+        s.enqueue_prompt("first".into());
+        s.enqueue_prompt("second".into());
+        s.enqueue_prompt("third".into());
+        let merged = s.dequeue_combined_prompt(None).unwrap();
+        assert_eq!(merged.text, "first\n\nsecond\n\nthird");
+        assert_eq!(merged.combined_texts, vec!["first", "second", "third"]);
+        assert_eq!(merged.kind, QueueEntryKind::Prompt);
+        assert!(s.dequeue_prompt().is_none(), "all three must be consumed");
+    }
+    #[test]
+    fn dequeue_combined_prompt_stops_at_bash_command() {
+        let mut s = test_session();
+        s.enqueue_prompt("first".into());
+        s.enqueue_prompt("second".into());
+        s.enqueue_bash_command("ls".into());
+        let merged = s.dequeue_combined_prompt(None).unwrap();
+        assert_eq!(merged.text, "first\n\nsecond");
+        assert_eq!(s.queue_len(), 1, "the bash command must stay queued");
+        let remaining = s.dequeue_prompt().unwrap();
+        assert_eq!(remaining.kind, QueueEntryKind::BashCommand);
+        assert_eq!(remaining.text, "ls");
+    }
+    #[test]
+    fn dequeue_combined_prompt_stops_at_command() {
+        let mut s = test_session();
+        s.enqueue_prompt("first".into());
+        s.enqueue_prompt("second".into());
+        s.enqueue_command("/compact".into());
+        let merged = s.dequeue_combined_prompt(None).unwrap();
+        assert_eq!(merged.text, "first\n\nsecond");
+        assert_eq!(s.queue_len(), 1, "the slash command must stay queued");
+        let remaining = s.dequeue_prompt().unwrap();
+        assert_eq!(remaining.kind, QueueEntryKind::Command);
+        assert_eq!(remaining.text, "/compact");
+    }
+    #[test]
+    fn dequeue_combined_prompt_stops_at_cron() {
+        let mut s = test_session();
+        s.enqueue_prompt("first".into());
+        s.enqueue_prompt("second".into());
+        s.enqueue_cron_prompt("check status".into(), "task-1".into(), "every 5m".into());
+        let merged = s.dequeue_combined_prompt(None).unwrap();
+        assert_eq!(merged.text, "first\n\nsecond");
+        assert_eq!(s.queue_len(), 1, "the cron entry must stay queued");
+        let remaining = s.dequeue_prompt().unwrap();
+        assert_eq!(remaining.kind, QueueEntryKind::Cron);
+        assert_eq!(remaining.text, "check status");
+    }
+    #[test]
+    fn dequeue_combined_prompt_single_leading_prompt_returns_unchanged() {
+        let mut s = test_session();
+        s.enqueue_prompt("only".into());
+        let merged = s.dequeue_combined_prompt(None).unwrap();
+        assert_eq!(merged.text, "only");
+        assert!(!merged.text.contains("\n\n"), "no merge means no separator");
+        assert!(s.dequeue_prompt().is_none());
+    }
+    #[test]
+    fn dequeue_combined_prompt_front_non_prompt_returns_single_entry_queue_intact() {
+        let mut s = test_session();
+        s.enqueue_bash_command("ls".into());
+        s.enqueue_prompt("follow-up".into());
+        let front = s.dequeue_combined_prompt(None).unwrap();
+        assert_eq!(front.kind, QueueEntryKind::BashCommand);
+        assert_eq!(front.text, "ls");
+        assert_eq!(
+            s.queue_len(),
+            1,
+            "the trailing prompt must stay queued, not merged into the bash entry"
+        );
+        let remaining = s.dequeue_prompt().unwrap();
+        assert_eq!(remaining.text, "follow-up");
+    }
+    #[test]
+    fn dequeue_combined_prompt_stops_before_row_under_edit() {
+        let mut s = test_session();
+        s.enqueue_prompt("first".into());
+        s.enqueue_prompt("second".into());
+        s.enqueue_prompt("third".into());
+        let second_id = s.pending_prompts[1].id;
+        let merged = s.dequeue_combined_prompt(Some(second_id)).unwrap();
+        assert_eq!(
+            merged.text, "first",
+            "merge stops before the edited follower"
+        );
+        assert_eq!(
+            s.queue_len(),
+            2,
+            "edited row and everything after it stay queued"
+        );
+        let next = s.dequeue_prompt().unwrap();
+        assert_eq!(
+            next.id, second_id,
+            "edited row preserved at the front, id intact"
+        );
+        assert_eq!(next.text, "second");
+    }
+    #[test]
+    fn dequeue_combined_prompt_merges_up_to_row_under_edit() {
+        let mut s = test_session();
+        s.enqueue_prompt("first".into());
+        s.enqueue_prompt("second".into());
+        s.enqueue_prompt("third".into());
+        let third_id = s.pending_prompts[2].id;
+        let merged = s.dequeue_combined_prompt(Some(third_id)).unwrap();
+        assert_eq!(merged.text, "first\n\nsecond");
+        assert_eq!(s.queue_len(), 1, "only the edited row stays queued");
+        let next = s.dequeue_prompt().unwrap();
+        assert_eq!(next.id, third_id, "edited row preserved, id intact");
+        assert_eq!(next.text, "third");
+    }
+    #[test]
+    fn dequeue_combined_prompt_stops_at_expanded_wire_prompt() {
+        let mut s = test_session();
+        s.enqueue_prompt("first".into());
+        let id = s.next_queue_id;
+        s.next_queue_id += 1;
+        s.pending_prompts.push_back(QueuedPrompt {
+            wire_blocks: Some(vec![acp::ContentBlock::Text(acp::TextContent::new(
+                "<skill>body</skill>",
+            ))]),
+            ..QueuedPrompt::plain(id, "/imagine cat", QueueEntryKind::Prompt)
+        });
+        s.enqueue_prompt("third".into());
+        let merged = s.dequeue_combined_prompt(None).unwrap();
+        assert_eq!(merged.text, "first");
+        assert_eq!(
+            s.queue_len(),
+            2,
+            "the expanded-wire prompt and its follower must stay queued"
+        );
+    }
+    #[test]
+    fn dequeue_combined_prompt_reoffsets_chip_ranges_for_second_entry() {
+        let mut s = test_session();
+        let id0 = s.next_queue_id;
+        s.next_queue_id += 1;
+        s.pending_prompts.push_back(QueuedPrompt {
+            chip_elements: vec![ChipElement {
+                range: 0..5,
+                kind: crate::views::prompt_widget::KIND_IMAGE,
+                display: None,
+            }],
+            ..QueuedPrompt::plain(id0, "first", QueueEntryKind::Prompt)
+        });
+        let id1 = s.next_queue_id;
+        s.next_queue_id += 1;
+        s.pending_prompts.push_back(QueuedPrompt {
+            chip_elements: vec![ChipElement {
+                range: 2..6,
+                kind: crate::views::prompt_widget::KIND_IMAGE,
+                display: None,
+            }],
+            ..QueuedPrompt::plain(id1, "second!", QueueEntryKind::Prompt)
+        });
+        let merged = s.dequeue_combined_prompt(None).unwrap();
+        assert_eq!(merged.text, "first\n\nsecond!");
+        assert_eq!(merged.chip_elements.len(), 2);
+        assert_eq!(merged.chip_elements[0].range, 0..5);
+        assert_eq!(merged.chip_elements[1].range, 9..13);
+        assert_eq!(&merged.text[9..13], "cond");
+    }
+    /// An image-bearing follower must NOT be folded in — merging two image
+    /// sets would require renumbering `[Image #N]` placeholders, which this
+    /// v1 does not do. The front entry's own image is unaffected.
+    #[test]
+    fn dequeue_combined_prompt_stops_at_image_bearing_follower_keeps_own_image() {
+        let mut s = test_session();
+        let own_image = crate::prompt_images::from_clipboard_data(&crate::clipboard::ImageData {
+            data: vec![1, 2, 3],
+            mime_type: "image/png".into(),
+        });
+        let follower_image =
+            crate::prompt_images::from_clipboard_data(&crate::clipboard::ImageData {
+                data: vec![4, 5, 6],
+                mime_type: "image/png".into(),
+            });
+        let id0 = s.next_queue_id;
+        s.next_queue_id += 1;
+        s.pending_prompts.push_back(QueuedPrompt {
+            images: vec![own_image],
+            ..QueuedPrompt::plain(id0, "front [Image #1]", QueueEntryKind::Prompt)
+        });
+        let id1 = s.next_queue_id;
+        s.next_queue_id += 1;
+        s.pending_prompts.push_back(QueuedPrompt {
+            images: vec![follower_image],
+            ..QueuedPrompt::plain(id1, "follower [Image #1]", QueueEntryKind::Prompt)
+        });
+        s.enqueue_prompt("plain follow-up".into());
+        let merged = s.dequeue_combined_prompt(None).unwrap();
+        assert_eq!(
+            merged.text, "front [Image #1]",
+            "image-bearing follower must not merge in"
+        );
+        assert_eq!(
+            merged.images.len(),
+            1,
+            "the front entry's own image is preserved"
+        );
+        assert_eq!(
+            s.queue_len(),
+            2,
+            "the image-bearing follower and the plain prompt after it must stay queued \
+             (the run stops at the first ineligible entry, it doesn't skip past it)"
+        );
+        let next = s.dequeue_prompt().unwrap();
+        assert_eq!(next.text, "follower [Image #1]");
+        assert_eq!(next.images.len(), 1);
+    }
+    #[test]
+    fn dequeue_combined_prompt_clears_skill_token_ranges_on_multi() {
+        let mut s = test_session();
+        s.enqueue_prompt_with_skill_tokens("hi /commit".into(), vec![3..10]);
+        s.enqueue_prompt_with_skill_tokens("go /push now".into(), vec![3..8]);
+        let merged = s.dequeue_combined_prompt(None).unwrap();
+        assert_eq!(merged.text, "hi /commit\n\ngo /push now");
+        assert!(merged.skill_token_ranges.is_empty());
+        assert_eq!(
+            merged.combined_texts,
+            vec!["hi /commit".to_string(), "go /push now".to_string()]
+        );
+    }
+    /// Folding a late `TaskBackgrounded` into a terminal tombstone keeps the
+    /// terminal state and backfills only what the snapshot couldn't know —
+    /// including a blank command (gateway-bridge completions synthesize one).
+    #[test]
+    fn absorb_late_backgrounded_backfills_without_resurrecting() {
+        let snapshot = agent_tui_tools::types::TaskSnapshot {
+            task_id: "t1".into(),
+            command: String::new(),
+            display_command: None,
+            cwd: "/tmp".into(),
+            start_time: SystemTime::now(),
+            end_time: None,
+            output: String::new(),
+            output_file: "/tmp/out.log".into(),
+            truncated: false,
+            exit_code: Some(0),
+            signal: None,
+            completed: true,
+            kind: Default::default(),
+            block_waited: false,
+            explicitly_killed: false,
+            owner_session_id: None,
+            description: None,
+            is_backgrounded: true,
+            output_total_bytes: 0,
+        };
+        let mut tombstone =
+            BgTaskState::tombstone_from_snapshot(&snapshot, BgTaskStatus::Done, None, false);
+        assert_eq!(tombstone.status, BgTaskStatus::Done);
+        assert!(tombstone.end_time.is_some(), "end_time falls back to now");
+        let mut fresh =
+            BgTaskState::tombstone_from_snapshot(&snapshot, BgTaskStatus::Running, None, false);
+        fresh.tool_call_id = "tc-1".into();
+        fresh.command = "echo hi".into();
+        fresh.description = Some("say hi".into());
+        fresh.set_stdout("demoted output".into());
+        tombstone.absorb_late_backgrounded(fresh, None);
+        assert_eq!(tombstone.status, BgTaskStatus::Done, "terminal status kept");
+        assert_eq!(tombstone.tool_call_id, "tc-1");
+        assert_eq!(tombstone.command, "echo hi", "blank command backfilled");
+        assert_eq!(tombstone.description.as_deref(), Some("say hi"));
+        assert_eq!(tombstone.stdout, "demoted output");
+        assert_eq!(tombstone.stdout_line_count, 1);
     }
 }

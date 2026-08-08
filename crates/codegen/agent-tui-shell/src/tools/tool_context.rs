@@ -16,10 +16,95 @@ use agent_tui_paths::AbsPathBuf;
 use agent_tui_workspace::file_system::{AsyncFileSystem, AsyncFsWrapper};
 use agent_tui_workspace::session::file_state::FileStateHandle;
 use agent_tui_hunk_tracker::HunkTrackerHandle;
-/// RAII marker: the turn is blocked inside an interruptible wait. Increments
-/// [`ToolContext::blocking_wait_depth`] for its lifetime; `Drop` decrements
-/// (a cancelled turn can't leak the count).
-pub(crate) struct BlockingWaitGuard(Arc<std::sync::atomic::AtomicUsize>);
+use agent_tui_tty_utils::ProcessScope;
+#[derive(Debug, Clone, Default)]
+pub struct TaskOutputTokenBudget {
+    inner: Arc<parking_lot::Mutex<TaskOutputTokenBudgetState>>,
+}
+#[derive(Debug, Default)]
+struct TaskOutputTokenBudgetState {
+    total: Option<u64>,
+    spent: u64,
+    incomplete: bool,
+}
+impl TaskOutputTokenBudget {
+    pub fn limited(total: u64) -> Self {
+        debug_assert!(total > 0, "task output grant must be positive");
+        Self {
+            inner: Arc::new(parking_lot::Mutex::new(TaskOutputTokenBudgetState {
+                total: Some(total),
+                spent: 0,
+                incomplete: false,
+            })),
+        }
+    }
+    pub fn remaining(&self) -> Option<u64> {
+        let state = self.inner.lock();
+        state.total.map(|total| total.saturating_sub(state.spent))
+    }
+    pub(crate) fn clamp_request(&self, configured: Option<u32>) -> Option<u32> {
+        let remaining = self.remaining()?;
+        if remaining == 0 {
+            return Some(0);
+        }
+        let remaining = u32::try_from(remaining).unwrap_or(u32::MAX);
+        Some(configured.map_or(remaining, |configured| configured.min(remaining)))
+    }
+    pub(crate) fn record_reported_output(&self, output_tokens: u64) {
+        let mut state = self.inner.lock();
+        state.spent = state.spent.saturating_add(output_tokens);
+        if let Some(total) = state.total
+            && state.spent > total
+        {
+            state.spent = total;
+            state.incomplete = true;
+        }
+    }
+    pub(crate) fn mark_incomplete_and_exhaust(&self) {
+        let mut state = self.inner.lock();
+        state.incomplete = true;
+        if let Some(total) = state.total {
+            state.spent = state.spent.max(total);
+        }
+    }
+    pub fn usage(&self) -> (u64, bool) {
+        let state = self.inner.lock();
+        (state.spent, state.incomplete)
+    }
+}
+pub struct BlockingWaitState(std::sync::Mutex<BlockingWaitInner>);
+#[derive(Default)]
+struct BlockingWaitInner {
+    depth: usize,
+    generation: u64,
+}
+impl BlockingWaitState {
+    pub(crate) fn new() -> Self {
+        Self(std::sync::Mutex::new(BlockingWaitInner::default()))
+    }
+    pub(crate) fn depth(&self) -> usize {
+        self.0
+            .lock()
+            .expect("blocking wait state mutex poisoned")
+            .depth
+    }
+    #[cfg(test)]
+    pub(crate) fn set_depth_for_test(&self, depth: usize) {
+        self.0
+            .lock()
+            .expect("blocking wait state mutex poisoned")
+            .depth = depth;
+    }
+    pub(crate) fn reset(&self) {
+        let mut state = self.0.lock().expect("blocking wait state mutex poisoned");
+        state.generation = state.generation.wrapping_add(1);
+        state.depth = 0;
+    }
+}
+pub(crate) struct BlockingWaitGuard {
+    state: Arc<BlockingWaitState>,
+    generation: u64,
+}
 impl BlockingWaitGuard {
     pub(crate) fn enter(depth: Arc<std::sync::atomic::AtomicUsize>) -> Self {
         depth.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -111,7 +196,13 @@ pub struct ToolContext {
     /// Count of interruptible blocking waits the running turn is parked in (via
     /// [`BlockingWaitGuard`]). `queue_input` reads it: a prompt arriving while
     /// non-zero takes the send-now path.
-    pub blocking_wait_depth: Arc<std::sync::atomic::AtomicUsize>,
+    pub blocking_wait_depth: Arc<BlockingWaitState>,
+    pub task_output_token_budget: Option<TaskOutputTokenBudget>,
+    pub(crate) sampler_retry_only_before_output: bool,
+    /// This session's child-process reaper, set at session spawn; `None` for
+    /// contexts without one (subagents, defaults). Spawn sites enroll children
+    /// into it; enrolled children are killed when the session closes.
+    pub process_scope: Option<ProcessScope>,
 }
 impl ToolContext {
     pub fn new(
@@ -150,10 +241,13 @@ impl ToolContext {
                 agent_tui_tools::reminders::task_completion::DEFAULT_TASK_OUTPUT_TOOL.to_string(),
             auto_wake_enabled: true,
             goal_loop_active_gate: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            blocking_wait_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            blocking_wait_depth: Arc::new(BlockingWaitState::new()),
+            task_output_token_budget: None,
+            sampler_retry_only_before_output: false,
+            process_scope: None,
         }
     }
-    pub fn with_preloaded_env(
+    pub(crate) fn with_preloaded_env(
         cwd: AbsPathBuf,
         gateway: Option<GatewaySender>,
         session_id: Option<acp::SessionId>,
@@ -186,20 +280,19 @@ impl ToolContext {
                 agent_tui_tools::reminders::task_completion::DEFAULT_TASK_OUTPUT_TOOL.to_string(),
             auto_wake_enabled: true,
             goal_loop_active_gate: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            blocking_wait_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            blocking_wait_depth: Arc::new(BlockingWaitState::new()),
+            task_output_token_budget: None,
+            sampler_retry_only_before_output: false,
+            process_scope: None,
         }
     }
-    pub fn with_file_state_handle(mut self, handle: FileStateHandle) -> Self {
+    pub(crate) fn with_file_state_handle(mut self, handle: FileStateHandle) -> Self {
         self.file_state_handle = Some(handle);
-        self
-    }
-    pub fn with_prompt_index(mut self, prompt_index: Arc<tokio::sync::Mutex<usize>>) -> Self {
-        self.prompt_index = prompt_index;
         self
     }
     /// Set whether hunk tracking is active. `false` pairs with a `noop()`
     /// `hunk_tracker_handle` so the fs-notify loop skips the per-event forward.
-    pub fn with_hunk_tracking_enabled(mut self, enabled: bool) -> Self {
+    pub(crate) fn with_hunk_tracking_enabled(mut self, enabled: bool) -> Self {
         self.hunk_tracking_enabled = enabled;
         self
     }
@@ -213,7 +306,7 @@ mod tests {
     use agent_tui_workspace::file_system::{AsyncFileSystem, AsyncFsWrapper};
     use agent_tui_hunk_tracker::HunkTrackerHandle;
     impl ToolContext {
-        pub fn new_local_context(
+        pub(crate) fn new_local_context(
             cwd: AbsPathBuf,
             fs: Arc<dyn AsyncFileSystem>,
             terminal: Arc<dyn AsyncTerminalRunner>,
@@ -242,7 +335,10 @@ mod tests {
                     agent_tui_tools::reminders::task_completion::DEFAULT_TASK_OUTPUT_TOOL.to_string(),
                 auto_wake_enabled: true,
                 goal_loop_active_gate: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                blocking_wait_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                blocking_wait_depth: Arc::new(BlockingWaitState::new()),
+                task_output_token_budget: None,
+                sampler_retry_only_before_output: false,
+                process_scope: None,
             }
         }
     }

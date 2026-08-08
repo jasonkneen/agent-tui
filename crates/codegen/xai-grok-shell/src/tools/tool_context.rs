@@ -16,6 +16,7 @@ use xai_grok_paths::AbsPathBuf;
 use xai_grok_workspace::file_system::{AsyncFileSystem, AsyncFsWrapper};
 use xai_grok_workspace::session::file_state::FileStateHandle;
 use xai_hunk_tracker::HunkTrackerHandle;
+use xai_tty_utils::ProcessScope;
 #[derive(Debug, Clone, Default)]
 pub struct TaskOutputTokenBudget {
     inner: Arc<parking_lot::Mutex<TaskOutputTokenBudgetState>>,
@@ -41,7 +42,7 @@ impl TaskOutputTokenBudget {
         let state = self.inner.lock();
         state.total.map(|total| total.saturating_sub(state.spent))
     }
-    pub fn clamp_request(&self, configured: Option<u32>) -> Option<u32> {
+    pub(crate) fn clamp_request(&self, configured: Option<u32>) -> Option<u32> {
         let remaining = self.remaining()?;
         if remaining == 0 {
             return Some(0);
@@ -49,7 +50,7 @@ impl TaskOutputTokenBudget {
         let remaining = u32::try_from(remaining).unwrap_or(u32::MAX);
         Some(configured.map_or(remaining, |configured| configured.min(remaining)))
     }
-    pub fn record_reported_output(&self, output_tokens: u64) {
+    pub(crate) fn record_reported_output(&self, output_tokens: u64) {
         let mut state = self.inner.lock();
         state.spent = state.spent.saturating_add(output_tokens);
         if let Some(total) = state.total
@@ -59,7 +60,7 @@ impl TaskOutputTokenBudget {
             state.incomplete = true;
         }
     }
-    pub fn mark_incomplete_and_exhaust(&self) {
+    pub(crate) fn mark_incomplete_and_exhaust(&self) {
         let mut state = self.inner.lock();
         state.incomplete = true;
         if let Some(total) = state.total {
@@ -69,9 +70,6 @@ impl TaskOutputTokenBudget {
     pub fn usage(&self) -> (u64, bool) {
         let state = self.inner.lock();
         (state.spent, state.incomplete)
-    }
-    pub fn is_limited(&self) -> bool {
-        self.inner.lock().total.is_some()
     }
 }
 pub struct BlockingWaitState(std::sync::Mutex<BlockingWaitInner>);
@@ -216,6 +214,10 @@ pub struct ToolContext {
     pub blocking_wait_depth: Arc<BlockingWaitState>,
     pub task_output_token_budget: Option<TaskOutputTokenBudget>,
     pub(crate) sampler_retry_only_before_output: bool,
+    /// This session's child-process reaper, set at session spawn; `None` for
+    /// contexts without one (subagents, defaults). Spawn sites enroll children
+    /// into it; enrolled children are killed when the session closes.
+    pub process_scope: Option<ProcessScope>,
 }
 impl ToolContext {
     pub(crate) fn clamp_task_model_request(
@@ -281,9 +283,10 @@ impl ToolContext {
             blocking_wait_depth: Arc::new(BlockingWaitState::new()),
             task_output_token_budget: None,
             sampler_retry_only_before_output: false,
+            process_scope: None,
         }
     }
-    pub fn with_preloaded_env(
+    pub(crate) fn with_preloaded_env(
         cwd: AbsPathBuf,
         gateway: Option<GatewaySender>,
         session_id: Option<acp::SessionId>,
@@ -321,19 +324,16 @@ impl ToolContext {
             blocking_wait_depth: Arc::new(BlockingWaitState::new()),
             task_output_token_budget: None,
             sampler_retry_only_before_output: false,
+            process_scope: None,
         }
     }
-    pub fn with_file_state_handle(mut self, handle: FileStateHandle) -> Self {
+    pub(crate) fn with_file_state_handle(mut self, handle: FileStateHandle) -> Self {
         self.file_state_handle = Some(handle);
-        self
-    }
-    pub fn with_prompt_index(mut self, prompt_index: Arc<tokio::sync::Mutex<usize>>) -> Self {
-        self.prompt_index = prompt_index;
         self
     }
     /// Set whether hunk tracking is active. `false` pairs with a `noop()`
     /// `hunk_tracker_handle` so the fs-notify loop skips the per-event forward.
-    pub fn with_hunk_tracking_enabled(mut self, enabled: bool) -> Self {
+    pub(crate) fn with_hunk_tracking_enabled(mut self, enabled: bool) -> Self {
         self.hunk_tracking_enabled = enabled;
         self
     }
@@ -380,7 +380,7 @@ mod tests {
     use xai_grok_workspace::file_system::{AsyncFileSystem, AsyncFsWrapper};
     use xai_hunk_tracker::HunkTrackerHandle;
     impl ToolContext {
-        pub fn new_local_context(
+        pub(crate) fn new_local_context(
             cwd: AbsPathBuf,
             fs: Arc<dyn AsyncFileSystem>,
             terminal: Arc<dyn AsyncTerminalRunner>,
@@ -414,6 +414,7 @@ mod tests {
                 blocking_wait_depth: Arc::new(BlockingWaitState::new()),
                 task_output_token_budget: None,
                 sampler_retry_only_before_output: false,
+                process_scope: None,
             }
         }
     }

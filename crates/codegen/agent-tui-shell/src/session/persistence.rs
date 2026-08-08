@@ -20,8 +20,12 @@ use agent_client_protocol as acp;
 use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use agent_tui_sampling_types::ReasoningEffort;
 
+use crate::extensions::notification::{
+    DISK_FULL_ERROR_TYPE, DISK_FULL_USER_MESSAGE, RetryState,
+    SessionNotification as XaiSessionNotification, SessionUpdate as XaiSessionUpdate,
+};
 use crate::session::info::Info;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 /// Current chat history format version.
 /// - Version 0: Legacy ChatRequestMessage format (default for old sessions)
@@ -46,7 +50,7 @@ pub struct PersistenceContentChunk {
 }
 
 impl PersistenceContentChunk {
-    pub fn new(content_chunks: Vec<acp::ContentBlock>) -> Self {
+    pub(crate) fn new(content_chunks: Vec<acp::ContentBlock>) -> Self {
         Self { content_chunks }
     }
 }
@@ -84,6 +88,14 @@ pub struct BtwEntry {
     /// Error message if failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Model-call attempts made (1 = no retry). Entries written before this
+    /// field existed deserialize as 1.
+    #[serde(default = "default_btw_attempts")]
+    pub attempts: u32,
+}
+
+fn default_btw_attempts() -> u32 {
+    1
 }
 
 // Local feedback persistence types
@@ -390,12 +402,24 @@ pub enum PersistenceMsg {
     /// Routed back through the persistence channel so the storage write
     /// stays sequential with other summary.json mutations.
     GeneratedTitle(String),
+    /// Per-turn dashboard summary as `(text, prompt_id)`; replaces (`Some`)
+    /// or clears (`None`, on conversation rewind) the previous one in
+    /// `summary.json`.
+    LastTurnSummary(Option<(String, String)>),
+    /// Enable remote writeback for a session created `Local` before remote
+    /// settings resolved (non-blocking startup); backfills its local history.
+    UpgradeToWriteback {
+        auth_manager: Arc<crate::auth::AuthManager>,
+    },
     Flush,
     /// Flush all pending writes, then signal the caller once the flush is complete.
     /// Unlike `Flush` (fire-and-forget), this is a **sync barrier**: the caller's
     /// oneshot only resolves after `flush_pending()` finishes writing to disk.
     FlushAndAck {
-        respond_to: tokio::sync::oneshot::Sender<()>,
+        respond_to: tokio::sync::oneshot::Sender<io::Result<()>>,
+    },
+    ProbeWritable {
+        respond_to: tokio::sync::oneshot::Sender<io::Result<()>>,
     },
     /// Flush all pending writes, then copy the current session directory contents and return
     /// the in-memory snapshot to the caller (who can tar.gz + upload to GCS, etc.).
@@ -480,7 +504,7 @@ pub enum LocalSessionResolutionKind {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ResolvedLocalSession {
+pub(crate) struct ResolvedLocalSession {
     pub session_id: String,
     pub cwd: String,
     pub resolution_kind: LocalSessionResolutionKind,
@@ -493,7 +517,7 @@ pub struct ResolvedLocalSession {
 /// and previously-restored children.
 ///
 /// Returns `None` when no local match exists in any candidate.
-pub fn resolve_local_session_for_repo(
+pub(crate) fn resolve_local_session_for_repo(
     session_id: &str,
     candidate_cwds: &[&str],
 ) -> Option<ResolvedLocalSession> {
@@ -501,7 +525,7 @@ pub fn resolve_local_session_for_repo(
     resolve_local_session_for_repo_in_root(session_id, candidate_cwds, &sessions_root)
 }
 
-pub fn resolve_local_session_for_repo_in_root(
+pub(crate) fn resolve_local_session_for_repo_in_root(
     session_id: &str,
     candidate_cwds: &[&str],
     sessions_root: &Path,
@@ -606,8 +630,14 @@ fn find_local_child_for_remote_in_root(
 /// This is used by the pager's `--resume` to find sessions that were created
 /// in a different CWD (e.g., a worktree) than the one the user is currently in.
 pub fn resolve_local_session_any_cwd(session_id: &str) -> Option<String> {
-    let sessions_root = crate::util::grok_home::grok_home().join("sessions");
-    resolve_local_session_any_cwd_in_root(session_id, &sessions_root)
+    resolve_local_session_any_cwd_result(session_id)
+        .ok()
+        .flatten()
+}
+
+pub(crate) fn resolve_local_session_any_cwd_result(session_id: &str) -> io::Result<Option<String>> {
+    resolve_local_session_any_cwd_in_root(session_id, &grok_home().join("sessions"))
+        .map_err(io::Error::other)
 }
 
 fn resolve_local_session_any_cwd_in_root(session_id: &str, sessions_root: &Path) -> Option<String> {
@@ -679,7 +709,7 @@ fn session_exists_in_root(session_id: &str, sessions_root: &Path) -> bool {
 }
 
 /// Find and read a session summary given only its ID (scans all CWD directories).
-pub fn find_summary_by_session_id(session_id: &str) -> Option<Summary> {
+pub(crate) fn find_summary_by_session_id(session_id: &str) -> Option<Summary> {
     find_summary_by_session_id_in_root(session_id, &grok_home().join("sessions"))
 }
 
@@ -791,7 +821,7 @@ fn resumed_session_sandbox_profile_in_root(
 /// Get file path for storing a large prompt.
 /// Creates the prompts subdirectory if it doesn't exist.
 /// Path format: `{session_dir}/prompts/prompt_{prompt_index}.txt`
-pub fn get_prompt_file_path(info: &Info, prompt_index: usize) -> PathBuf {
+pub(crate) fn get_prompt_file_path(info: &Info, prompt_index: usize) -> PathBuf {
     let prompts_dir = session_dir(info).join("prompts");
     std::fs::create_dir_all(&prompts_dir).ok();
     prompts_dir.join(format!("prompt_{}.txt", prompt_index))
@@ -904,10 +934,19 @@ pub struct Summary {
     pub sandbox_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Ultra-short summary of the most recent successful turn, shown as the
+    /// dashboard row's secondary line (via the roster for non-attached
+    /// clients). Displayed until replaced by the next successful turn (or
+    /// cleared by a conversation rewind).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_summary: Option<String>,
+    /// Prompt id of the turn `last_turn_summary` describes (provenance).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_turn_summary_prompt_id: Option<String>,
 }
 
 /// Current `grok_home` as a UTF-8 string, or `None` if the path isn't valid UTF-8.
-pub fn grok_home_string() -> Option<String> {
+pub(crate) fn grok_home_string() -> Option<String> {
     crate::util::grok_home::grok_home()
         .to_str()
         .map(String::from)
@@ -918,7 +957,7 @@ pub fn default_model_id() -> acp::ModelId {
 }
 
 impl Summary {
-    pub fn new(info: &Info, model_id: acp::ModelId) -> std::io::Result<Self> {
+    pub(crate) fn new(info: &Info, model_id: acp::ModelId) -> std::io::Result<Self> {
         let git_metadata =
             agent_tui_workspace::session::git::resolve_persisted_session_git_metadata_sync(
                 std::path::Path::new(&info.cwd),
@@ -956,6 +995,8 @@ impl Summary {
             agent_name: None,
             sandbox_profile: None,
             reasoning_effort: None,
+            last_turn_summary: None,
+            last_turn_summary_prompt_id: None,
         })
     }
 
@@ -1382,22 +1423,136 @@ pub struct PersistenceHandle {
     /// Explicit flag set only by [`Self::noop`]. Do not treat a closed sender
     /// alone as noop — a real persistence actor may exit and drop its receiver.
     noop: bool,
+    disk_full_rx: watch::Receiver<bool>,
+}
+
+fn actor_channel() -> (
+    PersistenceHandle,
+    mpsc::UnboundedReceiver<PersistenceMsg>,
+    mpsc::WeakUnboundedSender<PersistenceMsg>,
+    watch::Sender<bool>,
+) {
+    let (tx, rx) = mpsc::unbounded_channel::<PersistenceMsg>();
+    let (disk_full_tx, disk_full_rx) = watch::channel(false);
+    let weak = tx.downgrade();
+    let handle = PersistenceHandle {
+        tx,
+        noop: false,
+        disk_full_rx,
+    };
+    (handle, rx, weak, disk_full_tx)
+}
+
+#[derive(Debug)]
+pub(crate) enum DurableAppendError {
+    NotCommitted(io::Error),
+    Committed(io::Error),
+    AcknowledgementLost(io::Error),
+}
+
+impl std::fmt::Display for DurableAppendError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotCommitted(error)
+            | Self::Committed(error)
+            | Self::AcknowledgementLost(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for DurableAppendError {}
+
+impl From<crate::session::storage::AppendUpdateError> for DurableAppendError {
+    fn from(error: crate::session::storage::AppendUpdateError) -> Self {
+        use crate::session::storage::AppendUpdateError;
+        match error {
+            AppendUpdateError::NotCommitted(error) => Self::NotCommitted(error),
+            AppendUpdateError::Committed(error) => Self::Committed(error),
+        }
+    }
 }
 
 impl PersistenceHandle {
-    /// Create a no-op persistence handle that silently discards all messages.
-    ///
-    /// Used for subagent child sessions that don't need disk persistence
-    /// (their results are captured by the parent via the oneshot channel).
+    #[cfg(test)]
+    pub(crate) fn from_sender_for_test(tx: mpsc::UnboundedSender<PersistenceMsg>) -> Self {
+        Self::from_parts_for_test(tx, watch::channel(false).1)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_parts_for_test(
+        tx: mpsc::UnboundedSender<PersistenceMsg>,
+        disk_full_rx: watch::Receiver<bool>,
+    ) -> Self {
+        Self {
+            tx,
+            noop: false,
+            disk_full_rx,
+        }
+    }
+
     pub fn noop() -> Self {
         let (tx, _rx) = mpsc::unbounded_channel();
-        Self { tx, noop: true }
+        Self {
+            tx,
+            noop: true,
+            disk_full_rx: watch::channel(false).1,
+        }
     }
 
     /// `true` only for handles created via [`Self::noop`].
     pub fn is_noop(&self) -> bool {
         self.noop
     }
+
+    #[cfg(test)]
+    pub(crate) fn is_disk_full(&self) -> bool {
+        *self.disk_full_rx.borrow()
+    }
+
+    pub(crate) fn subscribe_disk_full(&self) -> watch::Receiver<bool> {
+        self.disk_full_rx.clone()
+    }
+
+    /// Append after older buffered updates and wait for the durable barrier.
+    ///
+    /// [`DurableAppendError::NotCommitted`] is safe to retry; [`DurableAppendError::Committed`]
+    /// means the replay line landed; [`DurableAppendError::AcknowledgementLost`] has unknown status.
+    /// No-op handles return `Unsupported`.
+    pub(crate) async fn append_update_durably(
+        &self,
+        update: SessionUpdate,
+    ) -> Result<(), DurableAppendError> {
+        if self.noop {
+            return Err(DurableAppendError::NotCommitted(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "durable session update append is unsupported by a no-op persistence handle",
+            )));
+        }
+        let (respond_to, response) = tokio::sync::oneshot::channel();
+        self.tx
+            .send(PersistenceMsg::AppendUpdateDurablyAndAck { update, respond_to })
+            .map_err(|_| {
+                DurableAppendError::NotCommitted(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "session persistence actor stopped before durable append dispatch",
+                ))
+            })?;
+        response
+            .await
+            .map_err(|_| {
+                DurableAppendError::AcknowledgementLost(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "session persistence actor stopped before durable append acknowledgement",
+                ))
+            })?
+            .map_err(DurableAppendError::from)
+    }
+}
+
+enum PendingAppendOutcome {
+    CommittedOk(acp::SessionNotification),
+    CommittedErr(acp::SessionNotification, io::Error),
+    NotCommittedErr(acp::SessionNotification, io::Error),
 }
 
 struct SessionPersistence {
@@ -1419,6 +1574,8 @@ struct SessionPersistence {
     /// manual `/rename` never reaches the client. `None` for the subagent
     /// variant, whose lifecycle notifications are handled by the coordinator.
     gateway: Option<GatewaySender>,
+    disk_full_tx: watch::Sender<bool>,
+    disk_full_notified: bool,
 }
 
 impl SessionPersistence {
@@ -1508,10 +1665,154 @@ impl SessionPersistence {
         }
     }
 
-    async fn write_update(&mut self, update: &SessionUpdate) {
-        if let Err(e) = self.storage.append_update(&self.info, update).await {
-            tracing::warn!(?e, "failed to write update");
+    async fn write_update(
+        &mut self,
+        update: &SessionUpdate,
+    ) -> Result<(), crate::session::storage::AppendUpdateError> {
+        let result = self
+            .storage
+            .append_update_commit_aware(&self.info, update)
+            .await;
+        self.observe_append_update(&result);
+        result
+    }
+
+    fn observe_io<T>(&mut self, result: &io::Result<T>) {
+        match result {
+            Ok(_) => self.clear_disk_full(),
+            Err(error) if is_disk_full_io_error(error) => self.mark_disk_full(),
+            Err(_) => {}
         }
+    }
+
+    fn observe_append_update(
+        &mut self,
+        result: &Result<(), crate::session::storage::AppendUpdateError>,
+    ) {
+        match result {
+            Ok(()) => self.clear_disk_full(),
+            Err(
+                crate::session::storage::AppendUpdateError::NotCommitted(error)
+                | crate::session::storage::AppendUpdateError::Committed(error),
+            ) if is_disk_full_io_error(error) => self.mark_disk_full(),
+            Err(_) => {}
+        }
+    }
+
+    fn mark_disk_full(&mut self) {
+        if !*self.disk_full_tx.borrow() {
+            let _ = self.disk_full_tx.send(true);
+        }
+        if self.disk_full_notified {
+            return;
+        }
+        self.disk_full_notified = true;
+        self.emit_disk_full_notification();
+    }
+
+    fn clear_disk_full(&mut self) {
+        if *self.disk_full_tx.borrow() {
+            let _ = self.disk_full_tx.send(false);
+        }
+        self.disk_full_notified = false;
+    }
+
+    fn emit_disk_full_notification(&self) {
+        let Some(gateway) = &self.gateway else {
+            return;
+        };
+        let notification = XaiSessionNotification {
+            session_id: self.info.id.clone(),
+            update: XaiSessionUpdate::RetryState(RetryState::Failed {
+                error_type: DISK_FULL_ERROR_TYPE.to_string(),
+                message: DISK_FULL_USER_MESSAGE.to_string(),
+            }),
+            meta: None,
+        };
+        if let Ok(params) = serde_json::value::to_raw_value(&notification) {
+            gateway.forward_fire_and_forget(acp::ExtNotification::new(
+                "x.ai/session_notification",
+                params.into(),
+            ));
+        }
+    }
+
+    async fn probe_writable(&self) -> io::Result<()> {
+        let dir = self
+            .storage
+            .updates_file_path(&self.info)
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "session directory is unknown; cannot probe disk space",
+                )
+            })?;
+        tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(&dir)?;
+            let probe = dir.join(".disk_ok");
+            std::fs::write(&probe, b"ok")?;
+            let _ = std::fs::remove_file(&probe);
+            io::Result::Ok(())
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+
+    fn queue_acp_sync(&self, notification: acp::SessionNotification) {
+        if let Some(sync) = &self.remote_sync {
+            sync.queue(notification.clone());
+        }
+        if let Some(relay) = &self.relay_sync {
+            relay.queue(notification);
+        }
+    }
+
+    /// Enable writeback for a session created `Local` before settings resolved:
+    /// build the sync and (for a fresh session) backfill its local-only history.
+    /// No-op once syncing, so a repeat upgrade is harmless.
+    async fn upgrade_to_writeback(&mut self, auth_manager: Arc<crate::auth::AuthManager>) {
+        if self.remote_sync.is_some() {
+            return;
+        }
+        // Flush the merge-pending notification so the backfill re-reads it.
+        let _ = self.flush_pending().await;
+        let persisted = match self.storage.load_session(&self.info).await {
+            Ok(persisted) => persisted,
+            Err(error) => {
+                tracing::warn!(%error, "writeback upgrade: failed to load session for backfill");
+                return;
+            }
+        };
+        let remote_sync = match init_remote_sync(
+            &persisted.summary,
+            StorageMode::Writeback,
+            Some(auth_manager),
+        ) {
+            Ok(Some(remote_sync)) => remote_sync,
+            // ZDR team, or nothing to do: leave the session local-only.
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(%error, "writeback upgrade: remote sync init failed");
+                return;
+            }
+        };
+        // Fresh-only backfill; see `backfill_updates_to_sync`.
+        let backfilled =
+            backfill_updates_to_sync(self.created_fresh, persisted.updates, &remote_sync);
+        if self.created_fresh {
+            tracing::info!(
+                session_id = %self.info.id,
+                backfilled,
+                "writeback enabled after settings arrival; backfilled local-only history",
+            );
+        } else {
+            tracing::info!(
+                session_id = %self.info.id,
+                "writeback enabled for resumed session; forward-only, no backfill",
+            );
+        }
+        self.remote_sync = Some(remote_sync);
     }
 
     /// Flush any pending merged ACP notification to disk and remote sync.
@@ -1529,7 +1830,40 @@ impl SessionPersistence {
                 relay.queue(notification);
             }
         }
-        // Flush HTTP sync
+        Ok(())
+    }
+
+    async fn handle_durable_append(
+        &mut self,
+        update: SessionUpdate,
+    ) -> Result<(), crate::session::storage::AppendUpdateError> {
+        self.drain_pending().await?;
+        let result = self
+            .storage
+            .append_update_durable_commit_aware(&self.info, &update)
+            .await;
+        self.observe_append_update(&result);
+        match (&update, &result) {
+            (SessionUpdate::Acp(notification), Ok(()))
+            | (
+                SessionUpdate::Acp(notification),
+                Err(crate::session::storage::AppendUpdateError::Committed(_)),
+            ) => self.queue_acp_sync((**notification).clone()),
+            _ => {}
+        }
+        result
+    }
+
+    /// Flush any pending merged ACP notification to disk and remote sync.
+    /// A no-op drain must not clear the disk-full latch.
+    async fn flush_pending(&mut self) -> io::Result<()> {
+        let result = self
+            .drain_pending()
+            .await
+            .map_err(crate::session::storage::AppendUpdateError::into_io_error);
+        if let Err(error) = &result {
+            tracing::warn!(%error, "failed to write pending update");
+        }
         if let Some(sync) = &self.remote_sync {
             sync.flush();
         }
@@ -1537,13 +1871,13 @@ impl SessionPersistence {
         if let Some(relay) = &self.relay_sync {
             relay.flush();
         }
+        result
     }
 
     /// Flush pending writes and sync all session files to disk.
     /// Called before CopyFile to ensure all data is persisted.
     async fn flush_and_sync(&mut self) {
-        self.flush_pending().await;
-        // Sync all session files to disk to ensure they're actually written
+        let _ = self.flush_pending().await;
         if let Err(e) = self.storage.sync_session_files(&self.info).await {
             tracing::warn!(?e, "Failed to sync session files to disk");
         }
@@ -1563,11 +1897,16 @@ impl SessionPersistence {
             }
             match msg {
                 PersistenceMsg::Flush => {
-                    self.flush_pending().await;
+                    let _ = self.flush_pending().await;
                 }
                 PersistenceMsg::FlushAndAck { respond_to } => {
-                    self.flush_pending().await;
-                    let _ = respond_to.send(());
+                    let result = self.flush_pending().await;
+                    let _ = respond_to.send(result);
+                }
+                PersistenceMsg::ProbeWritable { respond_to } => {
+                    let result = self.probe_writable().await;
+                    self.observe_io(&result);
+                    let _ = respond_to.send(result);
                 }
                 PersistenceMsg::Update(update) => {
                     match update {
@@ -1593,11 +1932,12 @@ impl SessionPersistence {
                     }
                 }
                 PersistenceMsg::Chat(chat_msg) => {
-                    if let Err(e) = self
+                    let result = self
                         .storage
                         .append_chat_message(&self.info, &chat_msg)
-                        .await
-                    {
+                        .await;
+                    self.observe_io(&result);
+                    if let Err(e) = result {
                         tracing::warn!(?e, "failed to write chat message");
                     }
                 }
@@ -1606,11 +1946,12 @@ impl SessionPersistence {
                         num_messages = messages.len(),
                         "Replacing chat history (compaction)"
                     );
-                    if let Err(e) = self
+                    let result = self
                         .storage
                         .replace_chat_history(&self.info, &messages)
-                        .await
-                    {
+                        .await;
+                    self.observe_io(&result);
+                    if let Err(e) = result {
                         tracing::warn!(?e, "failed to replace chat history");
                     }
                 }
@@ -1727,8 +2068,19 @@ impl SessionPersistence {
                         }
                     }
                 }
+                PersistenceMsg::LastTurnSummary(summary) => {
+                    if let Err(e) = self
+                        .storage
+                        .set_last_turn_summary(&self.info, summary)
+                        .await
+                    {
+                        tracing::warn!(?e, "failed to persist last turn summary");
+                    }
+                }
                 PersistenceMsg::RewindPoint(point) => {
-                    if let Err(e) = self.storage.append_rewind_point(&self.info, &point).await {
+                    let result = self.storage.append_rewind_point(&self.info, &point).await;
+                    self.observe_io(&result);
+                    if let Err(e) = result {
                         tracing::warn!(?e, "failed to write rewind point");
                     }
                 }
@@ -1847,7 +2199,7 @@ impl SessionPersistence {
         }
 
         // Drain the merge buffer on channel close.
-        self.flush_pending().await;
+        let _ = self.flush_pending().await;
     }
 
     async fn copy_session_dir_to_memory(&self) -> anyhow::Result<SessionStateCopy> {
@@ -1996,26 +2348,35 @@ async fn try_pull_from_remote(info: &Info, client: &crate::remote::BackendClient
     }
 }
 
+pub(crate) fn is_disk_full_io_error(e: &io::Error) -> bool {
+    if e.kind() == io::ErrorKind::StorageFull {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        matches!(
+            e.raw_os_error(),
+            Some(raw) if raw == libc::ENOSPC || raw == libc::EDQUOT
+        )
+    }
+    #[cfg(windows)]
+    {
+        const ERROR_DISK_FULL: i32 = 112;
+        const ERROR_HANDLE_DISK_FULL: i32 = 39;
+        matches!(
+            e.raw_os_error(),
+            Some(ERROR_DISK_FULL | ERROR_HANDLE_DISK_FULL)
+        )
+    }
+    #[cfg(not(any(unix, windows)))]
+    false
+}
+
 /// Map a persistence `io::Error` into an `acp::Error` with a human-friendly
 /// `message` and a stable `data.code` for log aggregation.
 pub(crate) fn io_error_to_acp(e: &io::Error) -> acp::Error {
-    // Unix: ENOSPC / EDQUOT. Windows: ERROR_DISK_FULL (112). Hardcoded on
-    // Windows so we don't pull libc in just for two integer literals.
-    #[cfg(unix)]
-    let is_disk_full = matches!(
-        e.raw_os_error(),
-        Some(raw) if raw == libc::ENOSPC || raw == libc::EDQUOT
-    );
-    #[cfg(windows)]
-    const ERROR_DISK_FULL: i32 = 112;
-    #[cfg(windows)]
-    let is_disk_full = matches!(e.raw_os_error(), Some(ERROR_DISK_FULL));
-
-    let (message, code) = if is_disk_full {
-        (
-            "Disk quota exceeded or out of space.",
-            "FS_DISK_QUOTA_EXCEEDED",
-        )
+    let (message, code) = if is_disk_full_io_error(e) {
+        ("No space left on device", "FS_DISK_QUOTA_EXCEEDED")
     } else {
         match e.kind() {
             io::ErrorKind::NotFound => ("Path not found.", "FS_NOT_FOUND"),
@@ -2032,6 +2393,21 @@ pub(crate) fn io_error_to_acp(e: &io::Error) -> acp::Error {
             "detail": e.to_string(),
         }),
     ))
+}
+
+#[cfg(test)]
+mod io_error_to_acp_tests {
+    use super::io_error_to_acp;
+    use std::io;
+
+    #[test]
+    fn storage_full_maps_to_no_space_left() {
+        let io = io::Error::from(io::ErrorKind::StorageFull);
+        assert!(super::is_disk_full_io_error(&io));
+        let acp_err = io_error_to_acp(&io);
+        assert_eq!(acp_err.message, "No space left on device");
+        assert_eq!(acp_err.data.unwrap()["code"], "FS_DISK_QUOTA_EXCEEDED");
+    }
 }
 
 /// Best-effort worktree liveness touch: stamp `last_accessed_at` on the
@@ -2095,16 +2471,11 @@ pub(crate) async fn new(
         summary.current_model_id = model_id;
     }
 
-    let (tx, rx) = mpsc::unbounded_channel::<PersistenceMsg>();
+    let (handle, rx, summary_tx, disk_full_tx) = actor_channel();
 
     let info_clone = info.clone();
     let storage: Arc<dyn StorageAdapter> = Arc::from(storage);
     let remote_sync = init_remote_sync(&summary, storage_mode, auth_manager)?;
-    let handle = PersistenceHandle {
-        tx: tx.clone(),
-        noop: false,
-    };
-
     tokio::task::spawn(async move {
         let persistence = SessionPersistence {
             info: info_clone,
@@ -2117,11 +2488,13 @@ pub(crate) async fn new(
                 crate::session::summary::SummaryConfig {
                     sampling_client,
                     model: session_summary_model,
-                    persistence_tx: tx,
+                    persistence_tx: summary_tx,
                 },
             ),
             registry_title_sync,
             gateway,
+            disk_full_tx,
+            disk_full_notified: false,
         };
         persistence.run().await;
     });
@@ -2140,7 +2513,7 @@ pub(crate) async fn new(
 /// - Skips remote sync (subagent sessions are not synced to cloud).
 /// - Skips relay sync (subagent sessions are not shared).
 /// - Skips gateway (lifecycle notifications are handled by the coordinator).
-pub async fn new_with_explicit_dir(
+pub(crate) async fn new_with_explicit_dir(
     info: &Info,
     target_dir: PathBuf,
     model_id: acp::ModelId,
@@ -2166,15 +2539,10 @@ pub async fn new_with_explicit_dir(
         summary.current_model_id = model_id;
     }
 
-    let (tx, rx) = mpsc::unbounded_channel::<PersistenceMsg>();
+    let (handle, rx, summary_tx, disk_full_tx) = actor_channel();
 
     let info_clone = info.clone();
     let storage: Arc<dyn StorageAdapter> = Arc::from(storage);
-    let handle = PersistenceHandle {
-        tx: tx.clone(),
-        noop: false,
-    };
-
     tokio::task::spawn(async move {
         let persistence = SessionPersistence {
             info: info_clone,
@@ -2187,11 +2555,13 @@ pub async fn new_with_explicit_dir(
                 crate::session::summary::SummaryConfig {
                     sampling_client,
                     model: session_summary_model,
-                    persistence_tx: tx,
+                    persistence_tx: summary_tx,
                 },
             ),
             registry_title_sync: None,
             gateway: None,
+            disk_full_tx,
+            disk_full_notified: false,
         };
         persistence.run().await;
     });
@@ -2280,22 +2650,18 @@ pub(crate) async fn load(
         signals: persisted.signals,
     };
 
-    let (tx, rx) = mpsc::unbounded_channel::<PersistenceMsg>();
+    let (handle, rx, summary_tx, disk_full_tx) = actor_channel();
 
     let storage: Arc<dyn StorageAdapter> = Arc::from(storage);
     let remote_sync = init_remote_sync(&persisted_info.summary, storage_mode, auth_manager)?;
 
     let has_title = !persisted_info.summary.display_title().is_empty();
-    let handle = PersistenceHandle {
-        tx: tx.clone(),
-        noop: false,
-    };
     tokio::task::spawn(async move {
         let mut summary_gen = crate::session::summary::SummaryGenerator::new(
             crate::session::summary::SummaryConfig {
                 sampling_client,
                 model: session_summary_model,
-                persistence_tx: tx,
+                persistence_tx: summary_tx,
             },
         );
         if has_title {
@@ -2311,6 +2677,8 @@ pub(crate) async fn load(
             summary: summary_gen,
             registry_title_sync,
             gateway,
+            disk_full_tx,
+            disk_full_notified: false,
         };
         persistence.run().await;
     });
@@ -2365,22 +2733,18 @@ pub(crate) async fn load_light(
         goal_mode_state: persisted.goal_mode_state,
     };
 
-    let (tx, rx) = mpsc::unbounded_channel::<PersistenceMsg>();
+    let (handle, rx, summary_tx, disk_full_tx) = actor_channel();
 
     let storage: Arc<dyn StorageAdapter> = Arc::from(storage);
     let remote_sync = init_remote_sync(&persisted_info.summary, storage_mode, auth_manager)?;
 
     let has_title = !persisted_info.summary.display_title().is_empty();
-    let handle = PersistenceHandle {
-        tx: tx.clone(),
-        noop: false,
-    };
     tokio::task::spawn(async move {
         let mut summary_gen = crate::session::summary::SummaryGenerator::new(
             crate::session::summary::SummaryConfig {
                 sampling_client,
                 model: session_summary_model,
-                persistence_tx: tx,
+                persistence_tx: summary_tx,
             },
         );
         if has_title {
@@ -2396,6 +2760,8 @@ pub(crate) async fn load_light(
             summary: summary_gen,
             registry_title_sync,
             gateway,
+            disk_full_tx,
+            disk_full_notified: false,
         };
         persistence.run().await;
     });
@@ -2626,7 +2992,7 @@ const DEFAULT_CLEANUP_TTL_DAYS: u32 = 30;
 /// This is a **synchronous** function intended to be called via
 /// `tokio::task::spawn_blocking` so it runs on the thread pool and
 /// never competes with the agent's single-threaded `LocalSet`.
-pub fn cleanup_stale_sessions(skip_session_dir: Option<&Path>) {
+pub(crate) fn cleanup_stale_sessions(skip_session_dir: Option<&Path>) {
     CLEANUP_SESSIONS_ONCE.call_once(|| {
         let ttl_days = resolve_cleanup_ttl_days();
         let sessions_root = grok_home().join("sessions");
@@ -3493,6 +3859,39 @@ mod session_exists_for_cwd_tests {
             "must anchor to the real session's cwd, not the stub's"
         );
     }
+
+    #[test]
+    fn find_summary_by_session_id_reads_cross_cwd_uuid() {
+        use super::find_summary_by_session_id_in_root;
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("sessions");
+        let session_id = "019f870d-6976-7d73-a12a-52e9d4aebcd4";
+        let cwd = "/project/elsewhere";
+        let encoded = crate::util::grok_home::encode_cwd_dirname(cwd);
+        let dir = root.join(&encoded).join(session_id);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("summary.json"),
+            serde_json::json!({
+                "info": { "id": session_id, "cwd": cwd },
+                "session_summary": "cross-cwd hit",
+                "created_at": "2026-03-01T00:00:00Z",
+                "updated_at": "2026-03-01T00:00:00Z",
+                "num_messages": 2,
+                "num_chat_messages": 1,
+                "current_model_id": "test",
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let summary = find_summary_by_session_id_in_root(session_id, &root)
+            .expect("CLI --resume finds this summary by id across cwds");
+        assert_eq!(summary.info.id.0.as_ref(), session_id);
+        assert_eq!(summary.info.cwd, cwd);
+        assert_eq!(summary.session_summary, "cross-cwd hit");
+    }
 }
 
 #[cfg(test)]
@@ -3949,6 +4348,27 @@ mod repo_wide_resolution_tests {
         assert_eq!(
             deser.resolution_kind,
             LocalSessionResolutionKind::SameRepoDifferentCwd
+        );
+    }
+}
+
+#[cfg(test)]
+mod actor_lifetime_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn dropping_the_session_handle_closes_the_actor_channel() {
+        let (handle, mut rx, summary_tx, _disk_full_tx) = actor_channel();
+
+        drop(handle);
+
+        assert!(
+            summary_tx.upgrade().is_none(),
+            "the generator's sender must not keep the channel open"
+        );
+        assert!(
+            rx.recv().await.is_none(),
+            "the actor's receive loop must end once the session drops its handle"
         );
     }
 }

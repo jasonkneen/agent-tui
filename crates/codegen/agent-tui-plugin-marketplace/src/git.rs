@@ -287,9 +287,39 @@ fn fetch_reset_cached_repo(repo_dir: &Path, branch: Option<&str>) -> Result<(), 
         .output()
         .map_err(|e| format!("failed to run git fetch: {e}"))?;
 
-    if !fetch_output.status.success() {
-        let stderr = String::from_utf8_lossy(&fetch_output.stderr);
-        return Err(format!("git fetch failed: {stderr}"));
+/// Run a git command, wait up to `timeout`, kill+reap on hang. Errors on
+/// timeout or non-zero exit; `what` names the operation in error messages.
+fn run_git_timed(cmd: &mut Command, what: &str, timeout: Duration) -> Result<(), String> {
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::piped());
+    #[allow(clippy::disallowed_methods)] // git command, killed and reaped on timeout
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to run git {what}: {e}"))?;
+    match child.wait_timeout(timeout) {
+        Ok(Some(status)) => {
+            let mut stderr = Vec::new();
+            if let Some(mut err) = child.stderr.take() {
+                let _ = err.read_to_end(&mut stderr);
+            }
+            if status.success() {
+                Ok(())
+            } else {
+                let stderr = String::from_utf8_lossy(&stderr);
+                tracing::debug!("git {what} stderr: {stderr}");
+                Err(git_failure_message(what, &stderr))
+            }
+        }
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(format!("git {what} timed out after {}s", timeout.as_secs()))
+        }
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(format!("failed to wait for git {what}: {e}"))
+        }
     }
 
     let checkout_output = git_command()

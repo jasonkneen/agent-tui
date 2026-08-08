@@ -3,22 +3,25 @@ license = "Apache-2.0"
 name = "agent-tui-subagent-resolution"
 version = "0.1.0"
 edition.workspace = true
-description = "Subagent configuration resolution: merges persona, role, and spawn-time overrides into a resolved spec"
+description = "Shared subagent definition, runtime, prompt, and resume resolution"
 
 [dependencies]
+chrono = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+agent-tui-agent = { path = "../agent-tui-agent" }
 agent-tui-sampling-types = { path = "../agent-tui-sampling-types" }
 agent-tui-tools = { path = "../agent-tui-tools" }
 agent-tui-tool-types.workspace = true
-# TODO(phase2): add these when resolve_subagent_spec() composition is implemented:
-# agent-tui-agent = { path = "../agent-tui-agent" }  # AgentDefinition lookup
-# agent-tui-fast-worktree = { path = "../agent-tui-fast-worktree" }  # worktree creation
+
+[features]
+default = []
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
 toml = { workspace = true }
 
 [lints]

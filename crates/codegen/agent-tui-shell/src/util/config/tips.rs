@@ -1,10 +1,9 @@
-use super::RemoteSettings;
 use serde::Deserialize;
 use toml::Value as TomlValue;
 
 /// Read `[cli] show_tips` from config.toml. Returns `None` if not set.
 /// When `Some(false)`, the tip-of-the-day is suppressed on startup.
-pub fn show_tips_from_toml_opt(root: &TomlValue) -> Option<bool> {
+pub(crate) fn show_tips_from_toml_opt(root: &TomlValue) -> Option<bool> {
     if let TomlValue::Table(table) = root
         && let Some(TomlValue::Table(cli)) = table.get("cli")
     {
@@ -23,7 +22,7 @@ pub struct TipsOverride {
 }
 
 /// Parse `[tips]` from a TOML value.
-pub fn tips_from_toml(root: &TomlValue) -> Option<TipsOverride> {
+pub(crate) fn tips_from_toml(root: &TomlValue) -> Option<TipsOverride> {
     root.get("tips")?.clone().try_into::<TipsOverride>().ok()
 }
 
@@ -31,7 +30,7 @@ pub fn tips_from_toml(root: &TomlValue) -> Option<TipsOverride> {
 ///
 /// If any local source sets `exclude_default = true`, remote tips are dropped entirely.
 /// Otherwise remote tips are inserted after requirements and before user/managed config.
-pub fn merge_tips(
+pub(crate) fn merge_tips(
     requirements: Option<TipsOverride>,
     user: Option<TipsOverride>,
     managed: Option<TipsOverride>,
@@ -89,27 +88,85 @@ pub fn resolve_tips(
     merge_tips(req, usr, mgd, remote_tips)
 }
 
-/// Convenience wrapper that loads config layers from disk and picks one tip.
-/// Prefer [`resolve_tips`] when layers are already loaded.
-pub fn resolve_tips_from_disk(
-    raw_config: &TomlValue,
-    remote_settings: Option<&RemoteSettings>,
-    grok_home: &std::path::Path,
-) -> Option<String> {
-    let requirements = crate::config::load_merged_requirements();
-    let managed = crate::config::load_managed_config().ok();
-    let remote = remote_settings.and_then(|s| s.tips.as_deref());
+pub const SLASH_COMMAND_TAGS_CONFIG_PATH: &str = "slash_command_tags";
 
-    let all = resolve_tips(
-        requirements.as_ref(),
-        Some(raw_config),
-        managed.as_ref(),
-        remote,
-    );
-    if all.is_empty() {
-        return None;
+/// Parse `[slash_command_tags]` from a TOML value into a name → tag map.
+/// Only string values are kept; non-string entries are ignored.
+fn slash_command_tags_from_toml(root: &TomlValue) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    if let Some(TomlValue::Table(table)) = root.get(SLASH_COMMAND_TAGS_CONFIG_PATH) {
+        for (name, value) in table {
+            if let Some(tag) = value.as_str() {
+                out.insert(name.clone(), tag.to_string());
+            }
+        }
     }
-    crate::util::tips::pick_and_advance(&all, grok_home)
+    out
+}
+
+/// Parse a `GROK_SLASH_COMMAND_TAGS` payload (a JSON object of string→string)
+/// into a name → tag map. `None`/empty → empty; malformed → warn + empty. Split
+/// from env-reading so the parse is unit-testable without mutating process env.
+fn parse_slash_command_tags_json(raw: Option<&str>) -> std::collections::HashMap<String, String> {
+    // Unset or empty/whitespace-only is the normal "no override" state, not an
+    // error — only real, non-empty input is parsed (and warned on failure).
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return std::collections::HashMap::new();
+    };
+    match serde_json::from_str::<std::collections::BTreeMap<String, String>>(raw) {
+        Ok(map) => map.into_iter().collect(),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "ignoring malformed GROK_SLASH_COMMAND_TAGS; expected a JSON object of string values"
+            );
+            std::collections::HashMap::new()
+        }
+    }
+}
+
+/// Read per-command tags from the `GROK_SLASH_COMMAND_TAGS` env var. Unset →
+/// empty; malformed → warn + empty.
+fn slash_command_tags_from_env() -> std::collections::HashMap<String, String> {
+    parse_slash_command_tags_json(std::env::var("GROK_SLASH_COMMAND_TAGS").ok().as_deref())
+}
+
+/// Pure per-key merge of the three tag sources. Precedence lowest → highest:
+/// remote (base) → local `[slash_command_tags]` → env. Every key from every
+/// layer survives; higher layers override per key. Pure so precedence is
+/// unit-testable without touching process env.
+fn merge_command_tags(
+    remote: Option<&std::collections::BTreeMap<String, String>>,
+    local: std::collections::HashMap<String, String>,
+    env: std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, String> {
+    let mut out: std::collections::HashMap<String, String> = remote
+        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default();
+    out.extend(local); // local overrides remote
+    out.extend(env); // env overrides local
+    out
+}
+
+/// Env-injectable core of [`resolve_slash_command_tags`]: remote → local
+/// `[slash_command_tags]` → `env` (highest). Takes the env map explicitly so the
+/// TOML-extraction + merge composition is hermetically testable (no process env).
+fn resolve_slash_command_tags_with_env(
+    effective_config: &TomlValue,
+    remote: Option<&std::collections::BTreeMap<String, String>>,
+    env: std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, String> {
+    merge_command_tags(remote, slash_command_tags_from_toml(effective_config), env)
+}
+
+/// Resolve per-command slash-dropdown tags. Precedence lowest → highest: remote
+/// settings (base) → local `[slash_command_tags]` → `GROK_SLASH_COMMAND_TAGS`
+/// env var (wins). Empty/missing everywhere → empty map.
+pub fn resolve_slash_command_tags(
+    effective_config: &TomlValue,
+    remote: Option<&std::collections::BTreeMap<String, String>>,
+) -> std::collections::HashMap<String, String> {
+    resolve_slash_command_tags_with_env(effective_config, remote, slash_command_tags_from_env())
 }
 
 /// Read `[cli] channel` from config.toml.
@@ -128,7 +185,8 @@ pub fn channel_from_toml_opt(root: &TomlValue) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::RemoteSettings;
+    use crate::util::config::RemoteSettings;
+
     use super::*;
     use toml::Value as TomlValue;
 

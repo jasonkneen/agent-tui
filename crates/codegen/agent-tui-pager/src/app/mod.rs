@@ -27,6 +27,14 @@ mod dispatch;
 /// Display-refresh probe + motion cadence + terminal telemetry at startup.
 mod display_refresh_startup;
 mod effects;
+pub(crate) mod error_display;
+pub mod roster;
+pub mod session_startup;
+pub(crate) mod session_title_resolve;
+pub mod status_blocks;
+pub mod subagent;
+pub mod subscription;
+pub(crate) use effects::sanitize_user_error;
 mod event_loop;
 mod foreign_sessions;
 mod inline_edit;
@@ -44,7 +52,7 @@ pub mod subagent;
 pub mod subscription;
 mod turn_completion;
 mod xt_filter;
-pub(crate) use crate::terminal::kitty_flags_pushed;
+pub(crate) use crate::terminal::{kitty_flags_pushed, kitty_releases_reported};
 pub use cli::{
     AgentArgs, AgentCmd, Command, HeadlessArgs, LeaderArgs, LeaderTargetArgs, OutputFormat,
     PagerArgs, ServeArgs, WrapArgs,
@@ -68,8 +76,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_util::sync::CancellationToken;
 use agent_tui_shell::util::config;
 /// Tracks the extra Kitty keyboard layer pushed while the `/gboom` game is
-/// open (see [`push_gboom_keyboard_flags`]). Kept separate from
-/// `KITTY_FLAGS_PUSHED` so teardown pops both, in LIFO order.
+/// open (see [`push_gboom_keyboard_flags`]). Kept separate from the base layer
+/// (`terminal::kitty_keyboard`) so teardown pops both, in LIFO order.
 static GBOOM_KEYBOARD_PUSHED: AtomicBool = AtomicBool::new(false);
 /// While the `/gboom` game owns input, additionally request
 /// `REPORT_ALL_KEYS_AS_ESCAPE_CODES` so plain letter keys (WASD) emit
@@ -373,6 +381,61 @@ fn resolve_hunk_tracker_mode(
         .find(|s| !s.is_empty())
         .map(str::to_owned)
 }
+/// A failed connect attempt, classified for telemetry at the point of failure
+/// rather than by parsing the error message.
+struct ConnectFailure {
+    outcome: crate::acp::StartupOutcome,
+    error: anyhow::Error,
+    timeout_secs: Option<u64>,
+}
+/// Bound connect so a hung leader/spawn cannot blank-screen forever.
+/// Timeout error includes phase summary (`stuck in` + `phases=`).
+async fn bounded_connect(
+    cancel: &CancellationToken,
+    timeout: std::time::Duration,
+    target: crate::acp::AgentKind,
+    timer: &crate::acp::StartupTimer,
+    connect: impl std::future::Future<Output = anyhow::Result<crate::acp::AcpConnection>>,
+) -> Result<crate::acp::AcpConnection, ConnectFailure> {
+    use crate::acp::StartupOutcome;
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => Err(ConnectFailure {
+            outcome: StartupOutcome::Cancelled,
+            error: anyhow::anyhow!("startup cancelled before {target} connected"),
+            timeout_secs: None,
+        }),
+        r = connect => r.map_err(|error| ConnectFailure {
+            outcome: StartupOutcome::Error,
+            error,
+            timeout_secs: None,
+        }),
+        () = tokio::time::sleep(timeout) => {
+            let stuck = timer.stuck_in();
+            let phases = timer.summary();
+            // `connect_target`: tracing reserves bare `target=` for the log target.
+            tracing::error!(
+                connect_target = %target,
+                stuck_in = stuck,
+                phases = %phases,
+                timeout_secs = timeout.as_secs(),
+                "connect timed out"
+            );
+            Err(ConnectFailure {
+                outcome: StartupOutcome::Timeout,
+                error: anyhow::anyhow!(
+                    "timed out after {}s connecting to {target}\n  \
+                     stuck in: {stuck}\n  \
+                     phases: {phases}\n  \
+                     startup log: {}",
+                    timeout.as_secs(),
+                    agent_tui_telemetry::unified_log::path().display()
+                ),
+                timeout_secs: Some(timeout.as_secs()),
+            })
+        }
+    }
+}
 /// Main entry point: connect to agent, init terminal, run event loop, restore.
 ///
 /// If a session ID is provided via `--resume` / `--load` / `--continue`, the
@@ -453,14 +516,26 @@ pub async fn run(
     {
         anyhow::bail!("{err}");
     }
+    #[cfg(feature = "local-workspace")]
+    {
+        let lw = session_startup::resolve_local_workspace_config(
+            args.chat(),
+            args.local_workspace(),
+            args.local_workspace_attach(),
+            args.local_workspace_cwd(),
+        )?;
+        if let Some(ref cfg) = lw {
+            session_startup::emit_local_workspace_startup_ux(cfg)?;
+        }
+        session_startup::set_active_local_workspace(lw)?;
+    }
     let intent = args
         .session_startup_intent()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let materialized = session_startup::materialize_startup(
-        session_startup::MaterializeCtx::from_pager_args(&args),
-        intent,
-    )
-    .await?;
+    let mut materialize_ctx = session_startup::MaterializeCtx::from_pager_args(&args);
+    materialize_ctx.restore_progress_on_stdout =
+        std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let materialized = session_startup::materialize_startup(materialize_ctx, intent).await?;
     if args.chat()
         && let session_startup::MaterializedStartup::Resume { session_id, .. } = &materialized
     {
@@ -648,6 +723,79 @@ pub async fn run(
     if let Some(ref t) = session_title {
         set_terminal_title(t);
     }
+    const CONNECT_UI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    let fallback_flags = use_leader.then(|| connect_flags.clone());
+    let primary_target = if use_leader {
+        crate::acp::AgentKind::Leader
+    } else {
+        crate::acp::AgentKind::Embedded
+    };
+    agent_tui_telemetry::external::init(
+        agent_tui_shell::agent::config::resolve_external_otel_config(
+            agent_tui_telemetry::external::config::ExternalClientInfo {
+                service_version: env!("VERSION_WITH_COMMIT").to_owned(),
+                client_version: agent_tui_version::VERSION.to_owned(),
+                app_entrypoint: "tui".to_owned(),
+            },
+        ),
+    );
+    let timer = agent_tui_telemetry::startup::begin(crate::acp::Owner::Client);
+    let connect_result =
+        bounded_connect(&cancel, CONNECT_UI_TIMEOUT, primary_target, &timer, async {
+            if use_leader {
+                crate::acp::connect_via_leader(&cancel, connect_flags, &raw_config).await
+            } else {
+                crate::acp::connect(&cancel, connect_flags).await
+            }
+        })
+        .await;
+    let (connect_result, embedded_fallback, timer, connect_target) = match connect_result {
+        Err(f) if use_leader && !cancel.is_cancelled() => {
+            tracing::warn!(error = %f.error, "leader connect failed; falling back to embedded agent");
+            timer.emit_telemetry(primary_target, f.outcome, f.timeout_secs, false);
+            let flags = fallback_flags.expect("set on the use_leader path");
+            let timer = agent_tui_telemetry::startup::begin(crate::acp::Owner::Client);
+            let target = crate::acp::AgentKind::Embedded;
+            let fallback = bounded_connect(&cancel, CONNECT_UI_TIMEOUT, target, &timer, async {
+                crate::acp::connect(&cancel, flags).await
+            })
+            .await;
+            (fallback, true, timer, target)
+        }
+        other => (other, false, timer, primary_target),
+    };
+    let mut connection = match connect_result {
+        Ok(conn) => {
+            tracing::info!(
+                elapsed_ms = startup_start.elapsed().as_millis() as u64,
+                use_leader = use_leader && !embedded_fallback,
+                embedded_fallback,
+                phases = %timer.summary(),
+                "Connected"
+            );
+            timer.emit_telemetry(
+                connect_target,
+                crate::acp::StartupOutcome::Ok,
+                None,
+                embedded_fallback,
+            );
+            conn
+        }
+        Err(f) => {
+            timer.emit_telemetry(connect_target, f.outcome, f.timeout_secs, embedded_fallback);
+            if f.outcome == crate::acp::StartupOutcome::Cancelled {
+                agent_tui_telemetry::startup::clear();
+            } else {
+                agent_tui_telemetry::startup::report_total(f.outcome);
+            }
+            crate::unified_log::flush_blocking().await;
+            let _ = restore_terminal(terminal, writer_thread, screen_mode);
+            cancel.cancel();
+            return Err(f.error);
+        }
+    };
+    let agent_guard =
+        crate::acp::spawn::AgentShutdownGuard::new(cancel.clone(), connection.agent_thread.take());
     let effective_args = PagerArgs {
         resume_session: None,
         load_session: None,
@@ -1059,26 +1207,31 @@ fn init_terminal(
                     Ok(true) => None,
                     _ => Some("unsupported"),
                 });
-        let use_keyboard_enhancement = skip_reason.is_none();
-        if use_keyboard_enhancement {
-            let flags = event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES;
-            agent_tui_shell::util::with_locked_stderr(|stderr| {
-                let _ = execute!(stderr, event::PushKeyboardEnhancementFlags(flags));
-            });
-            tracing::info!(
-                kitty.flags = ? flags, kitty.disambiguate = true, kitty
-                .report_event_types = true, kitty.report_all_keys = false,
-                "kitty keyboard protocol pushed"
-            );
-        } else {
+        crate::terminal::da2::probe_at_startup();
+        let flags = crate::terminal::negotiated_kitty_flags(
+            skip_reason,
+            crate::terminal::da2::detected_packed(),
+        );
+        if flags.is_empty() {
             tracing::info!(
                 kitty.flags = "none",
                 kitty.skipped_reason = skip_reason.unwrap_or("unknown"),
                 "kitty keyboard protocol skipped"
             );
+        } else {
+            agent_tui_shell::util::with_locked_stderr(|stderr| {
+                let _ = execute!(stderr, event::PushKeyboardEnhancementFlags(flags));
+            });
+            tracing::info!(
+                kitty.flags = ?flags,
+                kitty.disambiguate = true,
+                kitty.report_event_types =
+                    flags.contains(event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES),
+                kitty.report_all_keys = false,
+                "kitty keyboard protocol pushed"
+            );
         }
-        crate::terminal::set_kitty_flags_pushed(use_keyboard_enhancement);
+        crate::terminal::set_pushed_kitty_flags(flags);
         if mode.is_fullscreen() {
             let backend =
                 CrosstermBackend::new(crate::render::draw::TermWriter::new(frame_tx, writer_sync));
@@ -1191,8 +1344,8 @@ fn emit_terminal_teardown_sequences(mode: ScreenMode, inline_cursor_row: Option<
         let _ = execute!(stderr, crossterm::terminal::EndSynchronizedUpdate);
     });
     crate::theme::reset_cursor_color();
+    disable_mouse_paste_raw();
     if MOUSE_CAPTURE_ENABLED.swap(false, Ordering::AcqRel) {
-        disable_mouse_paste_raw();
         #[cfg(windows)]
         agent_tui_shell::util::with_locked_stderr(|stderr| {
             let _ = execute!(stderr, event::DisableMouseCapture);
@@ -1289,6 +1442,7 @@ fn set_panic_hook(mode: ScreenMode) {
         agent_tui_crash_handler::disable_terminal_escape_restore();
         agent_tui_tty_utils::restore_native_stderr();
         agent_tui_tty_utils::global_process_scope().kill_all();
+        crate::memory_trace::record_crash_sample();
         hook(info);
     }));
 }
@@ -1315,6 +1469,52 @@ mod tests {
     fn config_with_leader(enabled: bool) -> toml::Value {
         let toml_str = format!("[cli]\nuse_leader = {enabled}");
         toml::from_str(&toml_str).unwrap()
+    }
+    #[tokio::test]
+    async fn bounded_connect_times_out_when_the_target_stalls() {
+        agent_tui_telemetry::unified_log::redirect_to_temp_for_tests();
+        let cancel = CancellationToken::new();
+        let timer = crate::acp::StartupTimer::new();
+        timer.enter(crate::acp::StartupPhase::LoadConfig);
+        timer.enter(crate::acp::StartupPhase::ModelCatalog);
+        let r = bounded_connect(
+            &cancel,
+            std::time::Duration::from_millis(20),
+            crate::acp::AgentKind::Embedded,
+            &timer,
+            std::future::pending::<anyhow::Result<crate::acp::AcpConnection>>(),
+        )
+        .await;
+        let Err(f) = r else {
+            panic!("should time out");
+        };
+        assert_eq!(f.outcome, crate::acp::StartupOutcome::Timeout);
+        let msg = f.error.to_string();
+        assert!(
+            msg.contains("timed out after 0s connecting to the embedded agent"),
+            "{msg}"
+        );
+        assert!(msg.contains("stuck in: model_catalog"), "{msg}");
+        assert!(msg.contains("startup log: "), "{msg}");
+    }
+    #[tokio::test]
+    async fn bounded_connect_returns_err_on_cancel() {
+        agent_tui_telemetry::unified_log::redirect_to_temp_for_tests();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let timer = crate::acp::StartupTimer::new();
+        let r = bounded_connect(
+            &cancel,
+            std::time::Duration::from_secs(60),
+            crate::acp::AgentKind::Embedded,
+            &timer,
+            std::future::pending::<anyhow::Result<crate::acp::AcpConnection>>(),
+        )
+        .await;
+        assert!(r.is_err_and(|f| {
+            f.outcome == crate::acp::StartupOutcome::Cancelled
+                && f.error.to_string().contains("cancelled")
+        }));
     }
     #[test]
     fn terminal_title_strips_control_characters() {
@@ -1594,6 +1794,53 @@ mod tests {
     #[test]
     fn cli_chat_flag_rejected_without_feature() {
         assert!(try_parse_pager(&["grok-pager", "--chat"]).is_err());
+    }
+    #[cfg(feature = "local-workspace")]
+    #[test]
+    fn cli_local_workspace_attach_requires_chat() {
+        assert!(
+            try_parse_pager(&["grok-pager", "--local-workspace-attach=srv"]).is_err(),
+            "attach without --chat must clap-error"
+        );
+        let args =
+            try_parse_pager(&["grok-pager", "--chat", "--local-workspace-attach=srv"]).unwrap();
+        assert_eq!(args.local_workspace_attach(), Some("srv"));
+    }
+    #[cfg(feature = "local-workspace")]
+    #[test]
+    fn cli_local_workspace_own_conflicts_with_attach() {
+        assert!(
+            try_parse_pager(&[
+                "grok-pager",
+                "--chat",
+                "--local-workspace=/tmp/a",
+                "--local-workspace-attach=srv",
+            ])
+            .is_err(),
+            "own + attach must clap-conflict"
+        );
+    }
+    #[cfg(feature = "local-workspace")]
+    #[test]
+    fn cli_local_workspace_cwd_requires_chat() {
+        assert!(try_parse_pager(&["grok-pager", "--local-workspace-cwd=/tmp/a"]).is_err());
+        let args = try_parse_pager(&[
+            "grok-pager",
+            "--chat",
+            "--local-workspace-attach=srv",
+            "--local-workspace-cwd=/tmp/repo",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.local_workspace_cwd(),
+            Some(std::path::Path::new("/tmp/repo"))
+        );
+    }
+    #[test]
+    fn cli_local_workspace_flags_rejected_without_feature() {
+        assert!(try_parse_pager(&["grok-pager", "--local-workspace-attach=srv"]).is_err());
+        assert!(try_parse_pager(&["grok-pager", "--local-workspace"]).is_err());
+        assert!(try_parse_pager(&["grok-pager", "--local-workspace-cwd=/tmp"]).is_err());
     }
     #[test]
     fn chat_mode_leader_guard_truth_table() {

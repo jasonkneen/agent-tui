@@ -119,6 +119,59 @@ impl AgentView {
                     self.cancel_trigger_hint = Some(crate::app::actions::CancelTrigger::Mouse);
                     return InputOutcome::Action(Action::CancelTurn);
                 }
+                if self
+                    .privacy_banner
+                    .hit_opt_in
+                    .contains(mouse.column, mouse.row)
+                    && !self.pos_occluded(mouse.column, mouse.row)
+                {
+                    return InputOutcome::Action(Action::PrivacyBannerOptIn);
+                }
+                if self
+                    .privacy_banner
+                    .hit_opt_out
+                    .contains(mouse.column, mouse.row)
+                    && !self.pos_occluded(mouse.column, mouse.row)
+                {
+                    return InputOutcome::Action(Action::PrivacyBannerOptOut);
+                }
+                if self
+                    .privacy_banner
+                    .hit_terms
+                    .contains(mouse.column, mouse.row)
+                    && !self.pos_occluded(mouse.column, mouse.row)
+                {
+                    return InputOutcome::Action(Action::OpenUrl(
+                        crate::views::privacy_banner::PRIVACY_BANNER_TERMS_URL.to_string(),
+                    ));
+                }
+                if self
+                    .privacy_banner
+                    .hit_policy
+                    .contains(mouse.column, mouse.row)
+                    && !self.pos_occluded(mouse.column, mouse.row)
+                {
+                    return InputOutcome::Action(Action::OpenUrl(
+                        crate::views::privacy_banner::PRIVACY_BANNER_POLICY_URL.to_string(),
+                    ));
+                }
+                if self.hit_watching_cue.contains(mouse.column, mouse.row)
+                    && !self.pos_occluded(mouse.column, mouse.row)
+                {
+                    let was_visible = self.tasks.overlay.visible;
+                    self.tasks.overlay.toggle();
+                    self.tasks.on_state_change();
+                    if self.tasks.overlay.focused {
+                        self.set_active_pane(AgentPane::Tasks, false);
+                    } else if self.active_pane == AgentPane::Tasks {
+                        self.set_active_pane(AgentPane::Scrollback, false);
+                    }
+                    if !was_visible && !self.watching_cue_toast_shown {
+                        self.watching_cue_toast_shown = true;
+                        self.show_toast("Tip: Ctrl+G toggles the tasks pane");
+                    }
+                    return InputOutcome::Changed;
+                }
                 if self.hit_announcement_hide.contains(mouse.column, mouse.row)
                     && !self.pos_occluded(mouse.column, mouse.row)
                 {
@@ -205,6 +258,13 @@ impl AgentView {
                     self.scrollback.goto_bottom();
                     return InputOutcome::Changed;
                 }
+                if self
+                    .hit_response_top_indicator
+                    .contains(mouse.column, mouse.row)
+                {
+                    self.scrollback.prev_response();
+                    return InputOutcome::Changed;
+                }
                 if let Some(hd_area) = self.history_dropdown_area
                     && hd_area.contains((mouse.column, mouse.row).into())
                     && self.prompt.history_search.is_active()
@@ -227,8 +287,7 @@ impl AgentView {
                             .map(str::to_owned)
                     {
                         self.prompt.history_search.deactivate();
-                        if self.prompt_input_mode != PromptInputMode::Feedback
-                            && self.prompt_input_mode != PromptInputMode::Remember
+                        if self.prompt_input_mode != PromptInputMode::Remember
                             && let Some(cmd) = text.strip_prefix("! ")
                         {
                             self.prompt_input_mode = PromptInputMode::Bash;
@@ -956,6 +1015,9 @@ impl AgentView {
                 changed |= self
                     .hit_follow_indicator
                     .update_hover(mouse.column, mouse.row);
+                changed |= self
+                    .hit_response_top_indicator
+                    .update_hover(mouse.column, mouse.row);
                 changed |= self.hit_cancel_button.update_hover(mouse.column, mouse.row);
                 changed |= self.hit_bg_button.update_hover(mouse.column, mouse.row);
                 changed |= self
@@ -963,6 +1025,22 @@ impl AgentView {
                     .update_hover(mouse.column, mouse.row);
                 changed |= self
                     .hit_announcement_cta
+                    .update_hover(mouse.column, mouse.row);
+                changed |= self
+                    .privacy_banner
+                    .hit_opt_in
+                    .update_hover(mouse.column, mouse.row);
+                changed |= self
+                    .privacy_banner
+                    .hit_opt_out
+                    .update_hover(mouse.column, mouse.row);
+                changed |= self
+                    .privacy_banner
+                    .hit_terms
+                    .update_hover(mouse.column, mouse.row);
+                changed |= self
+                    .privacy_banner
+                    .hit_policy
                     .update_hover(mouse.column, mouse.row);
                 changed |= self
                     .plugin_cta

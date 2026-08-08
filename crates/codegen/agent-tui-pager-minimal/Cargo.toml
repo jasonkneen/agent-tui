@@ -44,6 +44,6 @@ agent-tui-token-estimation = { workspace = true }
 # The unit tests reuse the pager's test-only view-model constructors
 # (`test_agent_view`, yolo/auto setters), gated behind its test-only
 # helpers.
-agent-tui-pager = { path = "../agent-tui-pager", features = [] }
+agent-tui-pager = { path = "../agent-tui-pager", features = ["test-support"] }
 
 [features]
