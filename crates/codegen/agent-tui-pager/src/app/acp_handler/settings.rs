@@ -5,11 +5,23 @@ use serde::Deserialize;
 pub(super) fn handle_models_update(notif: &acp::ExtNotification, app: &mut AppView) -> bool {
     if let Ok(model_state) = serde_json::from_str::<acp::SessionModelState>(notif.params.get()) {
         use crate::acp::model_state::ModelState;
+        use crate::runtime_backend::RuntimeBackend;
         let new_models = ModelState::from(Some(model_state));
         tracing::info!(
             count = new_models.available.len(),
             "models updated via x.ai/models/update"
         );
+
+        // Vendor runtimes own the prompt model chrome. Stash Grok catalog for
+        // restore, but do not paint Grok ids (e.g. "Grok 4.5") over Codex/Claude/…
+        if crate::runtime_backend::active() != RuntimeBackend::Grok {
+            crate::runtime_backend::stash_grok_catalog(new_models);
+            tracing::info!(
+                runtime = %crate::runtime_backend::active().as_str(),
+                "stashed Grok models update; vendor runtime owns model chrome"
+            );
+            return true;
+        }
 
         let shell_fallback_current = new_models.current.clone();
 

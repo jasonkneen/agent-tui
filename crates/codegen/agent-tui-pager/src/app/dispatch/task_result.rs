@@ -19,7 +19,7 @@ use super::prompt::{
     defer_to_open_reload_window, handle_compact_complete, handle_prompt_response,
     handle_suggestion_debounce_expired,
 };
-use super::queue::push_and_page_flip;
+use super::queue::{maybe_drain_queue, note_peek_page_flip, push_and_page_flip};
 use super::rewind::{
     dispatch_rewind_success, handle_rewind_execute_failed, handle_rewind_points_loaded,
 };
@@ -58,8 +58,132 @@ use crate::app::actions::{
 };
 use crate::app::agent::AgentId;
 use crate::app::app_view::{ActiveView, AppView, AuthState};
+use crate::runtime_backend::RuntimeBackend;
 use crate::scrollback::block::RenderBlock;
+use crate::scrollback::blocks::SessionEvent;
 use agent_client_protocol as acp;
+
+/// Finish a Codex/Claude/Lazar/Hermes external-runtime turn: inject assistant
+/// text (or error), close the turn, drain the local prompt queue.
+fn handle_external_runtime_turn_done(
+    app: &mut AppView,
+    agent_id: AgentId,
+    prompt_id: Option<String>,
+    result: Result<String, String>,
+    runtime: RuntimeBackend,
+) -> Vec<Effect> {
+    let Some(agent) = app.agents.get_mut(&agent_id) else {
+        return vec![];
+    };
+
+    // Stale response for a rewound/cancelled turn — ignore.
+    if let Some(ref pid) = prompt_id
+        && agent.session.current_prompt_id.as_deref() != Some(pid.as_str())
+    {
+        tracing::debug!(
+            target: "runtime",
+            ?prompt_id,
+            current = ?agent.session.current_prompt_id,
+            "dropping stale ExternalRuntimeTurnDone"
+        );
+        return vec![];
+    }
+
+    let elapsed = agent.turn_elapsed();
+    match &result {
+        Ok(text) => {
+            let body = if text.trim().is_empty() {
+                format!("_({} returned empty output)_", runtime.display_name())
+            } else {
+                text.clone()
+            };
+            agent
+                .scrollback
+                .push_block(RenderBlock::agent_message(body));
+        }
+        Err(err) => {
+            agent.scrollback.push_block(RenderBlock::system(format!(
+                "{} error: {err}",
+                runtime.display_name()
+            )));
+            agent.show_toast(&format!("{}: {err}", runtime.as_str()));
+        }
+    }
+
+    let ending_prompt_id = agent.session.current_prompt_id.clone().or(prompt_id);
+    agent.session.finish_turn(&mut agent.scrollback);
+
+    let event = match &result {
+        Ok(_) => Some(SessionEvent::TurnCompleted {
+            elapsed: Some(elapsed.unwrap_or_default()),
+        }),
+        Err(err) => Some(SessionEvent::TurnFailed {
+            error: err.clone(),
+            elapsed,
+        }),
+    };
+    crate::app::turn_completion::push_turn_terminal_marker(
+        agent,
+        event,
+        ending_prompt_id.as_deref(),
+    );
+
+    agent.mark_turn_finished();
+    agent.activity_started_at = None;
+    agent.last_activity = None;
+    agent.bash_turn = false;
+    agent.cron_task_id = None;
+    agent.prompt.prompt_suggestion.clear();
+
+    let drain = maybe_drain_queue(agent);
+    note_peek_page_flip(app, agent_id, drain.page_flip_entry);
+    drain.effects
+}
+
+fn handle_vendor_models_loaded(
+    app: &mut AppView,
+    vendor: &str,
+    result: Result<crate::acp::model_state::ModelState, String>,
+) -> Vec<Effect> {
+    match result {
+        Ok(state) => {
+            // Stash Grok only when the UI still holds a non-overlapping (Grok)
+            // catalog. Avoid clobbering a prior stash with empty defaults or a
+            // second vendor refresh after product-skin startup already stashed.
+            let still_grok_catalog = !app.models.available.is_empty()
+                && !app
+                    .models
+                    .available
+                    .keys()
+                    .any(|id| state.available.contains_key(id));
+            if still_grok_catalog {
+                crate::runtime_backend::stash_grok_catalog(app.models.clone());
+            }
+            let count = state.available.len();
+            let name = state
+                .current_model_name()
+                .unwrap_or_else(|| "(none)".into());
+            app.models = state.clone();
+            if let Some(agent) = get_active_agent_mut(app) {
+                agent.session.models = state;
+                agent.scrollback.push_block(RenderBlock::system(format!(
+                    "{vendor} models ready ({count}). Current: {name}. Switch with /model"
+                )));
+            }
+            app.show_toast(&format!("{vendor}: {count} models · {name}"));
+        }
+        Err(e) => {
+            app.show_toast(&format!("{vendor} models: {e}"));
+            if let Some(agent) = get_active_agent_mut(app) {
+                agent.scrollback.push_block(RenderBlock::system(format!(
+                    "{vendor} model list failed: {e}"
+                )));
+            }
+        }
+    }
+    vec![]
+}
+
 pub(super) fn unregister_session_effect(session_id: Option<acp::SessionId>) -> Vec<Effect> {
     session_id
         .map(|sid| Effect::UnregisterActiveSession { session_id: sid })
@@ -481,6 +605,12 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             http_status,
             prompt_id,
         } => handle_prompt_response(app, agent_id, result, http_status, prompt_id),
+        TaskResult::ExternalRuntimeTurnDone {
+            agent_id,
+            prompt_id,
+            result,
+            runtime,
+        } => handle_external_runtime_turn_done(app, agent_id, prompt_id, result, runtime),
         TaskResult::SendPromptNowFailed {
             agent_id,
             session_id,
@@ -527,6 +657,18 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 agent.show_toast(&format!("Send now failed — requeued: {error}"));
             }
             vec![]
+        }
+        TaskResult::CodexModelsLoaded { result } => {
+            handle_vendor_models_loaded(app, "Codex", result)
+        }
+        TaskResult::ClaudeModelsLoaded { result } => {
+            handle_vendor_models_loaded(app, "Claude", result)
+        }
+        TaskResult::LazarModelsLoaded { result } => {
+            handle_vendor_models_loaded(app, "Lazar", result)
+        }
+        TaskResult::HermesModelsLoaded { result } => {
+            handle_vendor_models_loaded(app, "Hermes", result)
         }
         TaskResult::PreferredModelPersisted { result } => {
             if let Err(err) = result

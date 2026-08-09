@@ -33,6 +33,19 @@ use tokio::sync::{mpsc, watch};
 /// - Version 1: ConversationItem format (used for new sessions)
 pub const CHAT_FORMAT_VERSION: u8 = 1;
 
+/// Append a chat message for an external-runtime turn (Codex / Claude / …).
+///
+/// Agent TUI routes non-Grok turns outside ACP; this keeps the session JSONL
+/// history aligned so `/resume` and scrollback reload still see the turn.
+pub async fn append_external_runtime_message(
+    info: &Info,
+    message: &ConversationItem,
+) -> io::Result<()> {
+    JsonlStorageAdapter::new()
+        .append_chat_message(info, message)
+        .await
+}
+
 #[derive(Debug, Clone)]
 pub struct PersistenceContentChunk {
     content_chunks: Vec<acp::ContentBlock>,

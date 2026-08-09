@@ -72,6 +72,30 @@ pub(crate) fn execute(
                 tracing::warn!(error = %e, "change location: failed to set_current_dir");
             }
         }
+        Effect::RefreshCodexModels => {
+            tasks.spawn(async {
+                let result = crate::runtime_backend::refresh_codex_models().await;
+                TaskResult::CodexModelsLoaded { result }
+            });
+        }
+        Effect::RefreshClaudeModels => {
+            tasks.spawn(async {
+                let result = crate::runtime_backend::refresh_claude_models();
+                TaskResult::ClaudeModelsLoaded { result }
+            });
+        }
+        Effect::RefreshLazarModels => {
+            tasks.spawn(async {
+                let result = crate::runtime_backend::refresh_lazar_models();
+                TaskResult::LazarModelsLoaded { result }
+            });
+        }
+        Effect::RefreshHermesModels => {
+            tasks.spawn(async {
+                let result = crate::runtime_backend::refresh_hermes_models();
+                TaskResult::HermesModelsLoaded { result }
+            });
+        }
         Effect::ScheduleClearAuthCopyFeedback { generation } => {
             tasks
                 .spawn(async move {
@@ -1082,121 +1106,266 @@ pub(crate) fn execute(
             prompt_id,
             skill_token_ranges,
         } => {
-            let tx = acp_tx.clone();
-            let screen_mode = session_flags.screen_mode_label;
-            let is_api_key_auth = session_flags.is_api_key_auth;
-            tasks
-                .spawn(async move {
+            let runtime = crate::runtime_backend::active();
+            if runtime != crate::runtime_backend::RuntimeBackend::Grok {
+                let permission_mode = external_permission_mode(session_flags);
+                let fallback_cwd = cwd.to_string_lossy().into_owned();
+                tasks.spawn(async move {
                     ulog::info(
-                        "prompt.acp_send.start",
+                        "prompt.external_runtime.start",
                         Some(&session_id.0),
-                        Some(
-                            serde_json::json!({
-                        "kind": "text",
-                        "len": text.len(),
-                        "prompt_id": prompt_id,
-                    }),
-                        ),
+                        Some(serde_json::json!({
+                            "runtime": runtime.as_str(),
+                            "len": text.len(),
+                            "prompt_id": prompt_id,
+                        })),
                     );
                     let send_start = std::time::Instant::now();
-                    let prompt = vec![plain_prompt_content_block(text, &skill_token_ranges)];
-                    let req = acp::PromptRequest::new(session_id.clone(), prompt)
-                        .meta(
-                            prompt_request_meta(&prompt_id, screen_mode)
-                                .as_object()
-                                .cloned(),
-                        );
-                    let result = acp_send(req, &tx).await;
+                    let sticky_key = Some(session_id.0.to_string());
+                    let info = external_session_info(&session_id, fallback_cwd);
+                    let result = match agent_tui_shell::session::persistence::append_external_runtime_message(
+                        &info,
+                        &agent_tui_shell::sampling::ConversationItem::user(text.clone()),
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            match crate::runtime_backend::run_external_turn_keyed_with_permission(
+                                runtime,
+                                text,
+                                sticky_key,
+                                permission_mode,
+                            )
+                            .await
+                            {
+                                Ok(reply) => {
+                                    match agent_tui_shell::session::persistence::append_external_runtime_message(
+                                        &info,
+                                        &agent_tui_shell::sampling::ConversationItem::assistant(reply.clone()),
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => Ok(reply),
+                                        Err(error) => Err(format!(
+                                            "external reply could not be persisted: {error}"
+                                        )),
+                                    }
+                                }
+                                Err(error) => Err(error),
+                            }
+                        }
+                        Err(error) => Err(format!(
+                            "external prompt was not sent because history persistence failed: {error}"
+                        )),
+                    };
                     let send_elapsed_ms = send_start.elapsed().as_millis() as u64;
                     ulog::info(
-                        "prompt.acp_send.done",
+                        "prompt.external_runtime.done",
                         Some(&session_id.0),
-                        Some(
-                            serde_json::json!({
-                        "kind": "text",
-                        "elapsed_ms": send_elapsed_ms,
-                        "ok": result.is_ok(),
-                        "prompt_id": prompt_id,
-                    }),
-                        ),
+                        Some(serde_json::json!({
+                            "runtime": runtime.as_str(),
+                            "elapsed_ms": send_elapsed_ms,
+                            "ok": result.is_ok(),
+                            "prompt_id": prompt_id,
+                        })),
                     );
-                    log_prompt_result(&session_id, &result);
-                    let http_status = result
-                        .as_ref()
-                        .err()
-                        .and_then(http_status_from_error);
-                    TaskResult::PromptResponse {
+                    TaskResult::ExternalRuntimeTurnDone {
                         agent_id,
-                        result: result
-                            .map_err(|e| format_acp_error(&e, is_api_key_auth)),
-                        http_status,
                         prompt_id: Some(prompt_id),
+                        result,
+                        runtime,
                     }
                 });
+            } else {
+                let tx = acp_tx.clone();
+                let screen_mode = session_flags.screen_mode_label;
+                let is_api_key_auth = session_flags.is_api_key_auth;
+                tasks
+                    .spawn(async move {
+                        ulog::info(
+                            "prompt.acp_send.start",
+                            Some(&session_id.0),
+                            Some(
+                                serde_json::json!({
+                            "kind": "text",
+                            "len": text.len(),
+                            "prompt_id": prompt_id,
+                        }),
+                            ),
+                        );
+                        let send_start = std::time::Instant::now();
+                        let prompt = vec![plain_prompt_content_block(text, &skill_token_ranges)];
+                        let req = acp::PromptRequest::new(session_id.clone(), prompt)
+                            .meta(
+                                prompt_request_meta(&prompt_id, screen_mode)
+                                    .as_object()
+                                    .cloned(),
+                            );
+                        let result = acp_send(req, &tx).await;
+                        let send_elapsed_ms = send_start.elapsed().as_millis() as u64;
+                        ulog::info(
+                            "prompt.acp_send.done",
+                            Some(&session_id.0),
+                            Some(
+                                serde_json::json!({
+                            "kind": "text",
+                            "elapsed_ms": send_elapsed_ms,
+                            "ok": result.is_ok(),
+                            "prompt_id": prompt_id,
+                        }),
+                            ),
+                        );
+                        log_prompt_result(&session_id, &result);
+                        let http_status = result
+                            .as_ref()
+                            .err()
+                            .and_then(http_status_from_error);
+                        TaskResult::PromptResponse {
+                            agent_id,
+                            result: result
+                                .map_err(|e| format_acp_error(&e, is_api_key_auth)),
+                            http_status,
+                            prompt_id: Some(prompt_id),
+                        }
+                    });
+            }
         }
         Effect::SendPromptBlocks { agent_id, session_id, blocks, prompt_id }
         | Effect::SendPromptNow { agent_id, session_id, blocks, prompt_id } => {
             let send_now = effect_is_send_now;
-            let tx = acp_tx.clone();
-            let screen_mode = session_flags.screen_mode_label;
-            let is_api_key_auth = session_flags.is_api_key_auth;
-            tasks
-                .spawn(async move {
-                    ulog::info(
-                        "prompt.acp_send.start",
-                        Some(&session_id.0),
-                        Some(
-                            serde_json::json!({
-                        "kind": if send_now { "send_now" } else { "blocks" },
-                        "block_count": blocks.len(),
-                        "prompt_id": prompt_id,
-                    }),
-                        ),
-                    );
-                    let send_start = std::time::Instant::now();
-                    let mut meta = prompt_request_meta(&prompt_id, screen_mode);
-                    if send_now && let Some(map) = meta.as_object_mut() {
-                        map.insert("sendNow".into(), serde_json::Value::Bool(true));
-                    }
-                    let requeue_blocks = send_now.then(|| blocks.clone());
-                    let req = acp::PromptRequest::new(session_id.clone(), blocks)
-                        .meta(meta.as_object().cloned());
-                    let result = acp_send(req, &tx).await;
-                    let send_elapsed_ms = send_start.elapsed().as_millis() as u64;
-                    ulog::info(
-                        "prompt.acp_send.done",
-                        Some(&session_id.0),
-                        Some(
-                            serde_json::json!({
-                        "kind": if send_now { "send_now" } else { "blocks" },
-                        "elapsed_ms": send_elapsed_ms,
-                        "ok": result.is_ok(),
-                        "prompt_id": prompt_id,
-                    }),
-                        ),
-                    );
-                    log_prompt_result(&session_id, &result);
-                    if let (Some(blocks), Err(e)) = (requeue_blocks, &result) {
-                        return TaskResult::SendPromptNowFailed {
-                            agent_id,
-                            session_id,
-                            prompt_id,
-                            error: format_acp_error(e, is_api_key_auth),
-                            blocks,
-                        };
-                    }
-                    let http_status = result
-                        .as_ref()
-                        .err()
-                        .and_then(http_status_from_error);
-                    TaskResult::PromptResponse {
+            let runtime = crate::runtime_backend::active();
+            if runtime != crate::runtime_backend::RuntimeBackend::Grok {
+                let permission_mode = external_permission_mode(session_flags);
+                let fallback_cwd = cwd.to_string_lossy().into_owned();
+                // Flatten text blocks; image/other content not yet supported on
+                // external runtimes.
+                let text = blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        acp::ContentBlock::Text(t) => Some(t.text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let has_non_text = blocks
+                    .iter()
+                    .any(|b| !matches!(b, acp::ContentBlock::Text(_)));
+                tasks.spawn(async move {
+                    let sticky_key = Some(session_id.0.to_string());
+                    let result = if text.trim().is_empty() && has_non_text {
+                        Err(format!(
+                            "{} does not yet accept image/binary attachments from Agent TUI. Paste text only, or `/runtime grok`.",
+                            runtime.display_name()
+                        ))
+                    } else if text.trim().is_empty() {
+                        Err("Empty prompt".into())
+                    } else {
+                        let info = external_session_info(&session_id, fallback_cwd);
+                        match agent_tui_shell::session::persistence::append_external_runtime_message(
+                            &info,
+                            &agent_tui_shell::sampling::ConversationItem::user(text.clone()),
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                match crate::runtime_backend::run_external_turn_keyed_with_permission(
+                                    runtime,
+                                    text,
+                                    sticky_key,
+                                    permission_mode,
+                                )
+                                .await
+                                {
+                                    Ok(reply) => {
+                                        match agent_tui_shell::session::persistence::append_external_runtime_message(
+                                            &info,
+                                            &agent_tui_shell::sampling::ConversationItem::assistant(reply.clone()),
+                                        )
+                                        .await
+                                        {
+                                            Ok(()) => Ok(reply),
+                                            Err(error) => Err(format!(
+                                                "external reply could not be persisted: {error}"
+                                            )),
+                                        }
+                                    }
+                                    Err(error) => Err(error),
+                                }
+                            }
+                            Err(error) => Err(format!(
+                                "external prompt was not sent because history persistence failed: {error}"
+                            )),
+                        }
+                    };
+                    TaskResult::ExternalRuntimeTurnDone {
                         agent_id,
-                        result: result
-                            .map_err(|e| format_acp_error(&e, is_api_key_auth)),
-                        http_status,
                         prompt_id: Some(prompt_id),
+                        result,
+                        runtime,
                     }
                 });
+            } else {
+                let tx = acp_tx.clone();
+                let screen_mode = session_flags.screen_mode_label;
+                let is_api_key_auth = session_flags.is_api_key_auth;
+                tasks
+                    .spawn(async move {
+                        ulog::info(
+                            "prompt.acp_send.start",
+                            Some(&session_id.0),
+                            Some(
+                                serde_json::json!({
+                            "kind": if send_now { "send_now" } else { "blocks" },
+                            "block_count": blocks.len(),
+                            "prompt_id": prompt_id,
+                        }),
+                            ),
+                        );
+                        let send_start = std::time::Instant::now();
+                        let mut meta = prompt_request_meta(&prompt_id, screen_mode);
+                        if send_now && let Some(map) = meta.as_object_mut() {
+                            map.insert("sendNow".into(), serde_json::Value::Bool(true));
+                        }
+                        let requeue_blocks = send_now.then(|| blocks.clone());
+                        let req = acp::PromptRequest::new(session_id.clone(), blocks)
+                            .meta(meta.as_object().cloned());
+                        let result = acp_send(req, &tx).await;
+                        let send_elapsed_ms = send_start.elapsed().as_millis() as u64;
+                        ulog::info(
+                            "prompt.acp_send.done",
+                            Some(&session_id.0),
+                            Some(
+                                serde_json::json!({
+                            "kind": if send_now { "send_now" } else { "blocks" },
+                            "elapsed_ms": send_elapsed_ms,
+                            "ok": result.is_ok(),
+                            "prompt_id": prompt_id,
+                        }),
+                            ),
+                        );
+                        log_prompt_result(&session_id, &result);
+                        if let (Some(blocks), Err(e)) = (requeue_blocks, &result) {
+                            return TaskResult::SendPromptNowFailed {
+                                agent_id,
+                                session_id,
+                                prompt_id,
+                                error: format_acp_error(e, is_api_key_auth),
+                                blocks,
+                            };
+                        }
+                        let http_status = result
+                            .as_ref()
+                            .err()
+                            .and_then(http_status_from_error);
+                        TaskResult::PromptResponse {
+                            agent_id,
+                            result: result
+                                .map_err(|e| format_acp_error(&e, is_api_key_auth)),
+                            http_status,
+                            prompt_id: Some(prompt_id),
+                        }
+                    });
+            }
         }
         Effect::SendBashCommand { agent_id, session_id, command, prompt_id } => {
             let tx = acp_tx.clone();
@@ -1266,6 +1435,24 @@ pub(crate) fn execute(
             trigger,
             rewind_if_no_output,
         } => {
+            let runtime = crate::runtime_backend::active();
+            if runtime != crate::runtime_backend::RuntimeBackend::Grok {
+                let sticky_key = session_id.0.to_string();
+                tasks.spawn(async move {
+                    let cancelled =
+                        crate::runtime_backend::cancel_external_turn(runtime, &sticky_key);
+                    ulog::info(
+                        "cancel.external_runtime",
+                        Some(&sticky_key),
+                        Some(serde_json::json!({
+                            "runtime": runtime.as_str(),
+                            "cancelled": cancelled,
+                        })),
+                    );
+                    TaskResult::CancelComplete
+                });
+                return (false, meta);
+            }
             let tx = acp_tx.clone();
             let trigger_str = trigger.map(|t| t.as_wire_str());
             tasks
@@ -4562,6 +4749,32 @@ fn format_auth_lines(is_api_key_auth: bool, api_key_env_set: bool) -> String {
     }
     String::from("  Auth method: OAuth\n")
 }
+fn external_permission_mode(
+    flags: &SessionFlags,
+) -> crate::runtime_backend::RuntimePermissionMode {
+    if flags.yolo_mode {
+        crate::runtime_backend::RuntimePermissionMode::AlwaysApprove
+    } else if flags.auto_mode {
+        crate::runtime_backend::RuntimePermissionMode::Auto
+    } else {
+        crate::runtime_backend::RuntimePermissionMode::Ask
+    }
+}
+
+fn external_session_info(
+    session_id: &acp::SessionId,
+    fallback_cwd: String,
+) -> agent_tui_shell::session::info::Info {
+    let cwd = agent_tui_shell::session::persistence::resolve_local_session_any_cwd(
+        session_id.0.as_ref(),
+    )
+    .unwrap_or(fallback_cwd);
+    agent_tui_shell::session::info::Info {
+        id: session_id.clone(),
+        cwd,
+    }
+}
+
 /// Build the single text content block for a plain `Effect::SendPrompt`.
 ///
 /// Non-empty `skill_token_ranges` are stamped into the block `_meta` as

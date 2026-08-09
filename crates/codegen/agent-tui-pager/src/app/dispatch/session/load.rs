@@ -1057,9 +1057,11 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
         if let Some(placeholder_id) = agent.loading_placeholder_id.take() {
             agent.scrollback.remove_entry(placeholder_id);
         }
-        if let Some(m) = new_models {
-            app.models = Some(m).into();
-            agent.session.models = app.models.clone();
+        if let Some(state) =
+            crate::app::dispatch::session::lifecycle::session_models_after_acp(new_models)
+        {
+            app.models = state.clone();
+            agent.session.models = state;
         }
         let deferred = crate::app::dispatch::session::lifecycle::apply_deferred_model_switch(
             agent,
@@ -1141,7 +1143,12 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
             silent: true,
             nonce: 0,
         });
-        if let Some(switch) = deferred {
+        effects.extend(
+            crate::app::dispatch::session::lifecycle::vendor_catalog_refresh_effects(),
+        );
+        if crate::runtime_backend::active() == crate::runtime_backend::RuntimeBackend::Grok
+            && let Some(switch) = deferred
+        {
             agent.session.model_switch_pending = true;
             effects.push(Effect::SwitchModel {
                 agent_id,

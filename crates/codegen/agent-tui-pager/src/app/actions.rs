@@ -141,6 +141,16 @@ pub enum Action {
         parent_cwd: Option<std::path::PathBuf>,
         new_session_id: Option<String>,
     },
+    /// Switch the agent runtime harness (`/runtime grok|codex|claude|lazar|hermes`).
+    SetRuntime(crate::runtime_backend::RuntimeBackend),
+    /// Refresh Codex `model/list` into the session catalog (after `/runtime codex`).
+    RefreshCodexModels,
+    /// Load Claude model aliases into the session catalog (after `/runtime claude`).
+    RefreshClaudeModels,
+    /// Load the Lazar kernel-reported model into the session catalog (after `/runtime lazar`).
+    RefreshLazarModels,
+    /// Load the Hermes config default model into the session catalog (after `/runtime hermes`).
+    RefreshHermesModels,
     /// Send the current prompt text to the agent.
     SendPrompt(String),
     /// Submit a clicked follow-up suggestion chip as a LITERAL model prompt.
@@ -1403,6 +1413,14 @@ pub enum Effect {
     },
     /// Change the process working directory (dashboard location picker, `/cd`).
     SetWorkingDir { path: std::path::PathBuf },
+    /// Refresh Codex model catalog via app-server `model/list`.
+    RefreshCodexModels,
+    /// Refresh Claude model catalog (local CLI aliases).
+    RefreshClaudeModels,
+    /// Refresh Lazar model catalog (kernel-reported).
+    RefreshLazarModels,
+    /// Refresh Hermes model catalog (config default).
+    RefreshHermesModels,
     /// Create a git worktree and then create or load an ACP session in it.
     /// When `load_session_id` is `Some`, loads that session in the new worktree
     /// instead of creating a fresh one (`--resume` + `--worktree` combination).
@@ -2379,6 +2397,16 @@ pub enum TaskResult {
         /// constructions that don't need gating.
         prompt_id: Option<String>,
     },
+    /// External runtime (Codex / Claude / Lazar / Hermes) finished a turn.
+    /// User prompt is already in scrollback; this injects the assistant text
+    /// (or an error) and closes the turn like [`TaskResult::PromptResponse`].
+    ExternalRuntimeTurnDone {
+        agent_id: AgentId,
+        prompt_id: Option<String>,
+        /// Ok = assistant message body; Err = user-visible failure.
+        result: Result<String, String>,
+        runtime: crate::runtime_backend::RuntimeBackend,
+    },
     /// A send-now `session/prompt` RPC failed at the transport/RPC layer —
     /// the prompt never reached the shell's queue. Carries the payload so
     /// dispatch can requeue it locally (the producer already consumed the
@@ -2747,6 +2775,22 @@ pub enum TaskResult {
     AvailableCommandsRefreshed {
         agent_id: AgentId,
         commands: Vec<acp::AvailableCommand>,
+    },
+    /// Codex `model/list` finished — apply catalog to the active session `/model` list.
+    CodexModelsLoaded {
+        result: Result<crate::acp::model_state::ModelState, String>,
+    },
+    /// Claude model catalog ready — apply to `/model` list.
+    ClaudeModelsLoaded {
+        result: Result<crate::acp::model_state::ModelState, String>,
+    },
+    /// Lazar model catalog ready — apply to `/model` list.
+    LazarModelsLoaded {
+        result: Result<crate::acp::model_state::ModelState, String>,
+    },
+    /// Hermes model catalog ready — apply to `/model` list.
+    HermesModelsLoaded {
+        result: Result<crate::acp::model_state::ModelState, String>,
     },
     /// Shell acknowledged logout (auth cleared).
     LogoutComplete,

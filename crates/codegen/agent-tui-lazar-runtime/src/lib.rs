@@ -221,6 +221,16 @@ impl LazarRuntimePool {
         if let Some(cwd) = &self.config.cwd {
             cmd.current_dir(cwd);
         }
+        // Match Go lazartui: remap ANTHROPIC_* / LAZAR_BACKEND to the selected
+        // model. Parent may still hold MiniMax residue from launch while
+        // --model is kimi-k3 (MiniMax then 401s on X-Api-Key or keeps serving
+        // MiniMax under the wrong name).
+        if let Some(ref m) = model {
+            if let Some(hint) = provider_key_missing_hint(m) {
+                return Err(LazarRuntimeError::Turn(hint));
+            }
+            apply_provider_env_for_model(&mut cmd, m);
+        }
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null())
@@ -342,6 +352,173 @@ fn clean_model_id(s: &str) -> String {
     s.split('#').next().unwrap_or("").trim().to_string()
 }
 
+/// Map a model id to a `LAZAR_BACKEND` preset (Go TUI `backendForModel` parity).
+///
+/// Switching model must also switch BASE_URL + API key — MiniMax silently
+/// accepts foreign names (or 401s on missing X-Api-Key) while the parent still
+/// holds MiniMax credentials from launch.
+pub fn backend_for_model(model: &str) -> Option<&'static str> {
+    let m = model.trim().to_ascii_lowercase();
+    if m.is_empty() {
+        return None;
+    }
+    if m.contains("minimax") {
+        return Some("minimax");
+    }
+    // provider/model form is OpenRouter's namespace
+    if m.starts_with("anthropic/")
+        || m.contains("openrouter")
+        || m.contains("moonshotai/")
+        || m.contains('/')
+    {
+        return Some("openrouter");
+    }
+    if m.starts_with("kimi") || m.starts_with("moonshot") || m.contains("for-coding") {
+        return Some("kimi");
+    }
+    if m.starts_with("claude") {
+        return Some("anthropic");
+    }
+    None
+}
+
+fn first_non_empty(vals: &[&str]) -> Option<String> {
+    vals.iter()
+        .map(|s| s.trim())
+        .find(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+/// Provider env for a backend: BASE_URL + API_KEY + AUTH_TOKEN + LAZAR_BACKEND.
+/// Keys come from the process environment (caller should have sourced
+/// `lazar-env.sh` so Keychain keys are already exported).
+pub fn provider_env_for_backend(backend: &str) -> Vec<(String, String)> {
+    let backend = backend.trim().to_ascii_lowercase();
+    if backend.is_empty() {
+        return Vec::new();
+    }
+    let (backend, base, key) = match backend.as_str() {
+        "kimi" | "moonshot" | "kimi-code" | "allegro" => {
+            let mut key = first_non_empty(&[
+                &std::env::var("KIMI_API_KEY").unwrap_or_default(),
+                &std::env::var("KIMI_CODING_API_KEY").unwrap_or_default(),
+                &std::env::var("MOONSHOT_API_KEY").unwrap_or_default(),
+            ])
+            .unwrap_or_default();
+            if let Ok(k) = std::env::var("KIMI_API_KEY") {
+                if k.starts_with("sk-kimi-") {
+                    key = k;
+                }
+            } else if let Ok(k) = std::env::var("KIMI_CODING_API_KEY") {
+                if k.starts_with("sk-kimi-") {
+                    key = k;
+                }
+            }
+            let endpoint = std::env::var("LAZAR_KIMI_ENDPOINT").unwrap_or_default();
+            let base = if key.starts_with("sk-kimi-") || endpoint == "coding" {
+                "https://api.kimi.com/coding"
+            } else {
+                "https://api.moonshot.ai/anthropic"
+            };
+            ("kimi", base.to_string(), key)
+        }
+        "openrouter" | "or" => (
+            "openrouter",
+            "https://openrouter.ai/api".to_string(),
+            std::env::var("OPENROUTER_API_KEY").unwrap_or_default(),
+        ),
+        "minimax" => (
+            "minimax",
+            "https://api.minimax.io/anthropic".to_string(),
+            std::env::var("MINIMAX_API_KEY").unwrap_or_default(),
+        ),
+        "anthropic" | "claude" => {
+            let mut key = first_non_empty(&[
+                &std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+                &std::env::var("ANTHROPIC_AUTH_TOKEN").unwrap_or_default(),
+            ])
+            .unwrap_or_default();
+            // Prefer real Anthropic key if MiniMax key was stuffed into ANTHROPIC_*.
+            if let Ok(mm) = std::env::var("MINIMAX_API_KEY") {
+                if !mm.is_empty() && key == mm {
+                    key.clear();
+                }
+            }
+            (
+                "anthropic",
+                "https://api.anthropic.com".to_string(),
+                key,
+            )
+        }
+        _ => return Vec::new(),
+    };
+
+    let mut out = vec![
+        ("LAZAR_BACKEND".into(), backend.into()),
+        ("ANTHROPIC_BASE_URL".into(), base),
+        ("LAZAR_USE_PROXY".into(), "0".into()),
+    ];
+    if !key.trim().is_empty() {
+        out.push(("ANTHROPIC_API_KEY".into(), key.clone()));
+        out.push(("ANTHROPIC_AUTH_TOKEN".into(), key));
+    }
+    out
+}
+
+/// Apply model-matched provider credentials onto a spawn command.
+fn apply_provider_env_for_model(cmd: &mut Command, model: &str) {
+    let Some(backend) = backend_for_model(model) else {
+        // Still keep LAZAR_MODEL in sync for children that read it.
+        cmd.env("LAZAR_MODEL", model);
+        cmd.env("ANTHROPIC_MODEL", model);
+        return;
+    };
+    for (k, v) in provider_env_for_backend(backend) {
+        cmd.env(k, v);
+    }
+    cmd.env("LAZAR_MODEL", model);
+    cmd.env("ANTHROPIC_MODEL", model);
+}
+
+/// User-visible hint when the model maps to a backend but that provider's key
+/// is not in the process env (common: MiniMax residue + kimi model → MiniMax
+/// `X-Api-Key` 401).
+fn provider_key_missing_hint(model: &str) -> Option<String> {
+    let backend = backend_for_model(model)?;
+    let env = provider_env_for_backend(backend);
+    let has_key = env.iter().any(|(k, v)| {
+        (k == "ANTHROPIC_API_KEY" || k == "ANTHROPIC_AUTH_TOKEN") && !v.trim().is_empty()
+    });
+    if has_key {
+        return None;
+    }
+    let (var, how) = match backend {
+        "kimi" => (
+            "KIMI_API_KEY (or KIMI_CODING_API_KEY / MOONSHOT_API_KEY)",
+            "LAZAR_BACKEND=kimi source ~/lazar/workspace/lazar-env.sh",
+        ),
+        "minimax" => (
+            "MINIMAX_API_KEY",
+            "LAZAR_BACKEND=minimax source ~/lazar/workspace/lazar-env.sh",
+        ),
+        "openrouter" => (
+            "OPENROUTER_API_KEY",
+            "LAZAR_BACKEND=openrouter source ~/lazar/workspace/lazar-env.sh",
+        ),
+        "anthropic" => (
+            "ANTHROPIC_API_KEY",
+            "LAZAR_BACKEND=anthropic source ~/lazar/workspace/lazar-env.sh",
+        ),
+        _ => return None,
+    };
+    Some(format!(
+        "model `{model}` needs backend `{backend}`, but {var} is not set in this process. \
+         Do not use a MiniMax key for kimi-k3 (or vice versa). \
+         Fix: `{how}` then restart Agent TUI. \
+         Keys can also live in macOS Keychain (service=lazar)."
+    ))
+}
+
 /// Session id charset per kernel constraint: a-z A-Z 0-9 - _ . (max 64).
 fn new_session_id() -> String {
     let nanos = SystemTime::now()
@@ -381,6 +558,9 @@ pub fn sanitize_session_id(id: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Serialize env-mutating tests (process env is global).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn clean_model_id_strips_annotations() {
         // Mirrors the Go TUI's parseModelLine/canonicalModelID contract.
@@ -394,6 +574,96 @@ mod tests {
         );
         assert_eq!(clean_model_id("  openai/gpt-5  "), "openai/gpt-5");
         assert_eq!(clean_model_id(""), "");
+    }
+
+    #[test]
+    fn backend_for_model_matches_go_tui() {
+        assert_eq!(backend_for_model("kimi-k3[1m]"), Some("kimi"));
+        assert_eq!(backend_for_model("kimi-k3"), Some("kimi"));
+        assert_eq!(backend_for_model("MiniMax-M3"), Some("minimax"));
+        assert_eq!(backend_for_model("MiniMax-M2.7"), Some("minimax"));
+        assert_eq!(backend_for_model("minimax-m2.7"), Some("minimax"));
+        assert_eq!(
+            backend_for_model("anthropic/claude-haiku-4.5"),
+            Some("openrouter")
+        );
+        assert_eq!(backend_for_model("claude-sonnet-4-6"), Some("anthropic"));
+        assert_eq!(backend_for_model(""), None);
+    }
+
+    #[test]
+    fn provider_env_kimi_uses_kimi_key_not_minimax_residue() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Isolate from ambient shell credentials.
+        let _g1 = EnvGuard::set("MINIMAX_API_KEY", Some("mm-secret"));
+        let _g2 = EnvGuard::set("KIMI_API_KEY", Some("kimi-secret"));
+        let _g3 = EnvGuard::set("KIMI_CODING_API_KEY", None);
+        let _g4 = EnvGuard::set("MOONSHOT_API_KEY", None);
+        let _g5 = EnvGuard::set("ANTHROPIC_API_KEY", Some("mm-secret"));
+        let _g6 = EnvGuard::set("ANTHROPIC_BASE_URL", Some("https://api.minimax.io/anthropic"));
+        let _g7 = EnvGuard::set("LAZAR_KIMI_ENDPOINT", None);
+
+        let env = provider_env_for_backend("kimi");
+        let map: std::collections::HashMap<_, _> = env.into_iter().collect();
+        assert_eq!(map.get("LAZAR_BACKEND").map(String::as_str), Some("kimi"));
+        assert_eq!(
+            map.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("https://api.moonshot.ai/anthropic")
+        );
+        assert_eq!(
+            map.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some("kimi-secret")
+        );
+        assert_ne!(
+            map.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some("mm-secret")
+        );
+    }
+
+    #[test]
+    fn provider_env_sk_kimi_uses_coding_endpoint() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let _g1 = EnvGuard::set("KIMI_API_KEY", Some("sk-kimi-coding-key"));
+        let _g2 = EnvGuard::set("MINIMAX_API_KEY", Some("mm-secret"));
+        let _g3 = EnvGuard::set("LAZAR_KIMI_ENDPOINT", None);
+
+        let env = provider_env_for_backend("kimi");
+        let map: std::collections::HashMap<_, _> = env.into_iter().collect();
+        assert_eq!(
+            map.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            Some("https://api.kimi.com/coding")
+        );
+        assert_eq!(
+            map.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some("sk-kimi-coding-key")
+        );
+    }
+
+    /// RAII env var restore for unit tests (serial — not parallel-safe across
+    /// tests that touch the same keys; these tests only touch provider keys).
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+    impl EnvGuard {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let prev = std::env::var(key).ok();
+            match value {
+                Some(v) => unsafe { std::env::set_var(key, v) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+            Self { key, prev }
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => unsafe { std::env::set_var(self.key, v) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
     }
 
     #[test]

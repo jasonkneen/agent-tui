@@ -337,6 +337,12 @@ lazar --output-format stream-json [--model <id>] --session <id> -p <prompt>
 - Cwd: `$LAZAR_HOME` so skills/hooks/memory/sessions resolve like the Go TUI
 - Env: **caller must source** `~/lazar/workspace/lazar-env.sh` (or equivalent)
   before launching Agent TUI — keys + `LAZAR_MODEL` / `ANTHROPIC_*` live there
+- **Model ↔ provider:** Agent TUI remaps credentials per turn from the selected
+  model (Go TUI parity). `kimi-k3` uses `KIMI_*` + Kimi/Moonshot base; `MiniMax-M*`
+  uses `MINIMAX_API_KEY` + MiniMax base. You do **not** put a MiniMax key on a
+  Kimi model — that produces MiniMax `401 X-Api-Key` / auth errors.
+  Prefer launching with the matching preset:
+  `LAZAR_BACKEND=kimi source ~/lazar/workspace/lazar-env.sh`
 - Crate: `crates/codegen/agent-tui-lazar-runtime` (`LazarRuntimePool`)
 
 ### Run (local)
