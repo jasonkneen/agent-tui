@@ -292,7 +292,7 @@ mod tests {
             true,
             Some("host-1".to_string()),
             Some("/work/repo".to_string()),
-            Some("git@github.com:xai-org/example.git".to_string()),
+            Some("git@github.com:agent-tui-org/example.git".to_string()),
         );
 
         assert_eq!(env.schema_version, "v1");
@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(env.repo_root.as_deref(), Some("/work/repo"));
         assert_eq!(
             env.remote_url.as_deref(),
-            Some("git@github.com:xai-org/example.git")
+            Some("git@github.com:agent-tui-org/example.git")
         );
         assert!(chrono::DateTime::parse_from_rfc3339(&env.recorded_at).is_ok());
     }
@@ -350,7 +350,7 @@ mod tests {
             true,
             Some("host-1".to_string()),
             Some("/work/repo".to_string()),
-            Some("https://github.com/xai-org/example".to_string()),
+            Some("https://github.com/agent-tui-org/example".to_string()),
         );
         let bytes = env.to_json_bytes().expect("serialize");
         let value: serde_json::Value = serde_json::from_slice(&bytes).expect("parse");
@@ -422,7 +422,7 @@ mod tests {
         let repo = git2::Repository::init(dir.path()).unwrap();
         repo.remote(
             "origin",
-            "https://x-access-token:secret-token@github.com/xai-org/example.git",
+            "https://x-access-token:secret-token@github.com/agent-tui-org/example.git",
         )
         .unwrap();
         drop(repo);
@@ -437,6 +437,6 @@ mod tests {
             !url.contains("secret-token") && !url.contains("x-access-token"),
             "credentials must be stripped from remote_url, got {url}"
         );
-        assert_eq!(url, "https://github.com/xai-org/example.git");
+        assert_eq!(url, "https://github.com/agent-tui-org/example.git");
     }
 }

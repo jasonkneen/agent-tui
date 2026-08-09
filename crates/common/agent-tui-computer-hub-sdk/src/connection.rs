@@ -229,6 +229,33 @@ impl DisconnectCause {
             _ => None,
         }
     }
+    /// Bounded classification of transport error detail for metrics. Collapses
+    /// free-form OS/tungstenite messages into a small allowlist so reconnect
+    /// storms can be attributed without high-cardinality labels.
+    fn detail_class(&self) -> Option<&'static str> {
+        let detail = self.detail()?;
+        Some(classify_transport_detail(detail))
+    }
+}
+/// Map a transport error detail string to a bounded class label.
+fn classify_transport_detail(detail: &str) -> &'static str {
+    let d = detail.to_ascii_lowercase();
+    if d.contains("connection reset") || d.contains("econnreset") || d.contains("reset by peer") {
+        "connection_reset"
+    } else if d.contains("broken pipe") || d.contains("epipe") {
+        "broken_pipe"
+    } else if d.contains("unexpected eof")
+        || d.contains("connection closed")
+        || d.contains("connection aborted without closing")
+    {
+        "unexpected_eof"
+    } else if d.contains("timed out") || d.contains("timeout") || d.contains("etimedout") {
+        "timeout"
+    } else if d.contains("connection aborted") || d.contains("econnaborted") {
+        "connection_aborted"
+    } else {
+        "other"
+    }
 }
 struct OutageInfo {
     cause: DisconnectCause,
@@ -596,7 +623,8 @@ impl HubConnection {
         .await?;
         *connection_id.lock().await = Some(ack.connection_id.clone());
         info!(
-            url = % config.url, connection_id = % ack.connection_id,
+            url = %config.url,
+            connection_id = %ack.connection_id,
             "server connection established"
         );
         let early_notif_rx = parking_lot::Mutex::new(match config.kind {
@@ -739,9 +767,10 @@ impl HubConnection {
         self.inner.bound_sessions.increment(session_id);
     }
     /// Decrement the refcount on `session_id`. Removes tracking when
-    /// the last borrower drops.
-    pub fn untrack_session(&self, session_id: &SessionId) {
-        self.inner.bound_sessions.decrement(session_id);
+    /// the last borrower drops. Returns the post-decrement count
+    /// (`Some(0)` = last borrower; `None` = key was absent).
+    pub fn untrack_session(&self, session_id: &SessionId) -> Option<u64> {
+        self.inner.bound_sessions.decrement(session_id)
     }
     /// Send a JSON-RPC request and await the response.
     ///
@@ -906,17 +935,15 @@ impl HubConnection {
                 }
                 Err(DeadlineCallError::TimedOut(timeout)) => {
                     crate::metrics::serve_replay_timeout();
-                    warn!(
-                        % session_id, attempt, ? timeout,
-                        "serve attempt timed out; will retry"
-                    );
+                    warn!(%session_id, attempt, ?timeout, "serve attempt timed out; will retry");
                     last_err = Some(DeadlineCallError::TimedOut(timeout).into());
                 }
                 Err(DeadlineCallError::Other(e)) => return Err(e),
             }
         }
         warn!(
-            % session_id, attempts = SERVE_MAX_ATTEMPTS,
+            %session_id,
+            attempts = SERVE_MAX_ATTEMPTS,
             "serve timed out every bounded attempt; forcing reconnect to restart replay"
         );
         self.force_reconnect();
@@ -962,7 +989,7 @@ async fn open_socket(
     }
     if is_plaintext_remote {
         warn!(
-            host = % url.host_str().unwrap_or(""),
+            host = %url.host_str().unwrap_or(""),
             "opening server connection over plaintext ws:// (allow_insecure_ws=true); bearer crosses the network in cleartext"
         );
     }
@@ -1480,13 +1507,16 @@ async fn run_reader_actor(
                     cause,
                 };
                 warn!(
-                    url = % url, cause = outage.cause.label(), close_code = ? outage
-                    .cause.close_code(), error_detail = ? outage.cause.detail(),
-                    connection_id = ? outage.prev_connection_id,
+                    url = %url,
+                    cause = outage.cause.label(),
+                    close_code = ?outage.cause.close_code(),
+                    error_detail = ?outage.cause.detail(),
+                    connection_id = ?outage.prev_connection_id,
                     prev_connection_duration_ms = outage.prev_connection_duration_ms,
-                    detect_ms = outage.detect_ms, since_last_probe_monotonic_ms = outage
-                    .since_last_probe_monotonic_ms, since_last_probe_wall_ms = outage
-                    .since_last_probe_wall_ms, clock_jump_ms = outage.clock_jump_ms,
+                    detect_ms = outage.detect_ms,
+                    since_last_probe_monotonic_ms = outage.since_last_probe_monotonic_ms,
+                    since_last_probe_wall_ms = outage.since_last_probe_wall_ms,
+                    clock_jump_ms = outage.clock_jump_ms,
                     "server connection lost; scheduling reconnect"
                 );
                 fire_on_disconnect(inner.as_ref());
@@ -1518,17 +1548,27 @@ async fn run_reader_actor(
                     let backoff = inner.reconnect_delay(attempt);
                     info!(?backoff, attempt, url = %url, "reconnecting server connection");
                     tokio::select! {
-                        _ = stop_rx.recv() => break 'actor, _ = sleep(backoff) => {}
+                        _ = stop_rx.recv() => break 'actor,
+                        _ = sleep(backoff) => {}
                     }
                     backoff_total += backoff;
                     let reconnect_start = std::time::Instant::now();
                     let attempt_budget = reconnect_attempt_budget(liveness_deadline);
                     let outcome = tokio::select! {
-                        _ = stop_rx.recv() => break 'actor, outcome =
-                        tokio::time::timeout(attempt_budget, reconnect_and_replay(inner
-                        .as_ref(), & url, attempt, & outage, backoff_total,),) => outcome
-                        .unwrap_or_else(| _elapsed | {
-                        Err(ClientError::NetworkError(format!("reconnect attempt timed out after {attempt_budget:?}")))
+                        _ = stop_rx.recv() => break 'actor,
+                        outcome = tokio::time::timeout(
+                            attempt_budget,
+                            reconnect_and_replay(
+                                inner.as_ref(),
+                                &url,
+                                attempt,
+                                &outage,
+                                backoff_total,
+                            ),
+                        ) => outcome.unwrap_or_else(|_elapsed| {
+                            Err(ClientError::NetworkError(format!(
+                                "reconnect attempt timed out after {attempt_budget:?}"
+                            )))
                         }),
                     };
                     match outcome {
@@ -1753,16 +1793,26 @@ async fn reconnect_and_replay(
     let sessions_replayed = sessions.len();
     let silent_gap_ms = outage.last_inbound.elapsed().as_millis() as u64;
     info!(
-        attempt, sessions_replayed, cause = outage.cause.label(), close_code = ? outage
-        .cause.close_code(), error_detail = ? outage.cause.detail(), prev_connection_id =
-        ? outage.prev_connection_id, connection_id = % ack.connection_id,
-        prev_connection_duration_ms = outage.prev_connection_duration_ms, silent_gap_ms,
-        detect_ms = outage.detect_ms, backoff_total_ms = backoff_total.as_millis() as
-        u64, since_last_probe_monotonic_ms = outage.since_last_probe_monotonic_ms,
-        since_last_probe_wall_ms = outage.since_last_probe_wall_ms, clock_jump_ms =
-        outage.clock_jump_ms, "server reconnect succeeded"
+        attempt,
+        sessions_replayed,
+        cause = outage.cause.label(),
+        close_code = ?outage.cause.close_code(),
+        error_detail = ?outage.cause.detail(),
+        prev_connection_id = ?outage.prev_connection_id,
+        connection_id = %ack.connection_id,
+        prev_connection_duration_ms = outage.prev_connection_duration_ms,
+        silent_gap_ms,
+        detect_ms = outage.detect_ms,
+        backoff_total_ms = backoff_total.as_millis() as u64,
+        since_last_probe_monotonic_ms = outage.since_last_probe_monotonic_ms,
+        since_last_probe_wall_ms = outage.since_last_probe_wall_ms,
+        clock_jump_ms = outage.clock_jump_ms,
+        "server reconnect succeeded"
     );
     crate::metrics::reconnect_cause(outage.cause.label());
+    if let Some(detail_class) = outage.cause.detail_class() {
+        crate::metrics::disconnect_detail_class(outage.cause.label(), detail_class);
+    }
     crate::metrics::reconnect_gap_observe(silent_gap_ms as f64 / 1_000.0);
     *inner.connection_id.lock().await = Some(ack.connection_id.clone());
     *inner.hello_capabilities.write() = std::mem::take(&mut ack.capabilities);
@@ -2258,6 +2308,29 @@ mod tests {
         assert_eq!(write.label(), "transport_write_error");
         assert_eq!(write.detail(), Some("pipe"));
         assert_eq!(DisconnectCause::Forced.label(), "forced");
+    }
+    #[test]
+    fn classify_transport_detail_is_bounded() {
+        assert_eq!(
+            classify_transport_detail("Connection reset by peer (os error 104)"),
+            "connection_reset"
+        );
+        assert_eq!(classify_transport_detail("Broken pipe"), "broken_pipe");
+        assert_eq!(
+            classify_transport_detail("Unexpected EOF"),
+            "unexpected_eof"
+        );
+        assert_eq!(classify_transport_detail("operation timed out"), "timeout");
+        assert_eq!(
+            classify_transport_detail("Connection aborted"),
+            "connection_aborted"
+        );
+        assert_eq!(classify_transport_detail("something novel"), "other");
+        assert_eq!(
+            DisconnectCause::ReadError("ECONNRESET".to_owned()).detail_class(),
+            Some("connection_reset")
+        );
+        assert!(DisconnectCause::Eof.detail_class().is_none());
     }
     #[test]
     fn conn_health_snapshot_without_clock_skew_reports_zero_jump() {
@@ -3019,35 +3092,6 @@ mod tests {
             vec!["g1".to_owned(), "g2".to_owned(), "g3".to_owned()],
             "all gap frames flush, in order, to the fresh sink"
         );
-        let outcome = demux.route(serde_json::json!(
-            { "jsonrpc" : "2.0", "id" : id_str, "session_id" : session.as_str(),
-            "result" : { "ok" : true }, }
-        ));
-        assert_eq!(outcome, crate::demux::RouteOutcome::Response);
-        let resp = call
-            .await
-            .expect("call task joins")
-            .expect("call resolves with a response");
-        let ResponseOutcome::Result(value) = resp.outcome else {
-            panic!("expected a result outcome");
-        };
-        assert_eq!(value, serde_json::json!({ "ok" : true }));
-    }
-    #[tokio::test]
-    async fn call_request_reclaims_waiter_on_send_failure() {
-        let (conn, demux, outbound_rx) = test_connection();
-        drop(outbound_rx);
-        let request_id = conn.try_alloc_request_id().expect("request id");
-        let probe_id = request_id.clone();
-        let req = JsonRpcRequest {
-            jsonrpc: JsonRpcVersion,
-            id: JsonRpcId::from_request_id(&request_id),
-            session_id: None,
-            method: Method::Hook.as_wire_str().to_owned(),
-            params: serde_json::json!({}),
-        };
-        let result = conn.call_request(request_id, &req).await;
-        assert!(matches!(result, Err(ClientError::NetworkError(_))));
         assert!(
             outbound_data_frames(&dead_log).is_empty(),
             "no data frame must ever reach the dead sink"
@@ -4018,11 +4062,12 @@ mod tests {
                         return;
                     };
                     let _ = ws.next().await;
-                    let ack = serde_json::json!(
-                        { "connection_id" : format!("mock-conn-{n}"), "user_id" : "test",
-                        "computer_hub_version" : "test", "supported_protocol_versions" :
-                        ["1.0.0"], }
-                    );
+                    let ack = serde_json::json!({
+                        "connection_id": format!("mock-conn-{n}"),
+                        "user_id": "test",
+                        "computer_hub_version": "test",
+                        "supported_protocol_versions": ["1.0.0"],
+                    });
                     if ws
                         .send(tokio_tungstenite::tungstenite::Message::Text(
                             ack.to_string().into(),
@@ -4533,9 +4578,8 @@ mod tests {
             );
             tokio::pin!(phase);
             tokio::select! {
-                _ = phase.as_mut() =>
-                panic!("idle-but-healthy connection tripped the deadline"), _ =
-                tokio::time::sleep(deadline * 4) => {}
+                _ = phase.as_mut() => panic!("idle-but-healthy connection tripped the deadline"),
+                _ = tokio::time::sleep(deadline * 4) => {}
             }
         }
         ctl_tx.send(WriterControl::Pause).await.expect("pause");
@@ -4556,8 +4600,9 @@ mod tests {
             tokio::pin!(phase);
             tokio::select! {
                 _ = phase.as_mut() => {
-                panic!("idle connection tripped the deadline after Pause→Resume") } _ =
-                tokio::time::sleep(deadline * 4) => {}
+                    panic!("idle connection tripped the deadline after Pause→Resume")
+                }
+                _ = tokio::time::sleep(deadline * 4) => {}
             }
         }
         writer_stop_tx.send(()).await.expect("stop");

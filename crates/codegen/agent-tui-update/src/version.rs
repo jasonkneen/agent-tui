@@ -259,6 +259,10 @@ async fn fetch_gh_release_latest(exclude_pre: bool) -> Result<String> {
 /// success. Each individual base also retries up to 3 times with exponential
 /// backoff (1s, 2s, 4s) on transient failures before falling through to the
 /// next base.
+///
+/// Fork release path uses GitHub Releases ([`fetch_github_http_version`]); this
+/// GCS pointer helper is retained for tests and parity with upstream.
+#[allow(dead_code)]
 pub(crate) async fn fetch_gcs_version(channel: &str) -> Result<String> {
     let mut last_err: Option<anyhow::Error> = None;
     for (i, base) in CLI_BASE_URLS.iter().enumerate() {

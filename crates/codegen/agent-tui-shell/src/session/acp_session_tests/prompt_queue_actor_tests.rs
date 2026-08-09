@@ -68,6 +68,190 @@ fn bash_item(id: &str, owner: &str, command: &str) -> InputItem {
     item
 }
 
+#[test]
+fn combine_front_merges_consecutive_plain_prompts() {
+    use crate::session::commands::{PromptCompletionKind, PromptTurnOk};
+
+    let (p1, _) = user_item_with_rx("p1", "A");
+    let (p2, rx2) = user_item_with_rx("p2", "A");
+    let (p3, rx3) = user_item_with_rx("p3", "A");
+    let mut pending = std::collections::VecDeque::from([p1, p2, p3]);
+
+    SessionActor::combine_front_pending_inputs(&mut pending, &[]);
+
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].prompt_id, "p1");
+    let combined = "text for p1\n\ntext for p2\n\ntext for p3";
+    assert_eq!(
+        SessionActor::queue_text_from_blocks(&pending[0].prompt_blocks),
+        combined
+    );
+    assert_eq!(
+        pending[0].queue_meta.as_ref().map(|m| m.text.as_str()),
+        Some(combined)
+    );
+    assert_eq!(
+        pending[0]
+            .queue_meta
+            .as_ref()
+            .and_then(|m| m.combined_texts.as_ref())
+            .map(|v| v.as_slice()),
+        Some(
+            [
+                "text for p1".to_string(),
+                "text for p2".to_string(),
+                "text for p3".to_string()
+            ]
+            .as_slice()
+        )
+    );
+    // Content-block meta for echo/replay multi-bubble paint.
+    let segs = pending[0]
+        .prompt_blocks
+        .first()
+        .and_then(|b| match b {
+            acp::ContentBlock::Text(t) => t.meta.as_ref(),
+            _ => None,
+        })
+        .and_then(|m| m.get(crate::session::prompt_queue::COMBINED_DISPLAY_TEXTS_META))
+        .and_then(|v| v.as_array())
+        .expect("combinedDisplayTexts stamped");
+    assert_eq!(
+        segs.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>(),
+        ["text for p1", "text for p2", "text for p3"]
+    );
+    for mut rx in [rx2, rx3] {
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Ok(PromptTurnOk {
+                completion_kind: PromptCompletionKind::RemovedFromQueue,
+                ..
+            }))
+        ));
+    }
+}
+
+#[test]
+fn combine_front_stops_at_bash() {
+    let mut pending = std::collections::VecDeque::from([
+        user_item("p1", "A"),
+        user_item("p2", "A"),
+        bash_item("bash1", "A", "ls"),
+        user_item("p3", "A"),
+    ]);
+
+    SessionActor::combine_front_pending_inputs(&mut pending, &[]);
+
+    assert_eq!(pending.len(), 3);
+    assert_eq!(
+        SessionActor::queue_text_from_blocks(&pending[0].prompt_blocks),
+        "text for p1\n\ntext for p2"
+    );
+    assert_eq!(pending[1].prompt_id, "bash1");
+    assert_eq!(pending[2].prompt_id, "p3");
+}
+
+#[test]
+fn combine_front_noop_when_ineligible() {
+    let mut single = std::collections::VecDeque::from([user_item("only", "A")]);
+    SessionActor::combine_front_pending_inputs(&mut single, &[]);
+    assert_eq!(single.len(), 1);
+
+    let mut bash_front =
+        std::collections::VecDeque::from([bash_item("b", "A", "pwd"), user_item("p", "A")]);
+    SessionActor::combine_front_pending_inputs(&mut bash_front, &[]);
+    assert_eq!(bash_front.len(), 2);
+    assert_eq!(bash_front[0].prompt_id, "b");
+}
+
+#[test]
+fn combine_front_skips_client_expanded_skill() {
+    let mut skill = user_item("skill", "A");
+    skill.prompt_blocks = vec![acp::ContentBlock::Text(
+        acp::TextContent::new("# expanded skill body".to_string()).meta(
+            serde_json::json!({ "displayText": "/commit fix" })
+                .as_object()
+                .cloned(),
+        ),
+    )];
+    let mut pending = std::collections::VecDeque::from([skill, user_item("follow", "A")]);
+
+    SessionActor::combine_front_pending_inputs(&mut pending, &[]);
+
+    assert_eq!(
+        pending.len(),
+        2,
+        "displayText front must not absorb followers"
+    );
+}
+
+#[test]
+fn combine_front_skips_edit_hold() {
+    let (p1, _) = user_item_with_rx("p1", "A");
+    let (p2, mut rx2) = user_item_with_rx("p2", "A");
+    let (p3, _) = user_item_with_rx("p3", "A");
+    let mut pending = std::collections::VecDeque::from([p1, p2, p3]);
+    SessionActor::combine_front_pending_inputs(&mut pending, &["p2"]);
+    assert_eq!(pending.len(), 3, "edit-hold follower must not be absorbed");
+    assert!(rx2.try_recv().is_err(), "held row must stay queued");
+}
+
+fn x_search_cutoff_update() -> agent_tui_sampling_types::ToolOverridesUpdate {
+    agent_tui_sampling_types::ToolOverridesUpdate {
+        x_search: Some(Some(agent_tui_sampling_types::XSearchOptions {
+            date_bound: Some(
+                agent_tui_sampling_types::SearchDateBound::new(None, Some("2024-03-15".to_string()))
+                    .unwrap(),
+            ),
+        })),
+        web_search: None,
+    }
+}
+
+#[test]
+fn combine_front_stops_at_a_per_turn_override_follower() {
+    // A follower carrying an override pins its own bound, so it stops the run and keeps its row.
+    let (p1, _) = user_item_with_rx("p1", "A");
+    let (mut p2, mut rx2) = user_item_with_rx("p2", "A");
+    p2.tool_overrides_update = Some(x_search_cutoff_update());
+    let (p3, _) = user_item_with_rx("p3", "A");
+    let mut pending = std::collections::VecDeque::from([p1, p2, p3]);
+
+    SessionActor::combine_front_pending_inputs(&mut pending, &[]);
+
+    assert_eq!(
+        pending.len(),
+        3,
+        "an override-bearing follower must not be absorbed"
+    );
+    assert_eq!(pending[0].prompt_id, "p1");
+    assert_eq!(pending[1].prompt_id, "p2");
+    assert_eq!(pending[2].prompt_id, "p3");
+    assert!(
+        rx2.try_recv().is_err(),
+        "the pinned follower must stay queued"
+    );
+}
+
+#[test]
+fn combine_front_noop_when_front_carries_a_per_turn_override() {
+    // An override-bearing front pins its own bound, so it must run alone rather than absorb a
+    // follower into its turn under that bound.
+    let mut front = user_item("p1", "A");
+    front.tool_overrides_update = Some(x_search_cutoff_update());
+    let mut pending = std::collections::VecDeque::from([front, user_item("p2", "A")]);
+
+    SessionActor::combine_front_pending_inputs(&mut pending, &[]);
+
+    assert_eq!(
+        pending.len(),
+        2,
+        "an override-bearing front must not absorb followers"
+    );
+    assert_eq!(pending[0].prompt_id, "p1");
+    assert_eq!(pending[1].prompt_id, "p2");
+}
+
 /// Two prompts arrive (serialized by the actor mailbox → FIFO); the agent
 /// drains the front; an edit against the already-drained item is a benign
 /// no-op that re-broadcasts the current queue; a stale-version edit is also
@@ -245,6 +429,130 @@ async fn edit_queued_prompt_replaces_text_and_bumps_version() {
             assert_eq!(wire[0].version, 1);
             assert_eq!(wire[0].owner.as_deref(), Some("alice"));
             assert_eq!(wire[0].last_editor.as_deref(), Some("bob"));
+        })
+        .await;
+}
+
+/// Applying a queued edit clears that row's combine hold with the new text, so
+/// combine can't merge it on stale text before the edit lands. See
+/// pager `exit_editing_mode_keeping_hold` for the race this closes.
+#[tokio::test]
+async fn edit_queued_prompt_clears_combine_hold() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = build_actor().await;
+            {
+                let mut state = actor.state.lock().await;
+                state.pending_inputs.push_back(user_item("p1", "alice"));
+                state.combine_edit_holds.insert("p1".to_string());
+            }
+
+            actor
+                .handle_edit_queued_prompt("p1", "edited".into(), Some("bob"))
+                .await;
+
+            let state = actor.state.lock().await;
+            assert!(
+                !state.combine_edit_holds.contains("p1"),
+                "applying the edit must clear the combine hold for that row"
+            );
+            let item = state
+                .pending_inputs
+                .iter()
+                .find(|i| i.queue_meta.as_ref().is_some_and(|m| m.id == "p1"))
+                .expect("p1 still in queue");
+            assert_eq!(item.queue_meta.as_ref().unwrap().text, "edited");
+        })
+        .await;
+}
+
+/// End-to-end for the hold race: after an edit clears the hold, combine merges
+/// using the edited text (not the pre-edit value). The edited follower is
+/// absorbed into the front as `RemovedFromQueue` only after contributing the
+/// new text — the race this closes dropped the edit by merging on stale text.
+#[tokio::test]
+async fn edit_then_combine_uses_edited_text() {
+    use crate::session::commands::{PromptCompletionKind, PromptTurnOk};
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (actor, _rx) = build_actor().await;
+            let (p1, mut p1_rx) = user_item_with_rx("p1", "alice");
+            let (p2, mut p2_rx) = user_item_with_rx("p2", "alice");
+            {
+                let mut state = actor.state.lock().await;
+                state.pending_inputs.push_back(p1);
+                state.pending_inputs.push_back(p2);
+                // Follower under edit: skip_ids only gate followers.
+                state.combine_edit_holds.insert("p2".to_string());
+            }
+
+            // While held, combine must not absorb the follower.
+            {
+                let mut state = actor.state.lock().await;
+                SessionActor::combine_front_pending_inputs(&mut state.pending_inputs, &["p2"]);
+                assert_eq!(
+                    state.pending_inputs.len(),
+                    2,
+                    "held follower must not be absorbed"
+                );
+                assert!(p2_rx.try_recv().is_err(), "held row must stay queued");
+            }
+
+            actor
+                .handle_edit_queued_prompt("p2", "edited follower".into(), Some("bob"))
+                .await;
+
+            // Edit cleared the hold under the same lock; combine now merges with
+            // the new text. The front survives; the follower is absorbed.
+            {
+                let mut state = actor.state.lock().await;
+                assert!(
+                    !state.combine_edit_holds.contains("p2"),
+                    "edit must clear the hold before combine can absorb the row"
+                );
+                // Row still present with edited text before combine runs.
+                let edited_text = state
+                    .pending_inputs
+                    .iter()
+                    .find(|i| i.prompt_id == "p2")
+                    .and_then(|i| i.queue_meta.as_ref().map(|m| m.text.clone()))
+                    .expect("edited row still queued after edit");
+                assert_eq!(edited_text, "edited follower");
+
+                SessionActor::combine_front_pending_inputs(&mut state.pending_inputs, &[]);
+
+                assert_eq!(state.pending_inputs.len(), 1);
+                assert_eq!(state.pending_inputs[0].prompt_id, "p1");
+                let combined = "text for p1\n\nedited follower";
+                assert_eq!(
+                    SessionActor::queue_text_from_blocks(&state.pending_inputs[0].prompt_blocks),
+                    combined,
+                    "merge must use the post-edit text, not the pre-edit value"
+                );
+                assert_eq!(
+                    state.pending_inputs[0]
+                        .queue_meta
+                        .as_ref()
+                        .map(|m| m.text.as_str()),
+                    Some(combined)
+                );
+            }
+
+            assert!(
+                p1_rx.try_recv().is_err(),
+                "front must remain queued after absorbing the follower"
+            );
+            // Absorbed after contributing the edited text (not with stale pre-edit text).
+            assert!(matches!(
+                p2_rx.try_recv(),
+                Ok(Ok(PromptTurnOk {
+                    completion_kind: PromptCompletionKind::RemovedFromQueue,
+                    ..
+                }))
+            ));
         })
         .await;
 }
@@ -944,10 +1252,7 @@ async fn queue_input_auto_send_now_only_inside_wait_window() {
                 .await;
             assert!(!cancel, "pre-wait rows must not cancel the turn");
 
-            actor
-                .tool_context
-                .blocking_wait_depth
-                .store(1, std::sync::atomic::Ordering::SeqCst);
+            actor.tool_context.blocking_wait_depth.set_depth_for_test(1);
             let (respond_to, _p2) = oneshot::channel();
             let cancel = actor
                 .queue_input(queue_input_request(
@@ -992,10 +1297,7 @@ async fn queue_input_auto_send_now_when_wait_and_held_queue_empty() {
                 .current_prompt_id
                 .lock()
                 .expect("current_prompt_id mutex poisoned") = Some("running".into());
-            actor
-                .tool_context
-                .blocking_wait_depth
-                .store(1, std::sync::atomic::Ordering::SeqCst);
+            actor.tool_context.blocking_wait_depth.set_depth_for_test(1);
 
             let (respond_to, _p) = oneshot::channel();
             let cancel = actor
@@ -1055,8 +1357,6 @@ async fn queue_input_auto_send_now_when_wait_and_held_queue_empty() {
 /// A foreground subagent await (its `BlockingWaitGuard`) opens the same send-now window.
 #[tokio::test]
 async fn queue_input_auto_send_now_during_foreground_subagent_await_window() {
-    use std::sync::atomic::Ordering;
-
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -1073,11 +1373,11 @@ async fn queue_input_auto_send_now_during_foreground_subagent_await_window() {
                 .expect("current_prompt_id mutex poisoned") = Some("running".into());
 
             let depth = actor.tool_context.blocking_wait_depth.clone();
-            assert_eq!(depth.load(Ordering::SeqCst), 0, "no wait window yet");
+            assert_eq!(depth.depth(), 0, "no wait window yet");
 
             let wait_guard = crate::tools::tool_context::BlockingWaitGuard::enter(depth.clone());
             assert_eq!(
-                depth.load(Ordering::SeqCst),
+                depth.depth(),
                 1,
                 "a foreground subagent await must raise blocking_wait_depth"
             );
@@ -1097,7 +1397,7 @@ async fn queue_input_auto_send_now_during_foreground_subagent_await_window() {
 
             drop(wait_guard);
             assert_eq!(
-                depth.load(Ordering::SeqCst),
+                depth.depth(),
                 0,
                 "guard drop must restore blocking_wait_depth"
             );
@@ -1146,10 +1446,7 @@ async fn queue_input_send_now_exempts_synthetic_and_goal_turns() {
                 .current_prompt_id
                 .lock()
                 .expect("current_prompt_id mutex poisoned") = Some("running".into());
-            actor
-                .tool_context
-                .blocking_wait_depth
-                .store(1, std::sync::atomic::Ordering::SeqCst);
+            actor.tool_context.blocking_wait_depth.set_depth_for_test(1);
 
             let (respond_to, _p1) = oneshot::channel();
             let cancel = actor
@@ -1348,6 +1645,7 @@ async fn stale_completion_does_not_clear_promoted_turns_running_task() {
                         completion_kind: crate::session::commands::PromptCompletionKind::Completed,
                         structured_output: None,
                         usage: None,
+                        tool_overrides: None,
                     }),
                 )
                 .await;

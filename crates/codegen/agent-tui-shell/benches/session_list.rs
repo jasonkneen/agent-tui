@@ -34,7 +34,7 @@ use agent_tui_fast_worktree::{ListFilter, WorktreeDb, WorktreeKind, WorktreeReco
 use agent_tui_shell::session::info::Info;
 use agent_tui_shell::session::persistence::Summary;
 use agent_tui_shell::session::storage::{JsonlStorageAdapter, StorageAdapter};
-use agent_tui_shell::session::unified_list::{ListReq, build_unified_list};
+use agent_tui_shell::session::unified_list::{ListReq, UnifiedListResult, build_unified_list};
 
 const WORKSPACE_COUNT: usize = 3_000;
 // Bump whenever workload semantics change, even if aggregate counts do not.
@@ -55,6 +55,7 @@ const TOTAL_SUMMARY_COUNT: usize = SAME_REPO_SUMMARY_COUNT
 const RECENT_LIMIT: usize = 30;
 const SAMPLE_SIZE: usize = 10;
 const ACTIVITY_ROTATION: usize = 2;
+const COOPERATIVE_PEER_DELAY: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CandidateSource {
@@ -232,15 +233,7 @@ impl Fixture {
         assert_eq!(recent.len(), RECENT_LIMIT);
         assert_eq!(summary_ids(&recent), self.recent_ids_desc);
 
-        let unified = runtime.block_on(build_unified_list(
-            None,
-            None,
-            ListReq {
-                cwd: Some(self.picker_cwd.clone()),
-                limit: Some(RECENT_LIMIT),
-                ..ListReq::default()
-            },
-        ));
+        let unified = runtime.block_on(build_local_list_with_delayed_peer(self.picker_cwd.clone()));
         let unified_ids: Vec<_> = unified
             .rows
             .iter()
@@ -301,7 +294,7 @@ fn create_same_repo_cwds(home: &Path) -> SameRepoTopology {
     let repo = git2::Repository::init(&repo_dir).expect("initialize main git repository");
     repo.remote(
         "origin",
-        "https://github.com/xai-org/session-list-benchmark.git",
+        "https://github.com/agent-tui-org/session-list-benchmark.git",
     )
     .expect("create benchmark git remote");
 
@@ -495,6 +488,10 @@ fn write_summary(
             id: acp::SessionId::new(session_id),
             cwd: cwd.to_owned(),
         },
+        cwd_generation: 0,
+        previous_cwd: None,
+        pending_cwd_switch_reminder: None,
+        cwd_switch_bookkeeping_generation: 0,
         session_summary: format!("Deterministic benchmark session {ordinal}"),
         created_at: active_at - ChronoDuration::minutes(5),
         updated_at: active_at,
@@ -514,7 +511,7 @@ fn write_summary(
         hidden: None,
         source_workspace_dir: None,
         git_root_dir: Some(cwd.to_owned()),
-        git_remotes: vec!["git@github.com:xai-org/benchmark.git".to_owned()],
+        git_remotes: vec!["git@github.com:agent-tui-org/benchmark.git".to_owned()],
         head_commit: Some(format!("{ordinal:040x}")),
         head_branch: Some("main".to_owned()),
         request_id: None,
@@ -541,6 +538,23 @@ fn summary_ids(summaries: &[Summary]) -> Vec<String> {
         .iter()
         .map(|summary| summary.info.id.to_string())
         .collect()
+}
+
+async fn build_local_list_with_delayed_peer(cwd: String) -> UnifiedListResult {
+    let local = build_unified_list(
+        None,
+        None,
+        ListReq {
+            cwd: Some(cwd),
+            limit: Some(RECENT_LIMIT),
+            ..ListReq::default()
+        },
+    );
+    let delayed_peer = async {
+        tokio::time::sleep(COOPERATIVE_PEER_DELAY).await;
+    };
+    let (result, ()) = tokio::join!(biased; local, delayed_peer);
+    result
 }
 
 fn bench_session_list(c: &mut Criterion) {
@@ -642,6 +656,24 @@ fn bench_session_list(c: &mut Criterion) {
                         ..ListReq::default()
                     },
                 )))
+            })
+        },
+    );
+    shell.bench_function(
+        BenchmarkId::new(
+            format!(
+                "cooperative_overlap_local_only_cwd_limit_{RECENT_LIMIT}_peer_delay_{}ms",
+                COOPERATIVE_PEER_DELAY.as_millis()
+            ),
+            &fixture_id,
+        ),
+        |b| {
+            b.iter_with_large_drop(|| {
+                black_box(
+                    runtime.block_on(build_local_list_with_delayed_peer(black_box(
+                        fixture.picker_cwd.clone(),
+                    ))),
+                )
             })
         },
     );

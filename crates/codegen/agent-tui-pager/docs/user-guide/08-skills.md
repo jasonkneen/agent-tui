@@ -1,42 +1,42 @@
 # Skills
 
-Skills are reusable prompt packages that extend Agent TUI with task-specific instructions. They let you capture a repeatable procedure once, instead of re-explaining it each session.
+Skills are reusable prompt packages that extend Grok with task-specific instructions. They let you capture a repeatable procedure once, instead of re-explaining it each session.
 
 ---
 
 ## What Are Skills?
 
-A skill is a directory that contains a `SKILL.md` file. Its markdown body tells Agent TUI how to handle a specific type of task: step-by-step instructions, conventions, and tool-usage patterns.
+A skill is a directory that contains a `SKILL.md` file. Its markdown body tells Grok how to handle a specific type of task: step-by-step instructions, conventions, and tool-usage patterns.
 
-Use a skill for a repeatable procedure that's too specific for AGENTS.md but too long to retype. Agent TUI activates a skill only when it applies to your current task.
+Use a skill for a repeatable procedure that's too specific for AGENTS.md but too long to retype. Grok activates a skill only when it applies to your current task.
 
 ---
 
 ## Skill Locations
 
-Agent TUI discovers skills from these directories, in priority order:
+Grok discovers skills from these directories, in priority order:
 
 | Location | Scope | Priority | Notes |
 |----------|-------|----------|-------|
 | `./.grok/skills/`, `./.grok/commands/` | Local (CWD) | Highest | Current directory skills / legacy command markdown |
 | `<repo_root>/.grok/skills/`, `…/commands/` | Repo | Medium | Shared across the repo |
-| `~/.agent-tui/skills/`, `~/.agent-tui/commands/` | User | Lowest | Personal skills for all projects |
+| `~/.grok/skills/`, `~/.grok/commands/` | User | Lowest | Personal skills for all projects |
 | `~/.claude/skills/`, `~/.claude/commands/` | User | Lowest | Claude Code compatibility (configurable) |
 | `./.claude/skills/`, `./.claude/commands/` | Local / Repo | High | Project Claude skills and legacy custom slash commands |
 | `~/.cursor/skills/` | User | Lowest | Cursor compatibility (configurable) |
 | `./.cursor/skills/` | Local / Repo | High | Project Cursor skills (when cursor compat skills are enabled) |
 
-Agent TUI deduplicates skills by name -- a higher-priority location overrides a lower one. Agent TUI also scans `.agents/skills/` (and `commands/`) at each tier (alongside `.grok/`) and walks every directory between your working directory and the repo root.
+Grok deduplicates skills by name -- a higher-priority location overrides a lower one. Grok also scans `.agents/skills/` (and `commands/`) at each tier (alongside `.grok/`) and walks every directory between your working directory and the repo root.
 
 Flat `*.md` files under a `commands/` directory become user-invocable slash commands (filename stem = command name), matching Claude Code's legacy custom-command layout.
 
 Skill and command discovery does **not** use `.gitignore`. Paths under known skill roots (`.grok/`, `.agents/`, `.claude/`, `.cursor/`) always load when present on disk — teams often ignore `.claude/**` as local-only config while still expecting `/frontend`-style project commands to work. To hide a skill, use `[skills] ignore` in config (not repo ignore rules).
 
-Agent TUI scans the Claude and Cursor skill directories by default. To stop scanning a vendor, set its `skills` cell to `false` under `[compat.cursor]` or `[compat.claude]` in `~/.agent-tui/config.toml`, or set the `GROK_CURSOR_SKILLS_ENABLED` or `GROK_CLAUDE_SKILLS_ENABLED` environment variable to `false`. See [Configuration](05-configuration.md#harness-compatibility) for details. Agent TUI always filters out known vendor-shipped default skills (such as Cursor's `shell`, `canvas`, and `statusline`), regardless of these settings.
+Grok scans the Claude and Cursor skill directories by default. To stop scanning a vendor, set its `skills` cell to `false` under `[compat.cursor]` or `[compat.claude]` in `~/.grok/config.toml`, or set the `GROK_CURSOR_SKILLS_ENABLED` or `GROK_CLAUDE_SKILLS_ENABLED` environment variable to `false`. See [Configuration](05-configuration.md#harness-compatibility) for details. Grok always filters out known vendor-shipped default skills (such as Cursor's `shell`, `canvas`, and `statusline`), regardless of these settings.
 
 ### Additional Skill Directories
 
-Add directories, exclude paths, or disable individual skills via `[skills]` in `~/.agent-tui/config.toml`:
+Add directories, exclude paths, or disable individual skills via `[skills]` in `~/.grok/config.toml`:
 
 ```toml
 [skills]
@@ -45,7 +45,7 @@ ignore = ["~/my-team-skills/wip"]     # Paths to exclude (hidden entirely)
 disabled = ["wip-skill"]              # Skill names to keep listed but inactive
 ```
 
-Each entry in `paths` is a `SKILL.md` file or a directory that Agent TUI walks recursively. `ignore` hides a skill completely; `disabled` keeps it in the list but excludes it from the system prompt and from invocation. `paths` and `ignore` take filesystem paths and support `~` expansion; `disabled` takes skill names.
+Each entry in `paths` is a `SKILL.md` file or a directory that Grok walks recursively. `ignore` hides a skill completely; `disabled` keeps it in the list but excludes it from the system prompt and from invocation. `paths` and `ignore` take filesystem paths and support `~` expansion; `disabled` takes skill names.
 
 ---
 
@@ -56,7 +56,7 @@ Each entry in `paths` is a `SKILL.md` file or a directory that Agent TUI walks r
 Each skill lives in its own directory with a `SKILL.md` file:
 
 ```
-~/.agent-tui/skills/
+~/.grok/skills/
   commit/
     SKILL.md
   review-pr/
@@ -91,10 +91,10 @@ Review staged changes and create a commit with a clear, conventional message.
 
 | Field | Description |
 |-------|-------------|
-| `name` | Skill identifier. Use lowercase letters, digits, and hyphens, up to 64 characters. Agent TUI normalizes spaces and underscores to hyphens. If you omit `name`, Agent TUI uses the skill's directory name. |
-| `description` | What the skill does and when to use it. Agent TUI reads this to decide whether to invoke the skill. If you omit it, Agent TUI uses the first paragraph of the body. |
+| `name` | Skill identifier. Use lowercase letters, digits, and hyphens, up to 64 characters. Grok normalizes spaces and underscores to hyphens. If you omit `name`, Grok uses the skill's directory name. |
+| `description` | What the skill does and when to use it. Grok reads this to decide whether to invoke the skill. If you omit it, Grok uses the first paragraph of the body. |
 
-Write a specific `description`. It determines when Agent TUI invokes the skill automatically. Name the trigger phrases and use cases.
+Write a specific `description`. It determines when Grok invokes the skill automatically. Name the trigger phrases and use cases.
 
 ### Optional Frontmatter Fields
 
@@ -111,36 +111,38 @@ Multi-word frontmatter keys use kebab-case (single-word keys like `model` are wr
 | `effort` | Reasoning-effort override. |
 | `license` | License identifier (for example, `Apache-2.0`). |
 | `compatibility` | Environment requirements (for example, `Requires git, docker, jq`). |
-| `metadata` | Arbitrary string key-value pairs. Agent TUI promotes `metadata.author` and `metadata.short-description` for display. |
+| `metadata` | Arbitrary string key-value pairs. Grok promotes `metadata.author` and `metadata.short-description` for display. |
 
 ---
 
 ## Creating Skills with /create-skill
 
-The `/create-skill` command walks you through building a new skill interactively. Agent TUI asks what you want, drafts the files, and writes them to disk.
+The `/create-skill` command walks you through building a new skill interactively. Grok asks what you want, drafts the files, and writes them to disk.
 
 ### How It Works
 
-When you run `/create-skill`, Agent TUI:
+When you run `/create-skill`, Grok:
 
-1. **Gathers requirements.** Agent TUI asks for the skill name, the scope to save it under, and a description of the workflow you want to capture. Use a name with lowercase letters, digits, and hyphens (2–64 characters, starting and ending with a letter or digit).
+1. **Gathers requirements.** Grok asks for the skill name, the scope to save it under, and a description of the workflow you want to capture. Use a name with lowercase letters, digits, and hyphens (2–64 characters, starting and ending with a letter or digit).
 
-2. **Drafts the description.** Agent TUI writes a `description` that states what the skill does, the phrases that trigger it, and the slash command name. You approve or edit the draft before continuing.
+2. **Drafts the description.** Grok writes a `description` that states what the skill does, the phrases that trigger it, and the slash command name. You approve or edit the draft before continuing.
 
-3. **Creates the skill directory.** Agent TUI creates the `<scope>/.grok/skills/<name>/` directory, plus `scripts/` or `references/` subdirectories when the skill needs them.
+3. **Creates the skill directory.** Grok creates the `<scope>/.grok/skills/<name>/` directory, plus `scripts/` or `references/` subdirectories when the skill needs them.
 
-4. **Writes SKILL.md.** Agent TUI writes the frontmatter (`name` and `description`) and a markdown body of instructions, along with any supporting files.
+4. **Writes SKILL.md.** Grok writes the frontmatter (`name` and `description`) and a markdown body of instructions, along with any supporting files.
 
-5. **Verifies and confirms.** Agent TUI reads the file back, confirms it wrote correctly, and tells you how to run the skill.
+5. **Verifies and confirms.** Grok reads the file back, confirms it wrote correctly, and tells you how to run the skill.
 
 ### Choosing a Scope
 
-Agent TUI asks where to save the skill:
+Grok asks where to save the skill:
 
-- **Project** (`<repo_root>/.grok/skills/<name>/`) -- available only in this repository and shareable with teammates through version control. Agent TUI recommends this scope inside a git repository.
-- **User** (`~/.agent-tui/skills/<name>/`) -- available across all your projects.
+- **Project** (`<repo_root>/.grok/skills/<name>/`) -- available only in this repository and shareable with teammates through version control. Grok recommends this scope inside a git repository.
+- **User** (`~/.grok/skills/<name>/`) -- available across all your projects.
 
-The new skill appears in the slash menu within a few seconds, because Agent TUI reloads skills when files change on disk.
+To distribute a skill to a whole team or organization, package it in a plugin and publish it through a marketplace. See [Create your own marketplace](09-plugins.md#create-your-own-marketplace) and [Distribute across an organization](09-plugins.md#distribute-across-an-organization).
+
+The new skill appears in the slash menu within a few seconds, because Grok reloads skills when files change on disk.
 
 ---
 
@@ -161,7 +163,7 @@ Running a skill loads its instructions into the conversation and directs the mod
 /commit fix the build
 ```
 
-To browse your skills, type `/` to open the slash-command menu. Agent TUI lists every built-in command and skill and filters them as you type. To list skills from the command line instead, run `agent-tui inspect` (see [Viewing Skill Details](#viewing-skill-details)).
+To browse your skills, type `/` to open the slash-command menu. Grok lists every built-in command and skill and filters them as you type. To list skills from the command line instead, run `grok inspect` (see [Viewing Skill Details](#viewing-skill-details)).
 
 ### Qualified Names
 
@@ -179,7 +181,7 @@ Typing `/login` in the slash menu shows both rows, with a right-aligned **built-
 
 ### Automatic Invocation
 
-Agent TUI can invoke a skill on its own when it recognizes a relevant task. Agent TUI matches your prompt against the skill's `description` and `when-to-use` fields, so write both to describe the triggering situation.
+Grok can invoke a skill on its own when it recognizes a relevant task. Grok matches your prompt against the skill's `description` and `when-to-use` fields, so write both to describe the triggering situation.
 
 For example, if a skill's description says "Use when the user wants to commit changes," then saying "commit my changes" can trigger that skill automatically. To require an explicit slash command and prevent automatic invocation, set `disable-model-invocation: true` in the frontmatter.
 
@@ -187,14 +189,14 @@ For example, if a skill's description says "Use when the user wants to commit ch
 
 ## Viewing Skill Details
 
-Run `agent-tui inspect` to see every skill Agent TUI discovers, along with the rest of your configuration:
+Run `grok inspect` to see every skill Grok discovers, along with the rest of your configuration:
 
 ```bash
-agent-tui inspect          # Human-readable summary
-agent-tui inspect --json   # Machine-readable report
+grok inspect          # Human-readable summary
+grok inspect --json   # Machine-readable report
 ```
 
-In the human-readable output, the Skills section lists each skill's name and its source -- `project`, `user`, `bundled`, `config` (a `[skills].paths` entry), `server` (skills synced from the skill store in managed workspaces), or `plugin: <name>`. Agent TUI tags any skill disabled via `[skills].disabled` or from a disabled vendor surface with `[disabled]`.
+In the human-readable output, the Skills section lists each skill's name and its source -- `project`, `user`, `bundled`, `config` (a `[skills].paths` entry), `server` (skills synced from the skill store in managed workspaces), or `plugin: <name>`. Grok tags any skill disabled via `[skills].disabled` or from a disabled vendor surface with `[disabled]`.
 
 The report honors your `[skills]` config the same way a live session does: skills from `paths` are listed, skills under an `ignore` prefix are hidden, and skills named in `disabled` stay listed but tagged `[disabled]`.
 
@@ -204,9 +206,9 @@ The `--json` report includes the full detail for each skill: its `name`, `descri
 
 ## Bundled and Plugin Skills
 
-Agent TUI ships with built-in skills and extracts them to `~/.agent-tui/skills/` on startup -- among them `/create-skill`, `/help`, and `/check-work`. Bundled skills behave like user skills, and a same-named skill in a higher-priority location (local or repo) overrides the bundled copy; `agent-tui inspect` labels the extracted copies `bundled` so they stay distinguishable from skills you authored yourself. (A plugin skill of the same name does not override it; it stays available under its qualified `plugin:name` form.)
+Grok distributes platform skills separately from your personal skills. Bundled skills are cached under `~/.grok/bundled/skills/`; Grok never writes them into `~/.grok/skills/`. A same-named local, repo, or user skill overrides the bundled copy. `grok inspect` labels each definition by its actual source. (A plugin skill of the same name does not override a native skill; it stays available under its qualified `plugin:name` form.)
 
-Skills can also come from plugins. When you install a plugin that includes skills, they appear alongside your user and project skills. `agent-tui inspect` labels each plugin-provided skill with its source as `plugin: <name>`.
+Skills can also come from plugins. When you install a plugin that includes skills, they appear alongside your user and project skills. `grok inspect` labels each plugin-provided skill with its source as `plugin: <name>`.
 
 See the [Plugins guide](09-plugins.md) for more on installing plugins that provide skills.
 
@@ -216,12 +218,12 @@ See the [Plugins guide](09-plugins.md) for more on installing plugins that provi
 
 1. **Write specific descriptions.** The description drives automatic invocation. "Create git commits" is too vague; "Create well-formatted git commits following conventional commit standards. Use when the user wants to commit changes or asks for /commit." works better.
 
-2. **Include concrete steps.** Skills work best when they give Agent TUI a clear, ordered procedure to follow.
+2. **Include concrete steps.** Skills work best when they give Grok a clear, ordered procedure to follow.
 
 3. **Reference tools by name.** When a skill relies on specific tools (such as `run_terminal_command` or `search_replace`), name them so the model knows what to use.
 
 4. **Keep skills focused.** Write one skill per workflow. A "deploy" skill and a "rollback" skill work better than a single "deploy-and-rollback" skill.
 
-5. **Version-control project skills.** Commit `.grok/skills/` to your repository so the whole team benefits. User skills in `~/.agent-tui/skills/` stay personal and unshared.
+5. **Version-control project skills.** Commit `.grok/skills/` to your repository so the whole team benefits. User skills in `~/.grok/skills/` stay personal and unshared.
 
 6. **Test by running it.** Invoke `/name` and confirm the skill works before you rely on automatic invocation.

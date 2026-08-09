@@ -450,7 +450,7 @@ session content
     fn shorten_memory_path() {
         // Paths under the configured grok memory root keep one trailing segment group.
         let memory_root = agent_tui_config::grok_home().join("memory");
-        let session = memory_root.join("xai-50aa78f0/sessions/2026-05-01.md");
+        let session = memory_root.join("agent-tui-50aa78f0/sessions/2026-05-01.md");
         let top = memory_root.join("MEMORY.md");
         assert_eq!(
             shorten_path(session.to_str().expect("utf8 path")),

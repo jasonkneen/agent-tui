@@ -84,9 +84,12 @@ pub(crate) fn handle_ask_user_question(
                 LocalQuestionKind::DeleteCurrentSession => "/delete",
                 LocalQuestionKind::Feedback => "/feedback",
             };
-            agent.scrollback.push_block(RenderBlock::system(format!(
-                "{cmd} cancelled by model question"
-            )));
+            let message = if matches!(kind, LocalQuestionKind::DoctorFix { .. }) {
+                "/doctor fix was cancelled because another question opened.".to_owned()
+            } else {
+                format!("{cmd} cancelled because another question opened.")
+            };
+            agent.scrollback.push_block(RenderBlock::system(message));
         }
     }
 

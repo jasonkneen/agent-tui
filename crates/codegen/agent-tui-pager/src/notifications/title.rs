@@ -89,8 +89,7 @@ impl TitleManager {
 
         if !has_parts {
             self.composed.clear();
-            self.composed
-                .push_str(crate::product_profile::title_token());
+            self.composed.push_str("grok");
         }
 
         let result = if self.composed != self.last_title {
@@ -114,10 +113,9 @@ impl TitleManager {
     }
 
     pub fn reset(&mut self) -> String {
-        let token = crate::product_profile::title_token();
-        let esc = build_title_escape(token);
+        let esc = build_title_escape("grok");
         self.last_title.clear();
-        self.last_title.push_str(token);
+        self.last_title.push_str("grok");
         self.spinner_frame = 0;
         self.tick_count = 0;
         esc
@@ -136,7 +134,7 @@ fn write_item(
     match item {
         TitleItem::Grok => {
             push_separator(buf, has_parts);
-            buf.push_str(crate::product_profile::title_token());
+            buf.push_str("grok");
         }
         TitleItem::Spinner => {
             if !state.is_busy && state.activity.is_none() {
@@ -314,7 +312,7 @@ mod tests {
         let mut mgr = TitleManager::new(&cfg);
         let state = idle_state();
         mgr.update(&state);
-        assert_eq!(mgr.last_title, agent_tui_version::PRODUCT_TITLE_TOKEN);
+        assert_eq!(mgr.last_title, "grok");
     }
 
     #[test]
@@ -335,7 +333,7 @@ mod tests {
         let mut mgr = TitleManager::new(&cfg);
         let state = idle_state();
         mgr.update(&state);
-        assert_eq!(mgr.last_title, agent_tui_version::PRODUCT_TITLE_TOKEN);
+        assert_eq!(mgr.last_title, "grok");
     }
 
     #[test]
@@ -347,7 +345,7 @@ mod tests {
             ..idle_state()
         };
         mgr.update(&state);
-        assert_eq!(mgr.last_title, agent_tui_version::PRODUCT_TITLE_TOKEN);
+        assert_eq!(mgr.last_title, "grok");
     }
 
     #[test]
@@ -357,7 +355,7 @@ mod tests {
 
         // Idle: spinner absent
         mgr.update(&idle_state());
-        assert_eq!(mgr.last_title, agent_tui_version::PRODUCT_TITLE_TOKEN);
+        assert_eq!(mgr.last_title, "grok");
 
         // Active: spinner present
         let activity = TurnActivity::Thinking;
@@ -527,7 +525,7 @@ mod tests {
         let cfg = config_with_items(vec![TitleItem::Activity, TitleItem::Grok]);
         let mut mgr = TitleManager::new(&cfg);
         mgr.update(&idle_state());
-        assert_eq!(mgr.last_title, agent_tui_version::PRODUCT_TITLE_TOKEN);
+        assert_eq!(mgr.last_title, "grok");
     }
 
     #[test]
@@ -635,9 +633,9 @@ mod tests {
             ..idle_state()
         };
         mgr.update(&state);
-        assert_eq!(mgr.last_title, agent_tui_version::PRODUCT_TITLE_TOKEN);
+        assert_eq!(mgr.last_title, "grok");
         mgr.update(&state);
-        assert_eq!(mgr.last_title, agent_tui_version::PRODUCT_TITLE_TOKEN);
+        assert_eq!(mgr.last_title, "grok");
     }
 
     // --- Dedup (no-op when unchanged) ---
@@ -649,7 +647,7 @@ mod tests {
         let state = idle_state();
 
         mgr.update(&state);
-        assert_eq!(mgr.last_title, agent_tui_version::PRODUCT_TITLE_TOKEN);
+        assert_eq!(mgr.last_title, "grok");
 
         // Second update: title is identical, last_title stays the same (no re-emit).
         let title_before = mgr.last_title.clone();
@@ -664,7 +662,7 @@ mod tests {
         let cfg = config_with_items(vec![]);
         let mut mgr = TitleManager::new(&cfg);
         mgr.update(&idle_state());
-        assert_eq!(mgr.last_title, agent_tui_version::PRODUCT_TITLE_TOKEN);
+        assert_eq!(mgr.last_title, "grok");
     }
 
     // --- Model item ---
@@ -686,7 +684,7 @@ mod tests {
         let cfg = config_with_items(vec![TitleItem::Model, TitleItem::Grok]);
         let mut mgr = TitleManager::new(&cfg);
         mgr.update(&idle_state());
-        assert_eq!(mgr.last_title, agent_tui_version::PRODUCT_TITLE_TOKEN);
+        assert_eq!(mgr.last_title, "grok");
     }
 
     // --- Cwd item ---
@@ -726,7 +724,7 @@ mod tests {
             ..idle_state()
         };
         mgr.update(&state);
-        assert_eq!(mgr.last_title, agent_tui_version::PRODUCT_TITLE_TOKEN);
+        assert_eq!(mgr.last_title, "grok");
     }
 
     // --- Truncation ---
@@ -771,10 +769,10 @@ mod tests {
             ..idle_state()
         };
         mgr.update(&state);
-        assert_ne!(mgr.last_title, agent_tui_version::PRODUCT_TITLE_TOKEN);
+        assert_ne!(mgr.last_title, "grok");
 
         mgr.reset();
-        assert_eq!(mgr.last_title, agent_tui_version::PRODUCT_TITLE_TOKEN);
+        assert_eq!(mgr.last_title, "grok");
         assert_eq!(mgr.spinner_frame, 0);
         assert_eq!(mgr.tick_count, 0);
     }
@@ -807,7 +805,7 @@ mod tests {
 
         // Both should contain the persistent parts.
         for t in [&t1, &t2] {
-            assert!(t.contains(agent_tui_version::PRODUCT_TITLE_TOKEN), "title missing product token: {t}");
+            assert!(t.contains("grok"), "title missing 'grok': {t}");
             assert!(t.contains("Responding"), "title missing 'Responding': {t}");
             assert!(t.contains("my-session"), "title missing session name: {t}");
         }
@@ -822,7 +820,7 @@ mod tests {
         let cfg = default_config();
         let mut mgr = TitleManager::new(&cfg);
         mgr.update(&idle_state());
-        assert_eq!(mgr.last_title, agent_tui_version::PRODUCT_TITLE_TOKEN);
+        assert_eq!(mgr.last_title, "grok");
     }
 
     // --- Multi-item combinations ---

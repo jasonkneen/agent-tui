@@ -155,33 +155,6 @@ impl From<&acp::AvailableCommand> for AcpSlashCommand {
             _ => None,
         });
 
-        // Parse skill metadata from ACP `_meta`:
-        //   { "scope": "local", "path": "/path/to/SKILL.md" }
-        //
-        // Missing meta → non-skill ACP command (PassThrough).
-        // Present but malformed meta → meta_malformed = true (Error on run()).
-        let (skill_path, skill_scope, meta_malformed) = match cmd.meta.as_ref() {
-            None => (None, None, false),
-            Some(m) => {
-                let path = m
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let scope: Option<SkillScope> = m
-                    .get("scope")
-                    .and_then(|v| serde_json::from_value(v.clone()).ok());
-                if path.is_some() && scope.is_some() {
-                    (path, scope, false)
-                } else if m.get("path").is_some() || m.get("scope").is_some() {
-                    // Has skill-like keys but they're invalid
-                    (None, None, true)
-                } else {
-                    // Meta exists but has no skill keys (e.g., other metadata)
-                    (None, None, false)
-                }
-            }
-        };
-
         Self {
             name: cmd.name.clone(),
             description: cmd.description.clone(),

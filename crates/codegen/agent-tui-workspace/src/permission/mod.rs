@@ -1,5 +1,8 @@
 pub mod auto_mode;
+pub mod bash_command_splitting;
 pub mod claude_settings;
+mod exec_risk;
+mod gate_preflight;
 mod hub_permission;
 mod manager;
 mod policy;
@@ -82,6 +85,7 @@ pub use prompter::{
     PromptOutcome, PromptOutcomeKind, is_enable_always_approve_option,
     mcp_pretty_name_if_qualified, mcp_titleize_segment, mcp_tool_action, mcp_tool_display_name,
 };
+pub use shell_access::{ProtectedEditPermission, ProtectedEditReason};
 pub use state::PermissionState;
 pub use state::cleanup_stale_permission_state;
 pub use types::{

@@ -50,6 +50,12 @@ enum ServerEvent {
     Registered(ClientId, ClientMode, ClientCapabilities, String),
     Message(ClientId, ClientMessage),
 }
+enum LeaderServerPoll {
+    Cancelled,
+    Accept(std::io::Result<LeaderStream>),
+    Event(ServerEvent),
+    Response(String),
+}
 /// A live notification buffered during an in-flight `session/load`: the
 /// shared payload plus its `event_seq` (computed at buffer time, when the
 /// message is already parsed, so the post-load flush never re-parses).
@@ -871,11 +877,15 @@ fn inject_client_identity_into_yolo_notification(
 /// Returns `None` for notifications (no `id`) — those are silently dropped.
 fn make_leader_starting_error(json: &serde_json::Value) -> Option<String> {
     let id = json.get("id").filter(|v| !v.is_null()).cloned()?;
-    let response = serde_json::json!(
-        { "jsonrpc" : "2.0", "id" : id, "error" : { "code" : - 32002, "message" :
-        "leader_starting", "data" :
-        "Leader is still initializing (auth/prefetch in progress). Retry shortly." } }
-    );
+    let response = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32002,
+            "message": "leader_starting",
+            "data": "Leader is still initializing (auth in progress). Retry shortly."
+        }
+    });
     Some(response.to_string())
 }
 /// Choose the bytes forwarded to the agent: the re-serialized `json` when an
@@ -912,7 +922,7 @@ fn patch_initialize_response_model(
     if needs_patch {
         json["result"]["meta"]["modelState"]["currentModelId"] =
             serde_json::Value::String(model.clone());
-        debug!(patched_model = % model, "Patched initialize response currentModelId");
+        debug!(patched_model = %model, "Patched initialize response currentModelId");
         return true;
     }
     false
@@ -1004,12 +1014,19 @@ async fn wait_for_leader_auth(
     cancel: &CancellationToken,
 ) -> Result<Arc<dyn AuthProvider>, ControlError> {
     let mut rx = ws.auth.subscribe();
-    tokio::select! {
-        result = rx.wait_for(| v | v.is_some()) => match result { Ok(guard) => Ok(guard
-        .clone().expect("waited for Some")), Err(_) =>
-        Err(workspace_err("leader is shutting down; cannot expose workspace to the hub",)),
-        }, _ = cancel.cancelled() =>
-        Err(workspace_err("leader is shutting down; cannot expose workspace to the hub",)),
+    let result = tokio::select! {
+        result = rx.wait_for(|v| v.is_some()) => result,
+        _ = cancel.cancelled() => {
+            return Err(workspace_err(
+                "leader is shutting down; cannot expose workspace to the hub",
+            ));
+        }
+    };
+    match result {
+        Ok(guard) => Ok(guard.clone().expect("waited for Some")),
+        Err(_) => Err(workspace_err(
+            "leader is shutting down; cannot expose workspace to the hub",
+        )),
     }
 }
 fn workspace_server_id() -> String {
@@ -1113,10 +1130,11 @@ async fn handle_workspace_start(
     let alpha_test_key = None;
     let auth = wait_for_leader_auth(ws, &cancel).await?;
     let server_id = workspace_server_id();
-    let metadata = serde_json::json!(
-        { "source" : "grok-workspace", "hostname" : gethostname::gethostname()
-        .to_string_lossy(), "cwd" : cwd_path.display().to_string(), }
-    );
+    let metadata = serde_json::json!({
+        "source": "grok-workspace",
+        "hostname": gethostname::gethostname().to_string_lossy(),
+        "cwd": cwd_path.display().to_string(),
+    });
     let upload_queue_enabled =
         std::env::var("GROK_WORKSPACE_UPLOAD_QUEUE_ENABLED").as_deref() != Ok("false");
     crate::agent::folder_trust::resolve_and_record(&cwd_path, None, false);
@@ -1132,7 +1150,6 @@ async fn handle_workspace_start(
         status_config,
         upload_queue_enabled,
         project_lsp_trusted,
-        None,
         None,
         false,
         false,
@@ -1289,7 +1306,7 @@ async fn handle_stop_cpu_profile(
     let result = result.map_err(|join_error| ControlError {
         code: ControlErrorCode::InternalError,
         message: "CPU profile stop task failed".to_string(),
-        details: Some(serde_json::json!({ "error" : join_error.to_string() })),
+        details: Some(serde_json::json!({ "error": join_error.to_string() })),
     })??;
     Ok(ControlPayload::CpuProfileStopped {
         pid,
@@ -1306,10 +1323,7 @@ async fn finalize_cpu_profile_on_shutdown(control_state: LeaderServerControlStat
         let stop_handle = match manager.take_shutdown_stop_handle() {
             Ok(stop_handle) => stop_handle,
             Err(error) => {
-                warn!(
-                    error = % error,
-                    "Failed to prepare active CPU profile for leader shutdown"
-                );
+                warn!(error = %error, "Failed to prepare active CPU profile for leader shutdown");
                 return;
             }
         };
@@ -1339,19 +1353,20 @@ async fn finalize_cpu_profile_on_shutdown(control_state: LeaderServerControlStat
     match result {
         Ok(Ok(result)) => {
             info!(
-                path = % result.svg_path.display(), started_at = % result.started_at,
-                stopped_at = % result.stopped_at,
+                path = %result.svg_path.display(),
+                started_at = %result.started_at,
+                stopped_at = %result.stopped_at,
                 "Finalized active CPU profile during leader shutdown"
             );
         }
         Ok(Err(error)) => {
-            warn!(
-                error = % error,
-                "Failed to finalize active CPU profile during leader shutdown"
-            );
+            warn!(error = %error, "Failed to finalize active CPU profile during leader shutdown");
         }
         Err(join_error) => {
-            warn!(error = % join_error, "CPU profile shutdown finalization task failed");
+            warn!(
+                error = %join_error,
+                "CPU profile shutdown finalization task failed"
+            );
         }
     }
 }
@@ -1384,7 +1399,8 @@ fn decide_relaunch_for_update(
     let leader_version = control_state.metadata.leader_binary_version.clone();
     if !super::leader_is_older_than(&leader_version, &to_version) {
         debug!(
-            from_version = % leader_version, to_version = % to_version,
+            from_version = %leader_version,
+            to_version = %to_version,
             "RelaunchForUpdate declined: target is not strictly newer (or unparseable)"
         );
         return Ok(ControlPayload::RelaunchDeclined {
@@ -1397,8 +1413,9 @@ fn decide_relaunch_for_update(
         });
     }
     info!(
-        from_version = % leader_version, to_version = % to_version, grace_ms =
-        RELAUNCH_TOTAL_GRACE.as_millis() as u64,
+        from_version = %leader_version,
+        to_version = %to_version,
+        grace_ms = RELAUNCH_TOTAL_GRACE.as_millis() as u64,
         "RelaunchForUpdate accepted; draining before relaunch onto new binary"
     );
     Ok(ControlPayload::Relaunching {
@@ -1430,8 +1447,9 @@ fn spawn_relaunch_drain(
                 break;
             }
             tokio::select! {
-                _ = cancel.cancelled() => return, _ =
-                tokio::time::sleep(RELAUNCH_GRACE_POLL) => {}
+                // Another path already triggered shutdown — let it own the exit.
+                _ = cancel.cancelled() => return,
+                _ = tokio::time::sleep(RELAUNCH_GRACE_POLL) => {}
             }
         }
         agent_activity
@@ -1461,14 +1479,18 @@ fn make_version_mismatch_notification(
         return None;
     }
     Some(
-        serde_json::json!(
-            { "jsonrpc" : "2.0", "method" : "x.ai/leader/version_mismatch", "params" : {
-            "clientVersion" : client_version, "leaderVersion" : leader_version, "message"
-            :
-            format!("Client version {client_version} differs from leader version \
-                     {leader_version}. Restart the grok binary to use the same version.")
-            } }
-        )
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "x.ai/leader/version_mismatch",
+            "params": {
+                "clientVersion": client_version,
+                "leaderVersion": leader_version,
+                "message": format!(
+                    "Client version {client_version} differs from leader version \
+                     {leader_version}. Restart the grok binary to use the same version."
+                )
+            }
+        })
         .to_string(),
     )
 }
@@ -1492,7 +1514,8 @@ fn make_version_mismatch_notification(
 ///   JSON-RPC error so the client can retry rather than hang.
 /// - ACP notifications (no `id`) are dropped with a trace log.
 ///
-/// Once `ready_rx` is signaled `true` (auth + prefetch complete), all subsequent
+/// Once `ready_rx` is signaled `true` (socket bound + bounded auth complete; the
+/// model catalog and remote settings stream in afterward), all subsequent
 /// ACP traffic is forwarded to the agent as normal.
 ///
 /// # Arguments
@@ -2335,7 +2358,7 @@ fn spawn_client_handler(
         )
         .await;
         if let Err(e) = &result {
-            debug!(client_id = client_id.0, error = % e, "Client session ended");
+            debug!(client_id = client_id.0, error = %e, "Client session ended");
         }
         let _ = event_tx.send(ServerEvent::Disconnected(client_id)).await;
     });
@@ -2354,7 +2377,7 @@ async fn run_client_session(
         match tokio::time::timeout(REGISTRATION_TIMEOUT, read_message(&mut reader)).await {
             Ok(Ok(msg)) => msg,
             Ok(Err(e)) => {
-                warn!(client_id = client_id.0, error = % e, "Registration failed");
+                warn!(client_id = client_id.0, error = %e, "Registration failed");
                 return Err(e);
             }
             Err(_) => {
@@ -2415,11 +2438,18 @@ async fn run_client_session(
         );
         while !*ready_rx.borrow() {
             tokio::select! {
-                biased; _ = cancel.cancelled() => { for _ in 0..10 { if ! server_rx
-                .is_empty() { break; } tokio::task::yield_now(). await; } while let
-                Ok(Some(msg)) = server_rx.try_recv() { if write_outbound(& mut writer, &
-                msg). await .is_err() { break; } } return Ok(()); } result = ready_rx
-                .changed() => { if result.is_err() { return Ok(()); } }
+                biased;
+                _ = cancel.cancelled() => {
+                    drain_client_outbound_on_cancel(&server_rx, &mut writer).await;
+                    return Ok(());
+                }
+                result = ready_rx.changed() => {
+                    if result.is_err() {
+                        // Watch sender was dropped (leader shutting down without ready).
+                        return Ok(());
+                    }
+                    // Loop re-checks *ready_rx.borrow() at top; no Ref held across await.
+                }
             }
         }
         write_message(&mut writer, &ServerMessage::LeaderReady).await?;
@@ -2436,31 +2466,99 @@ async fn run_client_session(
             client_type.clone(),
         ))
         .await;
-    info!(
-        client_id = client_id.0, client_type = % client_type, ? mode, yolo_mode =
-        capabilities.yolo_mode, client_version = ? capabilities.client_version,
-        "Client registered"
-    );
+    info!(client_id = client_id.0, client_type = %client_type, ?mode, yolo_mode = capabilities.yolo_mode, client_version = ?capabilities.client_version, "Client registered");
     loop {
         tokio::select! {
-            biased; _ = cancel.cancelled() => { for _ in 0..10 { if ! server_rx
-            .is_empty() { break; } tokio::task::yield_now(). await; } while let
-            Ok(Some(msg)) = server_rx.try_recv() { if write_outbound(& mut writer, & msg)
-            . await .is_err() { break; } } break; } Ok(msg) = server_rx.recv() => { if
-            write_outbound(& mut writer, & msg). await .is_err() { break; } } msg_result
-            = read_message::< _, ClientMessage > (& mut reader) => { match msg_result {
-            Ok(msg @ (ClientMessage::Acp { .. } | ClientMessage::Control { .. })) => {
-            let _ = event_tx.send(ServerEvent::Message(client_id, msg)). await; }
-            Ok(ClientMessage::Ping) => { write_message(& mut writer, &
-            ServerMessage::Pong). await ?; } Ok(ClientMessage::Disconnect) |
-            Err(ProtocolError::ConnectionClosed) => { info!(client_id = client_id.0,
-            "Client disconnected"); break; } Ok(ClientMessage::Register { .. }) => {
-            write_message(& mut writer, & ServerMessage::Error { code : 2, message :
-            "Already registered".into(), }). await ?; } Err(e) => { warn!(client_id =
-            client_id.0, error = % e, "Protocol error"); break; } } }
+            biased;
+
+            _ = cancel.cancelled() => {
+                drain_client_outbound_on_cancel(&server_rx, &mut writer).await;
+                break;
+            }
+
+            Ok(msg) = server_rx.recv() => {
+                if write_outbound(&mut writer, &msg).await.is_err() {
+                    break;
+                }
+            }
+
+            msg_result = read_message::<_, ClientMessage>(&mut reader) => {
+                match handle_client_inbound_message(
+                    msg_result,
+                    client_id,
+                    &event_tx,
+                    &mut writer,
+                )
+                .await?
+                {
+                    ClientSessionAction::Continue => {}
+                    ClientSessionAction::Break => break,
+                }
+            }
         }
     }
     Ok(())
+}
+enum ClientSessionAction {
+    Continue,
+    Break,
+}
+async fn drain_client_outbound_on_cancel<W>(
+    server_rx: &AsyncReceiver<ClientOutbound>,
+    writer: &mut W,
+) where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    for _ in 0..10 {
+        if !server_rx.is_empty() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    while let Ok(Some(msg)) = server_rx.try_recv() {
+        if write_outbound(writer, &msg).await.is_err() {
+            break;
+        }
+    }
+}
+async fn handle_client_inbound_message<W>(
+    msg_result: Result<ClientMessage, ProtocolError>,
+    client_id: ClientId,
+    event_tx: &AsyncSender<ServerEvent>,
+    writer: &mut W,
+) -> Result<ClientSessionAction, ProtocolError>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    match msg_result {
+        Ok(msg @ (ClientMessage::Acp { .. } | ClientMessage::Control { .. })) => {
+            let _ = event_tx.send(ServerEvent::Message(client_id, msg)).await;
+            Ok(ClientSessionAction::Continue)
+        }
+        Ok(ClientMessage::Ping) => {
+            write_message(writer, &ServerMessage::Pong).await?;
+            Ok(ClientSessionAction::Continue)
+        }
+        Ok(ClientMessage::Disconnect) | Err(ProtocolError::ConnectionClosed) => {
+            info!(client_id = client_id.0, "Client disconnected");
+            Ok(ClientSessionAction::Break)
+        }
+        Ok(ClientMessage::Register { .. }) => {
+            write_message(
+                writer,
+                &ServerMessage::Error {
+                    code: 2,
+                    message: "Already registered".into(),
+                },
+            )
+            .await?;
+            Ok(ClientSessionAction::Continue)
+        }
+        Err(e) => {
+            warn!(client_id = client_id.0, error = %e, "Protocol error");
+            Ok(ClientSessionAction::Break)
+        }
+    }
 }
 /// Broadcast a planned shutdown to all connected clients.
 ///
@@ -2502,14 +2600,16 @@ pub struct ServerHandle {
     pub client_count: Arc<AtomicUsize>,
     /// Atomic flag: `true` while the agent has pending (in-flight) requests
     pub agent_busy: Arc<AtomicBool>,
-    /// Signal the IPC server that the leader is fully ready (auth + prefetch complete).
+    /// Signal the IPC server that the leader is fully ready (socket bound + bounded auth;
+    /// catalog/settings refresh runs in the background).
     ///
     /// Send `true` once the leader has finished initializing. Until then, ACP requests
     /// receive a `leader_starting` error and ACP notifications are dropped.
     ///
     /// `spawn_leader_server` sends `true` immediately so that callers that do not need
     /// staged startup (e.g. tests, in-process use) get a fully-ready server out of the box.
-    /// Production leader startup (`run_leader`) holds this back until auth + prefetch succeed.
+    /// Production leader startup (`run_leader`) holds this back until bounded auth completes
+    /// (catalog/settings are no longer prefetched; they refresh in the background).
     pub ready_tx: watch::Sender<bool>,
     /// Set the shutdown reason before cancelling so clients receive the correct `ShuttingDown`
     /// reason. The default value is [`ShutdownReason::Manual`]; send
@@ -2565,7 +2665,7 @@ pub async fn spawn_leader_server(socket_path: PathBuf) -> Result<ServerHandle, S
         )
         .await
         {
-            error!(error = % e, "Leader server error");
+            error!(error = %e, "Leader server error");
         }
     });
     Ok(ServerHandle {
@@ -2856,9 +2956,11 @@ mod tests {
             let json: serde_json::Value = serde_json::from_str(&forwarded).unwrap();
             if json.get("method").and_then(|m| m.as_str()) == Some("session/load") {
                 let id = json.get("id").cloned().unwrap();
-                let response = serde_json::json!(
-                    { "jsonrpc" : "2.0", "id" : id, "result" : { "models" : [] }, }
-                );
+                let response = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "models": [] },
+                });
                 response_tx.send(response.to_string()).unwrap();
                 return;
             }
@@ -2998,12 +3100,19 @@ mod tests {
         .await
         .unwrap();
         let response: ServerMessage = read_message(&mut reader).await.unwrap();
-        assert!(
-            matches!(response, ServerMessage::ControlResult { request_id, result :
-            Ok(ControlPayload::CpuProfileStatus { active : false, stopping : false,
-            started_at : None, svg_path : None, frequency_hz : None, }), } if request_id
-            == "status-1")
-        );
+        assert!(matches!(
+            response,
+            ServerMessage::ControlResult {
+                request_id,
+                result: Ok(ControlPayload::CpuProfileStatus {
+                    active: false,
+                    stopping: false,
+                    started_at: None,
+                    svg_path: None,
+                    frequency_hz: None,
+                }),
+            } if request_id == "status-1"
+        ));
         assert!(
             tokio::time::timeout(Duration::from_millis(100), handle.acp_rx.recv())
                 .await
@@ -3324,19 +3433,25 @@ mod tests {
     #[test]
     fn extract_interaction_tool_call_id_handles_direct_and_nested() {
         assert_eq!(
-            extract_interaction_tool_call_id(&
-            pv(r#"{"id":1,"method":"x.ai/ask_user_question","params":{"sessionId":"s","toolCallId":"tc-q"}}"#))
-            .as_deref(), Some("tc-q")
+            extract_interaction_tool_call_id(&pv(
+                r#"{"id":1,"method":"x.ai/ask_user_question","params":{"sessionId":"s","toolCallId":"tc-q"}}"#
+            ))
+            .as_deref(),
+            Some("tc-q")
         );
         assert_eq!(
-            extract_interaction_tool_call_id(&
-            pv(r#"{"id":1,"method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"tc-p"}}}"#))
-            .as_deref(), Some("tc-p")
+            extract_interaction_tool_call_id(&pv(
+                r#"{"id":1,"method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"tc-p"}}}"#
+            ))
+            .as_deref(),
+            Some("tc-p")
         );
         assert_eq!(
-            extract_interaction_tool_call_id(&
-            pv(r#"{"id":1,"method":"_x.ai/ask_user_question","params":{"method":"x.ai/ask_user_question","params":{"sessionId":"s","toolCallId":"tc-w"}}}"#))
-            .as_deref(), Some("tc-w")
+            extract_interaction_tool_call_id(&pv(
+                r#"{"id":1,"method":"_x.ai/ask_user_question","params":{"method":"x.ai/ask_user_question","params":{"sessionId":"s","toolCallId":"tc-w"}}}"#
+            ))
+            .as_deref(),
+            Some("tc-w")
         );
         assert_eq!(
             extract_interaction_tool_call_id(&pv(r#"{"params":{}}"#)),
@@ -3346,14 +3461,18 @@ mod tests {
     #[test]
     fn extract_interaction_resolved_tool_call_id_matches_only_resolved() {
         assert_eq!(
-            extract_interaction_resolved_tool_call_id(&
-            pv(r#"{"method":"x.ai/session_notification","params":{"sessionId":"s","update":{"sessionUpdate":"interaction_resolved","tool_call_id":"tc-r"}}}"#))
-            .as_deref(), Some("tc-r")
+            extract_interaction_resolved_tool_call_id(&pv(
+                r#"{"method":"x.ai/session_notification","params":{"sessionId":"s","update":{"sessionUpdate":"interaction_resolved","tool_call_id":"tc-r"}}}"#
+            ))
+            .as_deref(),
+            Some("tc-r")
         );
         assert_eq!(
-            extract_interaction_resolved_tool_call_id(&
-            pv(r#"{"method":"_x.ai/session_notification","params":{"method":"x.ai/session_notification","params":{"sessionId":"s","update":{"sessionUpdate":"interaction_resolved","tool_call_id":"tc-rw"}}}}"#))
-            .as_deref(), Some("tc-rw")
+            extract_interaction_resolved_tool_call_id(&pv(
+                r#"{"method":"_x.ai/session_notification","params":{"method":"x.ai/session_notification","params":{"sessionId":"s","update":{"sessionUpdate":"interaction_resolved","tool_call_id":"tc-rw"}}}}"#
+            ))
+            .as_deref(),
+            Some("tc-rw")
         );
         assert_eq!(
             extract_interaction_resolved_tool_call_id(&pv(
@@ -5295,9 +5414,11 @@ mod tests {
             early.is_err(),
             "live broadcast must be buffered until the load response, got {early:?}"
         );
-        let response = serde_json::json!(
-            { "jsonrpc" : "2.0", "id" : load_id, "result" : { "models" : [] }, }
-        );
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": load_id,
+            "result": { "models": [] },
+        });
         response_tx.send(response.to_string()).unwrap();
         let first = next_acp_payload(&mut reader).await;
         assert!(
@@ -6633,9 +6754,9 @@ mod tests {
         response_tx
             .send(
                 format!(
-                    r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"sess-1","update":{{"sessionUpdate":"agent_message_chunk"}},"_meta":{{"x.ai/leaderClientId":{}}}}}}}"#,
-                    id_a
-                ),
+                r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"sess-1","update":{{"sessionUpdate":"agent_message_chunk"}},"_meta":{{"x.ai/leaderClientId":{}}}}}}}"#,
+                id_a
+            ),
             )
             .unwrap();
         let msg = tokio::time::timeout(Duration::from_millis(200), read_message(&mut reader_a))
@@ -6688,17 +6809,17 @@ mod tests {
         response_tx
             .send(
                 format!(
-                    r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"sess-1","update":{{"sessionUpdate":"agent_message_chunk"}},"_meta":{{"isReplay":true,"x.ai/leaderClientId":{}}}}}}}"#,
-                    id_a
-                ),
+                r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"sess-1","update":{{"sessionUpdate":"agent_message_chunk"}},"_meta":{{"isReplay":true,"x.ai/leaderClientId":{}}}}}}}"#,
+                id_a
+            ),
             )
             .unwrap();
         response_tx
             .send(
                 format!(
-                    r#"{{"jsonrpc":"2.0","method":"_x.ai/session/update","params":{{"params":{{"sessionId":"sess-1","update":{{"sessionUpdate":"hook_annotation","message":"m"}},"_meta":{{"isReplay":true,"x.ai/leaderClientId":{}}}}}}}}}"#,
-                    id_a
-                ),
+                r#"{{"jsonrpc":"2.0","method":"_x.ai/session/update","params":{{"params":{{"sessionId":"sess-1","update":{{"sessionUpdate":"hook_annotation","message":"m"}},"_meta":{{"isReplay":true,"x.ai/leaderClientId":{}}}}}}}}}"#,
+                id_a
+            ),
             )
             .unwrap();
         let timeout_result: Result<Result<ServerMessage, _>, _> =

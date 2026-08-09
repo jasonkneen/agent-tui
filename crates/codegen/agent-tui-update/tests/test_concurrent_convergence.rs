@@ -49,13 +49,13 @@ use agent_tui_update::version::installed_on_disk_version;
 /// binary, actually runs, and has exactly the expected content (the content
 /// check is what catches a cross-racer temp-file corruption).
 fn assert_active_binary(home: &Path, version: &str, platform: &str, expected_content: &[u8]) {
-    let link = home.join("bin").join("agent-tui");
+    let link = home.join("bin").join("grok");
     assert!(link.is_symlink(), "grok must be a symlink");
     let resolved = dunce::canonicalize(&link)
         .unwrap_or_else(|e| panic!("active grok symlink does not resolve: {e}"));
     assert_eq!(
         resolved.file_name().unwrap().to_string_lossy(),
-        format!("agent-tui-{version}-{platform}"),
+        format!("grok-{version}-{platform}"),
         "active grok must be the expected version"
     );
     assert_eq!(
@@ -76,7 +76,7 @@ fn assert_active_binary(home: &Path, version: &str, platform: &str, expected_con
 }
 
 /// Lay down a managed-install layout in the test GROK_HOME:
-/// `bin/grok -> ../downloads/agent-tui-<version>-<platform>` (what
+/// `bin/grok -> ../downloads/grok-<version>-<platform>` (what
 /// `install_internal_from_base` produces).
 fn fake_managed_install(version: &str) {
     let home = test_home();
@@ -84,7 +84,7 @@ fn fake_managed_install(version: &str) {
     let bin = home.join("bin");
     std::fs::create_dir_all(&downloads).unwrap();
     std::fs::create_dir_all(&bin).unwrap();
-    let name = format!("agent-tui-{version}-{}", host_platform());
+    let name = format!("grok-{version}-{}", host_platform());
     std::fs::write(downloads.join(&name), small_good_artifact()).unwrap();
     std::fs::set_permissions(
         downloads.join(&name),
@@ -93,7 +93,7 @@ fn fake_managed_install(version: &str) {
     .unwrap();
     std::os::unix::fs::symlink(
         std::path::Path::new("../downloads").join(&name),
-        bin.join("agent-tui"),
+        bin.join("grok"),
     )
     .unwrap();
 }
@@ -346,7 +346,7 @@ async fn disk_probe_rejects_dangling_symlink() {
 
     std::fs::remove_file(
         home.join("downloads")
-            .join(format!("agent-tui-0.2.7-{platform}")),
+            .join(format!("grok-0.2.7-{platform}")),
     )
     .unwrap();
 
@@ -374,7 +374,7 @@ async fn ensure_latest_repairs_dangling_symlink_by_downloading() {
     fake_managed_install("0.2.7");
     std::fs::remove_file(
         home.join("downloads")
-            .join(format!("agent-tui-0.2.7-{platform}")),
+            .join(format!("grok-0.2.7-{platform}")),
     )
     .unwrap();
     let cfg = make_update_config("stable");
@@ -475,7 +475,7 @@ async fn concurrent_different_version_installs_do_not_corrupt_each_other() {
     for version in ["0.1.181", "0.1.182"] {
         let path = home
             .join("downloads")
-            .join(format!("agent-tui-{version}-{platform}"));
+            .join(format!("grok-{version}-{platform}"));
         assert_eq!(
             std::fs::read(&path).unwrap(),
             artifact,
@@ -485,7 +485,7 @@ async fn concurrent_different_version_installs_do_not_corrupt_each_other() {
 
     // The active symlink points at whichever racer swapped last; it must
     // resolve and run regardless.
-    let resolved = dunce::canonicalize(home.join("bin").join("agent-tui")).unwrap();
+    let resolved = dunce::canonicalize(home.join("bin").join("grok")).unwrap();
     assert_eq!(std::fs::read(&resolved).unwrap(), artifact);
     let name = resolved.file_name().unwrap().to_string_lossy().to_string();
     assert!(
@@ -495,7 +495,7 @@ async fn concurrent_different_version_installs_do_not_corrupt_each_other() {
 
     // No stray shared temp file left behind (the pre-fix collision name).
     assert!(
-        !home.join("downloads").join("agent-tui-0.1.tmp").exists(),
+        !home.join("downloads").join("grok-0.1.tmp").exists(),
         "the pre-fix shared temp name must not exist"
     );
 }

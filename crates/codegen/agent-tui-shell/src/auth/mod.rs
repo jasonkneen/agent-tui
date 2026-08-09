@@ -1,5 +1,6 @@
 pub(crate) mod api_key_probe;
 pub(crate) mod attribution;
+mod auth_provider;
 mod config;
 pub mod credential_provider;
 #[path = "devbox_login_stub.rs"]
@@ -9,14 +10,14 @@ pub mod error;
 mod external_auth;
 mod flow;
 mod jwt;
-/// Harvest credentials from already-authenticated local CLIs (Claude Code first).
-pub mod local_cli;
 pub(crate) mod manager;
 mod model;
 pub mod oidc;
 pub(crate) mod recovery;
 pub(crate) mod refresh;
+pub(crate) mod single_flight;
 mod storage;
+mod token_output;
 pub(crate) mod token_type;
 pub(crate) use api_key_probe::{
     DEFAULT_PROBE_TIMEOUT, first_party_env_key_allows_advertise, should_probe_first_party_env_key,
@@ -30,12 +31,12 @@ pub(crate) use auth_provider::{test_backdate_provider_mint, test_counting_provid
 pub(crate) use config::LEGACY_AUTH_SCOPE;
 pub use config::{
     ForceLoginTeam, GrokComConfig, OAuth2ProviderConfig, OidcAuthConfig, PreferredAuthMethod,
-    XAI_OAUTH2_ISSUER, is_xai_oauth2_issuer, xai_oauth2_issuer,
+    XAI_OAUTH2_ISSUER, is_xai_oauth2_issuer, agent_tui_oauth2_issuer,
 };
 pub(crate) use external_auth::{parse_output, refresh_with_command};
 pub(crate) use flow::{
-    AuthChannels, run_auth_flow, run_auth_flow_with_stderr_bridge,
-    try_ensure_session_noninteractive,
+    AuthChannels, mint_session_noninteractive, run_auth_flow, run_auth_flow_with_stderr_bridge,
+    try_noninteractive_auth_no_mint,
 };
 pub use flow::{
     AuthUrlInfo, AuthUrlMode, LoginTransportOverride, LogoutResult, ensure_authenticated,
@@ -44,17 +45,17 @@ pub use flow::{
 };
 pub use jwt::{is_jwt_expired_or_near, parse_jwt_expiration};
 mod meta;
+pub mod local_cli;
 pub use error::{AuthError, RefreshTokenError, RefreshTokenFailedReason};
 pub use manager::{AuthManager, shared_api_key_provider};
 pub(crate) use manager::{AuthRemedy, SilentRefresh};
 pub use meta::{AuthMeta, GateInfo};
 pub use model::{AuthMode, GrokAuth, lookup_auth};
-pub(crate) use model::{TOKEN_TTL, UserInfo, default_coding_data_retention_opt_out, is_expired};
+pub(crate) use model::{TOKEN_TTL, UserInfo, default_coding_data_retention_opt_out, is_expired, token_suffix};
 pub(crate) use refresh::DiagnosticUploader;
 pub use storage::{
     clear_api_key, read_api_key, read_auth_json, read_token_by_scope, store_api_key,
 };
-pub use local_cli::{
-    DetectedCredential, LocalCliId, detect_all_local_cli_credentials, detect_claude,
-    detect_preferred_claude,
-};
+
+// Fork: local CLI credential detection (Claude Code login, not OAuth)
+pub use local_cli::{detect_preferred_claude, DetectedCredential, LocalCliId};

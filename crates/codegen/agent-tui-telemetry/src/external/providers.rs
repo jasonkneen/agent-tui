@@ -904,7 +904,7 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("abc")
         );
-        for forbidden in ["x-xai-token-auth", "x-userid", "x-teamid"] {
+        for forbidden in ["x-agent-tui-token-auth", "x-userid", "x-teamid"] {
             assert!(metadata.get(forbidden).is_none());
         }
     }

@@ -51,9 +51,8 @@ impl ChatStateActor {
         if let Some(reminder) = memory_reminder.as_deref()
             && persist_memory_reminder
         {
-            // A live in-place inject appends a synthetic reminder. Snapshot and
-            // rebase like the other mutators so an active turn capture keeps its
-            // exact boundary when the persisted history grows.
+            // A live in-place inject can prepend a `System` item, shifting indices
+            // under an active capture; snapshot + rebase like the other mutators.
             self.snapshot_turn_slice();
             let injected = inject_memory_reminder(&mut self.state.conversation, reminder);
             if injected {
@@ -97,7 +96,7 @@ impl ChatStateActor {
                 prune_conversation(&mut items, &self.pruning_config);
             }
 
-            // Step 3: Append memory as an immutable synthetic reminder.
+            // Step 3: Inject memory reminder into the system message
             if let Some(reminder) = memory_reminder {
                 inject_memory_reminder(&mut items, &reminder);
             }
@@ -143,6 +142,7 @@ impl ChatStateActor {
             x_grok_deployment_id: None,
             x_grok_user_id: None,
             trace,
+            prompt_cache_key: None,
             reasoning_effort: self.state.sampling_config.reasoning_effort,
             json_schema: None,
         }
@@ -455,12 +455,13 @@ pub(crate) fn compact_images_to_byte_budget(
 // Memory reminder injection
 // ============================================================================
 
-/// Append a memory reminder as an immutable synthetic delta.
+use crate::types::MEMORY_CONTEXT_OPEN_TAG;
+
+/// Upsert a memory reminder into the conversation's system message.
 ///
-/// Memory must never rewrite item zero (or any prior history item): doing so
-/// invalidates the provider's cached prefix on resumed conversations. An
-/// identical reminder is deduplicated; a genuinely updated reminder is a new
-/// bounded synthetic item at the tail.
+/// If the first item is a `System` message, any previously injected memory
+/// reminder section is replaced in-place; otherwise the reminder is appended.
+/// If no system message exists, a new `System` item is prepended.
 ///
 /// Returns `true` when the conversation was changed.
 pub(super) fn inject_memory_reminder(items: &mut Vec<ConversationItem>, reminder: &str) -> bool {
@@ -469,27 +470,40 @@ pub(super) fn inject_memory_reminder(items: &mut Vec<ConversationItem>, reminder
         return false;
     }
 
-    let bounded = agent_tui_sampling_types::bound_synthetic_text(reminder.to_string());
-    let is_memory_payload = reminder.contains(crate::types::MEMORY_CONTEXT_OPEN_TAG);
-    let latest_memory = items.iter().rev().find(|item| match item {
-        ConversationItem::User(user)
-            if user.synthetic_reason
-                == Some(agent_tui_sampling_types::SyntheticReason::SystemReminder) =>
-        {
-            !is_memory_payload
-                || item
-                    .text_content()
-                    .contains(crate::types::MEMORY_CONTEXT_OPEN_TAG)
-        }
-        _ => false,
-    });
-    let already_present = latest_memory.is_some_and(|item| item.text_content() == bounded);
-    if already_present {
-        return false;
+    if let Some(ConversationItem::System(sys)) = items.first_mut() {
+        upsert_memory_reminder_text(&mut sys.content, reminder)
+    } else {
+        items.insert(0, ConversationItem::system(reminder));
+        true
     }
+}
 
-    items.push(ConversationItem::system_reminder(bounded));
-    true
+fn upsert_memory_reminder_text(system_prompt: &mut std::sync::Arc<str>, reminder: &str) -> bool {
+    let existing_start = system_prompt
+        .find(MEMORY_CONTEXT_OPEN_TAG)
+        .map(|idx| system_prompt[..idx].trim_end_matches('\n').len());
+
+    let updated: String = if let Some(prefix_len) = existing_start {
+        let prefix = system_prompt[..prefix_len].trim_end_matches('\n');
+        if prefix.is_empty() {
+            reminder.to_string()
+        } else {
+            format!("{prefix}\n\n{reminder}")
+        }
+    } else if system_prompt.trim_end() == reminder {
+        system_prompt.as_ref().to_owned()
+    } else if system_prompt.is_empty() {
+        reminder.to_string()
+    } else {
+        format!("{}\n\n{reminder}", system_prompt.trim_end_matches('\n'))
+    };
+
+    if system_prompt.as_ref() == updated.as_str() {
+        false
+    } else {
+        *system_prompt = std::sync::Arc::<str>::from(updated);
+        true
+    }
 }
 
 // ============================================================================
@@ -535,49 +549,25 @@ mod tests {
     }
 
     #[test]
-    fn inject_memory_appends_without_rewriting_existing_system() {
+    fn inject_memory_into_existing_system() {
         let mut items = vec![
             ConversationItem::system("You are helpful."),
             ConversationItem::user("hi"),
         ];
-        let original = items.clone();
-        assert!(inject_memory_reminder(
-            &mut items,
-            "Remember: user likes rust"
-        ));
-        assert_eq!(
-            serde_json::to_value(&items[..original.len()]).unwrap(),
-            serde_json::to_value(&original).unwrap()
-        );
+        inject_memory_reminder(&mut items, "Remember: user likes rust");
         if let ConversationItem::System(ref sys) = items[0] {
-            assert_eq!(sys.content.as_ref(), "You are helpful.");
+            assert!(sys.content.contains("Remember: user likes rust"));
+            assert!(sys.content.starts_with("You are helpful."));
         }
-        assert_eq!(items.len(), 3);
-        assert_eq!(items[2].text_content(), "Remember: user likes rust");
-        assert!(!inject_memory_reminder(
-            &mut items,
-            "Remember: user likes rust"
-        ));
-        assert_eq!(items.len(), 3);
-
-        assert!(inject_memory_reminder(
-            &mut items,
-            "Remember: user now likes go"
-        ));
-        assert!(inject_memory_reminder(
-            &mut items,
-            "Remember: user likes rust"
-        ));
-        assert_eq!(items.len(), 5, "reverting memory must append a new delta");
+        assert_eq!(items.len(), 2); // no new item added
     }
 
     #[test]
-    fn inject_memory_appends_when_no_system() {
+    fn inject_memory_prepends_when_no_system() {
         let mut items = vec![ConversationItem::user("hi")];
         inject_memory_reminder(&mut items, "Remember: user likes rust");
         assert_eq!(items.len(), 2);
-        assert_eq!(items[0].text_content(), "hi");
-        assert_eq!(items[1].text_content(), "Remember: user likes rust");
+        assert!(matches!(&items[0], ConversationItem::System(_)));
     }
 
     // -- image size-gated compaction tests --

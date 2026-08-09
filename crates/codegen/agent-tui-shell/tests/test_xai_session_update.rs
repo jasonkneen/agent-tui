@@ -36,7 +36,7 @@ async fn test_xai_session_notification_storage_roundtrip() {
         .unwrap();
 
     // Create a diff_review notification
-    let xai_notification = SessionNotification {
+    let agent_tui_notification = SessionNotification {
         session_id: session_id.clone(),
         update: XaiSessionUpdate::DiffReview {
             content: vec![DiffContent {
@@ -51,7 +51,7 @@ async fn test_xai_session_notification_storage_roundtrip() {
     adapter
         .append_update(
             &info,
-            &SessionUpdate::Xai(Box::new(xai_notification.clone())),
+            &SessionUpdate::Xai(Box::new(agent_tui_notification.clone())),
         )
         .await
         .unwrap();
@@ -142,7 +142,7 @@ async fn test_turn_completed_round_trips_through_storage() {
 
     // Persist a terminal carrying the prompt id + outcome the viewer keys on,
     // plus an optional agent result.
-    let xai_notification = SessionNotification {
+    let agent_tui_notification = SessionNotification {
         session_id: session_id.clone(),
         update: XaiSessionUpdate::TurnCompleted {
             prompt_id: "prompt-1".to_string(),
@@ -153,7 +153,7 @@ async fn test_turn_completed_round_trips_through_storage() {
         meta: None,
     };
     adapter
-        .append_update(&info, &SessionUpdate::Xai(Box::new(xai_notification)))
+        .append_update(&info, &SessionUpdate::Xai(Box::new(agent_tui_notification)))
         .await
         .unwrap();
 
@@ -218,13 +218,13 @@ async fn test_extract_total_tokens_from_mixed_updates() {
         .unwrap();
 
     // Add xAI notification with totalTokens
-    let xai_notification = SessionNotification {
+    let agent_tui_notification = SessionNotification {
         session_id: session_id.clone(),
         update: XaiSessionUpdate::DiffReview { content: vec![] },
         meta: Some(json!({ "totalTokens": 200 })),
     };
     adapter
-        .append_update(&info, &SessionUpdate::Xai(Box::new(xai_notification)))
+        .append_update(&info, &SessionUpdate::Xai(Box::new(agent_tui_notification)))
         .await
         .unwrap();
 

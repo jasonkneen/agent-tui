@@ -165,7 +165,7 @@ async fn no_recovery_without_auth_manager() {
             let (actor, _rx) = make_actor_with_auth_and_credentials(
                 None,
                 agent_tui_chat_state::AuthType::ApiKey,
-                "xai-byok-key".to_string(),
+                "agent-tui-byok-key".to_string(),
             )
             .await;
             crate::auth::attribution::reset_test_emit_count();
@@ -233,7 +233,7 @@ async fn sampler_401_with_api_key_auth_skips_refresh_and_surfaces_error() {
             let (actor, _rx) = make_actor_with_auth_and_credentials(
                 Some(am),
                 agent_tui_chat_state::AuthType::ApiKey,
-                "xai-byok-key".to_string(),
+                "agent-tui-byok-key".to_string(),
             )
             .await;
 
@@ -251,11 +251,9 @@ async fn sampler_401_with_api_key_auth_skips_refresh_and_surfaces_error() {
         .await;
 }
 
-/// Per-turn pre-flight refresh dispatches on `AuthManager`'s
-/// `TokenType`, not `creds.auth_type`. Pins that a stale
-/// When `creds.auth_type` is `ApiKey` (BYOK model), the pre-flight
-/// refresh must NOT fire — the model's own API key must not be
-/// overwritten by the session JWT.
+/// Per-turn pre-flight refresh must not fire when `creds.auth_type` is
+/// `ApiKey` (a BYOK model): the model's own API key must not be overwritten
+/// by the session JWT.
 #[tokio::test(flavor = "current_thread")]
 #[serial_test::serial(attribution_emit_count)]
 async fn pre_flight_refresh_skips_api_key_auth_type() {
@@ -288,6 +286,166 @@ async fn pre_flight_refresh_skips_api_key_auth_type() {
                     .as_deref(),
                 Some("byok-api-key"),
                 "BYOK api_key must not be overwritten by session token refresh"
+            );
+        })
+        .await;
+}
+
+/// Hard-expired session token: pre-flight must call the refresher and must
+/// not leave credentials stuck while pretending the JWT/config path applies.
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial(attribution_emit_count)]
+async fn pre_flight_refreshes_hard_expired_session_token() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let called = Arc::new(AtomicBool::new(false));
+            let refresher: Arc<dyn crate::auth::refresh::TokenRefresher> =
+                Arc::new(AlwaysSucceedRefresher {
+                    called: called.clone(),
+                });
+            let (_dir, am) = auth_manager_with_refresher(refresher);
+            assert!(
+                !am.has_usable_token(),
+                "precondition: access token is hard-expired"
+            );
+
+            let (actor, _rx) = make_actor_with_auth_manager(Some(am.clone())).await;
+            actor.refresh_token_if_expired().await;
+
+            assert!(
+                called.load(Ordering::SeqCst),
+                "pre-flight must invoke the refresher for a hard-expired session token"
+            );
+            assert_eq!(
+                actor
+                    .chat_state_handle
+                    .get_credentials()
+                    .await
+                    .api_key
+                    .as_deref(),
+                Some("refreshed-test-token"),
+                "credentials must be updated to the refreshed bearer"
+            );
+            assert!(am.has_usable_token());
+        })
+        .await;
+}
+
+/// Hard-expired + failed refresh: do not fall through to JWT/config.toml;
+/// strip the chat-state seed so default headers cannot carry a dead AT.
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial(attribution_emit_count)]
+async fn pre_flight_hard_expired_refresh_failure_skips_jwt_fallthrough() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let call_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let refresher: Arc<dyn crate::auth::refresh::TokenRefresher> = Arc::new({
+                struct AlwaysFail(Arc<std::sync::atomic::AtomicU32>);
+                #[async_trait::async_trait]
+                impl crate::auth::refresh::TokenRefresher for AlwaysFail {
+                    async fn refresh(
+                        &self,
+                        _: crate::auth::refresh::RefreshReason,
+                    ) -> crate::auth::refresh::RefreshOutcome {
+                        self.0.fetch_add(1, Ordering::SeqCst);
+                        crate::auth::refresh::RefreshOutcome::transient("refresh failed")
+                    }
+                }
+                AlwaysFail(call_count.clone())
+            });
+            let (_dir, am) = auth_manager_with_refresher(refresher);
+            let (actor, _rx) = make_actor_with_auth_manager(Some(am.clone())).await;
+
+            actor.refresh_token_if_expired().await;
+
+            assert!(
+                call_count.load(Ordering::SeqCst) >= 1,
+                "pre-flight must attempt refresh"
+            );
+            assert_eq!(
+                actor
+                    .chat_state_handle
+                    .get_credentials()
+                    .await
+                    .api_key
+                    .as_deref(),
+                None,
+                "hard-expired pre-flight failure must strip the chat-state seed"
+            );
+            assert!(
+                !am.has_usable_token(),
+                "token remains hard-expired after failed refresh"
+            );
+            assert!(
+                am.permanent_failure().is_none(),
+                "transient refresh failure must not poison permanent_failure"
+            );
+        })
+        .await;
+}
+
+/// Soft-expired (early-invalidation buffer) + transient fail: retain the seed
+/// so a still-accepted wire AT can continue until 401 recovery.
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial(attribution_emit_count)]
+async fn pre_flight_soft_expired_transient_fail_retains_seed() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let call_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let refresher: Arc<dyn crate::auth::refresh::TokenRefresher> = Arc::new({
+                struct AlwaysFail(Arc<std::sync::atomic::AtomicU32>);
+                #[async_trait::async_trait]
+                impl crate::auth::refresh::TokenRefresher for AlwaysFail {
+                    async fn refresh(
+                        &self,
+                        _: crate::auth::refresh::RefreshReason,
+                    ) -> crate::auth::refresh::RefreshOutcome {
+                        self.0.fetch_add(1, Ordering::SeqCst);
+                        crate::auth::refresh::RefreshOutcome::transient("refresh failed")
+                    }
+                }
+                AlwaysFail(call_count.clone())
+            });
+            let dir = tempfile::tempdir().expect("tempdir");
+            let am = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
+            // Inside the early-invalidation buffer but still hard-valid.
+            am.hot_swap(GrokAuth {
+                key: "buffered-test-key".into(),
+                auth_mode: AuthMode::Oidc,
+                refresh_token: Some("rt".into()),
+                expires_at: Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+                ..GrokAuth::test_default()
+            });
+            am.set_refresher(refresher);
+            let (actor, _rx) = make_actor_with_auth_and_credentials(
+                Some(am.clone()),
+                agent_tui_chat_state::AuthType::SessionToken,
+                "buffered-test-key".to_string(),
+            )
+            .await;
+
+            actor.refresh_token_if_expired().await;
+
+            assert!(
+                call_count.load(Ordering::SeqCst) >= 1,
+                "soft-expired pre-flight must still attempt refresh"
+            );
+            assert_eq!(
+                actor
+                    .chat_state_handle
+                    .get_credentials()
+                    .await
+                    .api_key
+                    .as_deref(),
+                Some("buffered-test-key"),
+                "buffer-window soft-expired + transient fail must retain seed"
+            );
+            assert!(
+                am.has_usable_token(),
+                "token inside hard-expiry buffer remains usable"
             );
         })
         .await;
@@ -600,12 +758,8 @@ async fn no_legacy_hint_for_oidc_auth() {
         .await;
 }
 
-// Regression: a live OIDC session whose `creds.auth_type` has
-// transiently collapsed to `ApiKey` (session-token cache miss + `XAI_API_KEY`)
-// must still drive the live bearer resolver, be eligible for 401 retry, and get
-// its stale `api_key` healed — the gate keys off the stable `auth_method_id`,
-// not the collapsible `auth_type`.
-
+// Regression group: a live session whose `auth_type` transiently reads `ApiKey`
+// must still recover, because the gate keys off the stable `auth_method_id`.
 #[test]
 fn session_token_auth_gate_truth_table() {
     use crate::agent::auth_method::{ModelByok, session_token_auth_gate as gate};
@@ -742,7 +896,7 @@ async fn reconstruct_full_config_no_bearer_resolver_for_api_key_method() {
                 Some(am),
                 "xai.api_key",
                 agent_tui_chat_state::AuthType::ApiKey,
-                "xai-static-key".to_string(),
+                "agent-tui-static-key".to_string(),
             )
             .await;
 
@@ -851,13 +1005,13 @@ async fn session_born_on_api_key_recovers_after_oidc_login_without_restart() {
         .await;
 }
 
-// Per-model BYOK memo (`SessionActor::model_auth_facts`): a definite cached
+// Per-model BYOK memo (`SessionActor::model_auth_memo`): a definite cached
 // status is served without recomputing, and the memo keys on `model_id`.
 
 /// The cache-hit branch is what lets a later config parse failure (`Unknown`)
 /// fall back to the last-known-good status.
 #[tokio::test(flavor = "current_thread")]
-async fn model_auth_facts_memo_serves_cached_status_and_keys_on_model() {
+async fn model_auth_memo_serves_cached_status_and_keys_on_model() {
     use crate::agent::auth_method::ModelByok;
     use crate::agent::config::ModelAuthFacts;
     let local = tokio::task::LocalSet::new();
@@ -871,13 +1025,16 @@ async fn model_auth_facts_memo_serves_cached_status_and_keys_on_model() {
             )
             .await;
 
-            actor.model_auth_facts.replace(Some((
-                "model-a".to_string(),
-                ModelAuthFacts {
-                    byok: ModelByok::Byok,
-                    auth_scheme: Default::default(),
-                },
-            )));
+            actor
+                .model_auth_memo
+                .replace(Some(crate::session::acp_session::ModelAuthMemo {
+                    model_id: "model-a".to_string(),
+                    facts: ModelAuthFacts {
+                        byok: ModelByok::Byok,
+                        auth_scheme: Default::default(),
+                    },
+                    provider: None,
+                }));
 
             // Cache hit: served without consulting config.
             assert_eq!(actor.model_auth_facts("model-a").byok, ModelByok::Byok);
@@ -912,13 +1069,16 @@ async fn reconstruct_full_config_no_bearer_resolver_for_byok_model_on_session_me
                 .await
                 .map(|c| c.model)
                 .unwrap_or_default();
-            actor.model_auth_facts.replace(Some((
-                model,
-                ModelAuthFacts {
-                    byok: ModelByok::Byok,
-                    auth_scheme: Default::default(),
-                },
-            )));
+            actor
+                .model_auth_memo
+                .replace(Some(crate::session::acp_session::ModelAuthMemo {
+                    model_id: model,
+                    facts: ModelAuthFacts {
+                        byok: ModelByok::Byok,
+                        auth_scheme: Default::default(),
+                    },
+                    provider: None,
+                }));
 
             let cfg = actor.reconstruct_full_config().await;
 
@@ -957,13 +1117,16 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                 .map(|c| c.model)
                 .unwrap_or_default();
 
-            actor.model_auth_facts.replace(Some((
-                model.clone(),
-                ModelAuthFacts {
-                    byok: ModelByok::NotByok,
-                    auth_scheme: Default::default(),
-                },
-            )));
+            actor
+                .model_auth_memo
+                .replace(Some(crate::session::acp_session::ModelAuthMemo {
+                    model_id: model.clone(),
+                    facts: ModelAuthFacts {
+                        byok: ModelByok::NotByok,
+                        auth_scheme: Default::default(),
+                    },
+                    provider: None,
+                }));
 
             // Switch to the same model_id, now a per-model BYOK model on a
             // third-party endpoint.
@@ -977,6 +1140,8 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                 api_backend: crate::sampling::ApiBackend::ChatCompletions,
                 auth_scheme: Default::default(),
                 extra_headers: Default::default(),
+                query_params: Default::default(),
+                env_http_headers: Default::default(),
                 context_window: 256_000,
                 client_version: None,
                 force_http1: false,
@@ -1001,7 +1166,7 @@ async fn set_session_model_invalidates_byok_memo_for_same_model_id() {
                 .await;
 
             assert!(
-                actor.model_auth_facts.borrow().is_none(),
+                actor.model_auth_memo.borrow().is_none(),
                 "a model switch must invalidate the per-model BYOK memo so the next \
                  reconstruct recomputes under the current config"
             );

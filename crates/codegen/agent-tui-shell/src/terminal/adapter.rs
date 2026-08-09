@@ -1,34 +1,37 @@
-//! AcpTerminalAdapter: implements `agent-tui-tools::TerminalBackend` using ACP gateway calls.
-//!
-//! This adapter enables bash tool execution over ACP (remote execution).
-//! It translates agent-tui-tools' `TerminalBackend` trait into ACP protocol calls:
-//!   `run()` → create_terminal → wait_for_exit → terminal_output → release_terminal
-//!   `run_background()` → create_terminal + spawn exit watcher
-//!   `get_task()` → terminal_output (merged with tracked metadata)
-//!   `kill_task()` → kill_terminal_command (watcher detects exit)
-//!   `wait_for_completion()` → wait_for_terminal_exit with timeout
+//! `AcpTerminalAdapter`: implements `agent-tui-tools::TerminalBackend` over ACP
+//! gateway calls, for bash execution when the terminal is served by the client.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use super::exit_watcher::{poll_for_terminal_exit, release_terminal, watch_for_exit};
+use super::output_recorder::{OutputRecorder, read_log_tail};
 use agent_client_protocol as acp;
 use agent_tui_acp_lib::{AcpAgentGatewaySender as GatewaySender, acp_channel_failure};
 use agent_tui_tools::computer::types::{
-    BackgroundHandle, ComputerError, KillOutcome, TaskSnapshot, TerminalBackend,
+    BackgroundHandle, ComputerError, KillOutcome, TaskKind, TaskSnapshot, TerminalBackend,
     TerminalRunRequest, TerminalRunResult,
 };
-use agent_tui_tools::notification::types::ToolNotificationHandle;
 
-// ── Tracked task state ───────────────────────────────────────────────
+/// A snapshot's per-completion fields, grouped to avoid transposed positional args.
+#[derive(Clone)]
+pub(super) struct SnapshotOutput {
+    pub(super) output: String,
+    pub(super) truncated: bool,
+    pub(super) exit_code: Option<i32>,
+    pub(super) signal: Option<String>,
+}
 
-struct TrackedTask {
+pub(super) struct TrackedTask {
     command: String,
     display_command: Option<String>,
     cwd: String,
     output_file: PathBuf,
     start_time: std::time::SystemTime,
+    /// Stamped once when the task completes, so repeated snapshots agree.
+    end_time: Option<std::time::SystemTime>,
     completed: bool,
     exit_code: Option<i32>,
     signal: Option<String>,
@@ -36,44 +39,63 @@ struct TrackedTask {
     last_truncated: bool,
     block_waited: bool,
     explicitly_killed: bool,
+    kind: TaskKind,
+    owner_session_id: Option<String>,
+    description: Option<String>,
+    output_byte_limit: usize,
+}
+
+/// Hand-written (`SystemTime` has no `Default`); call sites spread from it.
+impl Default for TrackedTask {
+    fn default() -> Self {
+        Self {
+            command: String::new(),
+            display_command: None,
+            cwd: String::new(),
+            output_file: PathBuf::new(),
+            start_time: std::time::SystemTime::now(),
+            end_time: None,
+            completed: false,
+            exit_code: None,
+            signal: None,
+            last_output: String::new(),
+            last_truncated: false,
+            block_waited: false,
+            explicitly_killed: false,
+            kind: TaskKind::Bash,
+            owner_session_id: None,
+            description: None,
+            output_byte_limit: crate::terminal::DEFAULT_OUTPUT_BYTE_LIMIT,
+        }
+    }
 }
 
 impl TrackedTask {
-    fn mark_completed(
-        &mut self,
-        exit_code: Option<i32>,
-        signal: Option<String>,
-        output: String,
-        truncated: bool,
-    ) {
+    pub(super) fn mark_completed(&mut self, out: SnapshotOutput) {
         self.completed = true;
-        self.exit_code = exit_code;
-        self.signal = signal;
-        self.last_output = output;
-        self.last_truncated = truncated;
+        self.end_time = Some(std::time::SystemTime::now());
+        self.exit_code = out.exit_code;
+        self.signal = out.signal;
+        self.last_output = out.output;
+        self.last_truncated = out.truncated;
     }
 
-    fn to_snapshot(
-        &self,
-        task_id: &str,
-        output: String,
-        truncated: bool,
-        exit_code: Option<i32>,
-        signal: Option<String>,
-    ) -> TaskSnapshot {
-        let completed = self.completed || exit_code.is_some();
+    pub(super) fn to_snapshot(&self, task_id: &str, out: SnapshotOutput) -> TaskSnapshot {
+        let completed = self.completed || out.exit_code.is_some() || out.signal.is_some();
         TaskSnapshot {
             task_id: task_id.to_string(),
             command: self.command.clone(),
             display_command: self.display_command.clone(),
             cwd: self.cwd.clone(),
             start_time: self.start_time,
-            end_time: completed.then(std::time::SystemTime::now),
-            output,
+            end_time: self
+                .end_time
+                .or_else(|| completed.then(std::time::SystemTime::now)),
+            output: out.output,
             output_file: self.output_file.clone(),
-            truncated,
-            exit_code,
-            signal,
+            truncated: out.truncated,
+            exit_code: out.exit_code,
+            signal: out.signal,
             completed,
             block_waited: self.block_waited,
             explicitly_killed: self.explicitly_killed,
@@ -85,88 +107,11 @@ impl TrackedTask {
             output_total_bytes: 0,
         }
     }
-
-    let (exit_code, signal, output_text, truncated) = match gateway
-        .send(acp::TerminalOutputRequest::new(
-            session_id.clone(),
-            terminal_id.clone(),
-        ))
-        .await
-    {
-        Ok(o) => {
-            let (code, sig) = parse_exit(&o.exit_status);
-            (code, sig, o.output, o.truncated)
-        }
-        Err(_) => (None, None, String::new(), false),
-    };
-
-    let snapshot = {
-        let mut tasks = tasks.lock().unwrap();
-        let Some(task) = tasks.get_mut(&task_id) else {
-            return;
-        };
-        task.mark_completed(exit_code, signal.clone(), output_text.clone(), truncated);
-        task.to_snapshot(&task_id, output_text, truncated, exit_code, signal)
-    };
-
-    notification_handle.send_task_complete(snapshot);
-
-    let _ = gateway
-        .send(acp::ReleaseTerminalRequest::new(session_id, terminal_id))
-        .await;
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────
-
-/// Poll `TerminalOutputRequest` at 500ms intervals until `exit_status` is
-/// present, a deadline is hit, or 60 consecutive gateway errors occur.
-/// Returns `true` when an exit was detected.
-async fn poll_for_terminal_exit(
-    gateway: &GatewaySender,
-    session_id: &acp::SessionId,
-    terminal_id: &acp::TerminalId,
-    deadline: Option<tokio::time::Instant>,
-) -> bool {
-    let mut consecutive_errors = 0u32;
-    loop {
-        if let Some(dl) = deadline
-            && tokio::time::Instant::now() >= dl
-        {
-            return false;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        match gateway
-            .send(acp::TerminalOutputRequest::new(
-                session_id.clone(),
-                terminal_id.clone(),
-            ))
-            .await
-        {
-            Ok(output) => {
-                consecutive_errors = 0;
-                if output.exit_status.is_some() {
-                    return true;
-                }
-            }
-            Err(e) => {
-                consecutive_errors += 1;
-                if consecutive_errors >= 60 {
-                    tracing::error!(
-                        terminal_id = %terminal_id.0,
-                        error = %e,
-                        "gateway unreachable after 60 consecutive poll failures"
-                    );
-                    return false;
-                }
-            }
-        }
-    }
-}
+pub(super) type TaskMap = Arc<Mutex<HashMap<String, TrackedTask>>>;
 
 fn wrap_command(command: &str) -> Result<String, ComputerError> {
-    // On Windows the ACP client (grok-desktop) spawns with `shell: true`
-    // which delegates to cmd.exe.  Wrapping in /bin/bash would fail because
-    // that path doesn't exist on Windows.  Send the raw command instead.
     #[cfg(not(unix))]
     {
         let _ = command;
@@ -188,14 +133,14 @@ fn to_env(env: HashMap<String, String>) -> Vec<acp::EnvVariable> {
         .collect()
 }
 
-fn parse_exit(status: &Option<acp::TerminalExitStatus>) -> (Option<i32>, Option<String>) {
+pub(super) fn parse_exit(
+    status: &Option<acp::TerminalExitStatus>,
+) -> (Option<i32>, Option<String>) {
     match status {
         Some(e) => (e.exit_code.map(|v| v as i32), e.signal.clone()),
         None => (None, None),
     }
 }
-
-// ── Adapter ──────────────────────────────────────────────────────────
 
 /// Wraps agent-tui-shell's ACP gateway to satisfy agent-tui-tools' TerminalBackend.
 pub struct AcpTerminalAdapter {
@@ -251,7 +196,10 @@ impl TerminalBackend for AcpTerminalAdapter {
         .await
         {
             Ok(Ok(_)) => false,
-            Ok(Err(e)) => return Err(ComputerError::io(e.to_string())),
+            Ok(Err(e)) => {
+                release_terminal(&self.gateway, &self.session_id, &create_res.terminal_id).await;
+                return Err(ComputerError::io(e.to_string()));
+            }
             Err(_) => {
                 let _ = self
                     .gateway
@@ -264,25 +212,33 @@ impl TerminalBackend for AcpTerminalAdapter {
             }
         };
 
-        let output = self
+        let output = match self
             .gateway
             .send(acp::TerminalOutputRequest::new(
                 self.session_id.clone(),
                 create_res.terminal_id.clone(),
             ))
             .await
-            .map_err(|e| ComputerError::io(e.to_string()))?;
+        {
+            Ok(output) => output,
+            Err(e) => {
+                release_terminal(&self.gateway, &self.session_id, &create_res.terminal_id).await;
+                return Err(ComputerError::io(e.to_string()));
+            }
+        };
 
-        let _ = self
-            .gateway
-            .send(acp::ReleaseTerminalRequest::new(
-                self.session_id.clone(),
-                create_res.terminal_id,
-            ))
-            .await;
+        release_terminal(&self.gateway, &self.session_id, &create_res.terminal_id).await;
 
         let (exit_code, signal) = parse_exit(&output.exit_status);
         let total_bytes = output.output.len();
+
+        let mut recorder =
+            OutputRecorder::new(request.output_file.clone(), request.output_byte_limit);
+        recorder.initialize().await;
+        if let Err(e) = recorder.append(&output.output).await {
+            tracing::warn!(error = %e, "output recorder failed to write foreground output");
+        }
+
         Ok(TerminalRunResult {
             combined_output: output.output,
             exit_code,
@@ -291,8 +247,6 @@ impl TerminalBackend for AcpTerminalAdapter {
             timed_out,
             output_file: request.output_file,
             total_bytes,
-            // ACP gateway does not surface a local PID -- the process
-            // runs on the remote side.
             pid: None,
         })
     }
@@ -309,6 +263,7 @@ impl TerminalBackend for AcpTerminalAdapter {
 
         let create_res = self.create_terminal(command.clone(), &request).await?;
         let task_id = create_res.terminal_id.0.to_string();
+        let description = request.description;
 
         {
             let mut tasks = self.tasks.lock().unwrap();
@@ -319,31 +274,29 @@ impl TerminalBackend for AcpTerminalAdapter {
                     display_command,
                     cwd,
                     output_file: output_file.clone(),
-                    start_time: std::time::SystemTime::now(),
-                    completed: false,
-                    exit_code: None,
-                    signal: None,
-                    last_output: String::new(),
-                    last_truncated: false,
-                    block_waited: false,
-                    explicitly_killed: false,
+                    kind: request.kind,
+                    owner_session_id: request.owner_session_id.clone(),
+                    description,
+                    output_byte_limit: request.output_byte_limit,
+                    ..Default::default()
                 },
             );
         }
 
+        let recorder = OutputRecorder::new(output_file.clone(), request.output_byte_limit);
+        recorder.initialize().await;
         tokio::spawn(watch_for_exit(
             self.gateway.clone(),
             self.session_id.clone(),
             task_id.clone(),
             Arc::clone(&self.tasks),
             notification_handle,
+            recorder,
         ));
 
         Ok(BackgroundHandle {
             task_id,
             output_file,
-            // ACP gateway does not surface a local PID -- the process
-            // runs on the remote side.
             pid: None,
         })
     }
@@ -358,50 +311,84 @@ impl TerminalBackend for AcpTerminalAdapter {
             .await
             .ok();
 
-        let tasks = self.tasks.lock().unwrap();
-        let tracked = tasks.get(task_id);
+        // The std Mutex guard cannot be held across the await below, so resolve
+        // under the lock and read the log file after releasing it.
+        enum Resolved {
+            Ready(TaskSnapshot),
+            FromLog {
+                snapshot: TaskSnapshot,
+                output_file: PathBuf,
+                limit: usize,
+            },
+            Missing,
+        }
+        let resolved = {
+            let tasks = self.tasks.lock().unwrap();
+            match (live, tasks.get(task_id)) {
+                (Some(output), Some(tracked)) => {
+                    let (exit_code, signal) = parse_exit(&output.exit_status);
+                    Resolved::Ready(tracked.to_snapshot(
+                        task_id,
+                        SnapshotOutput {
+                            output: output.output,
+                            truncated: output.truncated,
+                            exit_code,
+                            signal,
+                        },
+                    ))
+                }
+                (Some(output), None) => {
+                    let (exit_code, signal) = parse_exit(&output.exit_status);
+                    Resolved::Ready(TrackedTask::default().to_snapshot(
+                        task_id,
+                        SnapshotOutput {
+                            output: output.output,
+                            truncated: output.truncated,
+                            exit_code,
+                            signal,
+                        },
+                    ))
+                }
+                // Live poll failed: a completed task keeps its authoritative
+                // last_output; only a still-running task falls back to the log.
+                (None, Some(tracked)) => {
+                    let snapshot = tracked.to_snapshot(
+                        task_id,
+                        SnapshotOutput {
+                            output: tracked.last_output.clone(),
+                            truncated: tracked.last_truncated,
+                            exit_code: tracked.exit_code,
+                            signal: tracked.signal.clone(),
+                        },
+                    );
+                    if snapshot.completed {
+                        Resolved::Ready(snapshot)
+                    } else {
+                        Resolved::FromLog {
+                            snapshot,
+                            output_file: tracked.output_file.clone(),
+                            limit: tracked.output_byte_limit,
+                        }
+                    }
+                }
+                (None, None) => Resolved::Missing,
+            }
+        };
 
-        match (live, tracked) {
-            (Some(output), Some(tracked)) => {
-                let (exit_code, signal) = parse_exit(&output.exit_status);
-                Some(tracked.to_snapshot(
-                    task_id,
-                    output.output,
-                    output.truncated,
-                    exit_code,
-                    signal,
-                ))
+        match resolved {
+            Resolved::Ready(snapshot) => Some(snapshot),
+            Resolved::Missing => None,
+            Resolved::FromLog {
+                mut snapshot,
+                output_file,
+                limit,
+            } => {
+                if let Some(tail) = read_log_tail(&output_file, limit).await {
+                    snapshot.output = tail.text;
+                    snapshot.truncated = tail.truncated;
+                }
+                Some(snapshot)
             }
-            (Some(output), None) => {
-                let (exit_code, signal) = parse_exit(&output.exit_status);
-                let completed = exit_code.is_some();
-                Some(TaskSnapshot {
-                    task_id: task_id.to_string(),
-                    command: String::new(),
-                    display_command: None,
-                    cwd: String::new(),
-                    start_time: std::time::SystemTime::now(),
-                    end_time: completed.then(std::time::SystemTime::now),
-                    output: output.output,
-                    output_file: PathBuf::new(),
-                    truncated: output.truncated,
-                    exit_code,
-                    signal,
-                    completed,
-                    kind: agent_tui_tools::computer::types::TaskKind::Bash,
-                    block_waited: false,
-                    explicitly_killed: false,
-                    owner_session_id: None,
-                })
-            }
-            (None, Some(tracked)) if tracked.completed => Some(tracked.to_snapshot(
-                task_id,
-                tracked.last_output.clone(),
-                tracked.last_truncated,
-                tracked.exit_code,
-                tracked.signal.clone(),
-            )),
-            _ => None,
         }
     }
 
@@ -511,9 +498,6 @@ impl TerminalBackend for AcpTerminalAdapter {
             }
             Err(_) => {
                 tracing::debug!(task_id, "timeout waiting for terminal exit");
-                // The block timed out: the agent did not receive the
-                // completion result, so auto-wake should still fire
-                // when the task eventually completes.
                 let mut tasks = self.tasks.lock().unwrap();
                 if let Some(task) = tasks.get_mut(task_id) {
                     task.block_waited = false;

@@ -81,7 +81,7 @@ fn plugin_cta_catalog_keeps_official_not_installed_only() {
             agent_tui_hooks_plugins_types::MarketplaceScanResult {
                 source_name: "Custom Mirror".into(),
                 source_kind: "git".into(),
-                source_url_or_path: "git@github.com:xai-org/plugin-marketplace.git".into(),
+                source_url_or_path: "git@github.com:agent-tui-org/plugin-marketplace.git".into(),
                 plugins: vec![cta_entry("url-official", "not_installed")],
                 error: None,
             },

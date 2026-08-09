@@ -4,7 +4,7 @@
 //! This creates new session files but does not start the session.
 
 use crate::remote::BackendClient;
-const FORK_LOG: &str = "xai_fork";
+const FORK_LOG: &str = "agent_tui_fork";
 use crate::session::export::ExportedMetadata;
 use crate::session::info::Info;
 use crate::session::storage::{CopySessionOptions, JsonlStorageAdapter};

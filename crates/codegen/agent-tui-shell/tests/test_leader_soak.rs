@@ -26,47 +26,13 @@ use agent_tui_shell::leader::{
     ClientCapabilities, ClientMode, LeaderClient, LeaderServerControlState, LeaderServerMetadata,
     run_leader_server,
 };
+use agent_tui_test_support::resources::ResourceSnapshot;
 
 fn env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key)
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
-}
-
-/// Resident set size of THIS process (leader server + agent are in-process).
-/// Copied from `agent-tui-codebase-graph/tests/memory_integration.rs`.
-fn rss_bytes() -> Option<usize> {
-    #[cfg(target_os = "linux")]
-    {
-        let status = std::fs::read_to_string("/proc/self/status").ok()?;
-        for line in status.lines() {
-            if let Some(val) = line.strip_prefix("VmRSS:") {
-                let kb: usize = val.trim().trim_end_matches(" kB").trim().parse().ok()?;
-                return Some(kb * 1024);
-            }
-        }
-        None
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        use std::process::Command;
-        let output = Command::new("ps")
-            .args(["-o", "rss=", "-p", &std::process::id().to_string()])
-            .output()
-            .ok()?;
-        let kb: usize = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .parse()
-            .ok()?;
-        Some(kb * 1024)
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        None
-    }
 }
 
 /// `leader.response.send_failed` entries written by THIS process.

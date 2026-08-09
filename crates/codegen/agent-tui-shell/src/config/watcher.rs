@@ -711,8 +711,19 @@ impl SkillsFileWatcher {
         let mut debouncer =
             new_filtered_debouncer(SKILLS_DEBOUNCE, move |res: DebounceEventResult| {
                 let Ok(events) = res else { return };
-                if events.iter().any(|e| is_skill_change_path(&e.path)) {
-                    let _ = tx.send(());
+                let mut change = None;
+                for next in events
+                    .iter()
+                    .filter_map(|event| discovery_change_for_path(&event.path))
+                {
+                    if next == DiscoveryChange::Skills {
+                        change = Some(next);
+                        break;
+                    }
+                    change = Some(next);
+                }
+                if let Some(change) = change {
+                    let _ = tx.send(change);
                 }
             })
             .map_err(|e| tracing::warn!(error = %e, "failed to create skills file watcher"))
@@ -1178,7 +1189,6 @@ mod tests {
         fs::create_dir_all(&alpha).unwrap();
         fs::write(alpha.join("SKILL.md"), "# alpha").unwrap();
 
-        // A SKILL.md buried in a worktree checkout under the (unwatched) root.
         let wt_skill = global
             .join("worktrees")
             .join("wt1")
@@ -1193,7 +1203,10 @@ mod tests {
             Duration::from_millis(50),
             move |res: DebounceEventResult| {
                 let Ok(events) = res else { return };
-                if events.iter().any(|e| is_skill_change_path(&e.path)) {
+                if events
+                    .iter()
+                    .any(|event| discovery_change_for_path(&event.path).is_some())
+                {
                     let _ = tx.send(());
                 }
             },

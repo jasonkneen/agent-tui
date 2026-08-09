@@ -95,25 +95,15 @@ fn config_login_device_flow(effective: Option<&toml::Value>) -> Option<bool> {
 /// Returns the deciding tier so the caller can log which one chose the transport.
 fn resolve_device_flow(
     login_override: LoginTransportOverride,
-    env: Option<bool>,
     config: Option<bool>,
     remote: Option<bool>,
 ) -> crate::agent::config::Resolved<bool> {
-    use crate::agent::config::{ConfigSource, Resolved};
-
-    if let Some(value) = login_override.as_cli_bool() {
-        return Resolved::new(value, ConfigSource::Cli);
-    }
-    if let Some(value) = env {
-        return Resolved::new(value, ConfigSource::Env);
-    }
-    if let Some(value) = config {
-        return Resolved::new(value, ConfigSource::Config);
-    }
-    if let Some(value) = remote {
-        return Resolved::new(value, ConfigSource::Remote);
-    }
-    Resolved::new(false, ConfigSource::Default)
+    crate::agent::config::BoolFlag::env("GROK_LOGIN_DEVICE_FLOW")
+        .cli(login_override.as_cli_bool())
+        .config(config)
+        .feature_flag(remote)
+        .default(false)
+        .resolve()
 }
 
 /// Whether `run_cli_login` should use the device flow for `config`: only the
@@ -138,9 +128,9 @@ async fn should_use_device_flow(login_override: LoginTransportOverride) -> bool 
     }
     let resolved = if login_override.as_cli_bool().is_some() {
         // CLI flag wins outright, so skip the config load and the remote settings fetch.
-        resolve_device_flow(login_override, None, None, None)
+        resolve_device_flow(login_override, None, None)
     } else {
-        // Read once to gate the fetch and use the same snapshot for the decision.
+        // Read once to gate the fetch; resolve_device_flow reads it again for the decision.
         let env = crate::agent::config::env_bool("GROK_LOGIN_DEVICE_FLOW");
         // One config snapshot feeds both the `[auth]` tier and the proxy URL.
         let effective = crate::config::load_effective_config().ok();
@@ -164,7 +154,7 @@ async fn should_use_device_flow(login_override: LoginTransportOverride) -> bool 
         } else {
             None
         };
-        resolve_device_flow(login_override, env, config, remote)
+        resolve_device_flow(login_override, config, remote)
     };
     tracing::info!(
         transport = if resolved.value { "device" } else { "loopback" },
@@ -757,12 +747,23 @@ async fn run_auth_flow_steps(
 ///
 /// Returns `None` when no valid credentials can be obtained non-interactively.
 pub async fn try_ensure_fresh_auth(grok_com_config: &GrokComConfig) -> Option<GrokAuth> {
-    let grok_home = grok_home::grok_home();
-    let auth_manager = std::sync::Arc::new(AuthManager::new(&grok_home, grok_com_config.clone()));
+    try_ensure_fresh_auth_with(&build_startup_auth_manager(grok_com_config)).await
+}
 
-    // auth() handles cached-valid (fast path), OIDC refresh, external
-    // binary -- all through refresh_chain (single mutation point).
+/// Builds and configures the startup `AuthManager`; the policy helpers below
+/// take it injected so tests can substitute their own.
+fn build_startup_auth_manager(grok_com_config: &GrokComConfig) -> Arc<AuthManager> {
+    let auth_manager = Arc::new(AuthManager::new(
+        &grok_home::grok_home(),
+        grok_com_config.clone(),
+    ));
+    // auth()'s OIDC/external refresh needs the refresher configured first.
     auth_manager.configure_refresher(grok_com_config.auth_provider_command.clone(), None);
+    auth_manager
+}
+
+/// Policy: cached-valid creds, else silent refresh (no interactive login).
+async fn try_ensure_fresh_auth_with(auth_manager: &Arc<AuthManager>) -> Option<GrokAuth> {
     match auth_manager.auth().await {
         Ok(auth) => Some(auth),
         Err(e) => {
@@ -772,25 +773,37 @@ pub async fn try_ensure_fresh_auth(grok_com_config: &GrokComConfig) -> Option<Gr
     }
 }
 
-/// Like `try_ensure_fresh_auth` but also mints on cold start (external provider /
-/// devbox, never a browser; may take up to ~300s). For detached modes only.
-pub(crate) async fn try_ensure_session_noninteractive(
+/// Readiness-path auth: a bounded refresh plus the expired-but-refreshable
+/// cached session, but no cold mint (which can run a provider command up to
+/// `STARTUP_AUTH_TIMEOUT`). Minting is deferred to the post-readiness
+/// background task, so readiness waits at most `STARTUP_AUTH_REFRESH_TIMEOUT`.
+pub(crate) async fn try_noninteractive_auth_no_mint(
     grok_com_config: &GrokComConfig,
 ) -> Option<GrokAuth> {
-    if let Some(auth) = try_ensure_fresh_auth(grok_com_config).await {
-        return Some(auth);
-    }
-    let grok_home = grok_home::grok_home();
-    let auth_manager = Arc::new(AuthManager::new(&grok_home, grok_com_config.clone()));
+    try_noninteractive_auth_no_mint_with(&build_startup_auth_manager(grok_com_config)).await
+}
 
-    // A refresh failure leaves the session on disk (credentials are retained;
-    // the verdict gates re-attempts). Return it so consumers self-recover on
-    // 401, rather than disabling the relay for the leader's lifetime.
-    if let Some(expired) = expired_refreshable_session(&auth_manager) {
-        return Some(expired);
+/// Policy behind [`try_noninteractive_auth_no_mint`], with the `AuthManager`
+/// injected for tests.
+async fn try_noninteractive_auth_no_mint_with(auth_manager: &Arc<AuthManager>) -> Option<GrokAuth> {
+    match tokio::time::timeout(
+        crate::http::STARTUP_AUTH_REFRESH_TIMEOUT,
+        try_ensure_fresh_auth_with(auth_manager),
+    )
+    .await
+    {
+        Ok(Some(auth)) => return Some(auth),
+        Ok(None) => {}
+        Err(_elapsed) => {
+            tracing::warn!(
+                timeout_secs = crate::http::STARTUP_AUTH_REFRESH_TIMEOUT.as_secs(),
+                "boot auth refresh timed out; using cached/expired session (mint deferred to background)"
+            );
+        }
     }
-
-    mint_session_noninteractive(&auth_manager, grok_com_config).await
+    // Expired-but-refreshable cached session self-heals on the first 401; no
+    // cold mint on the readiness path.
+    expired_refreshable_session(auth_manager)
 }
 
 /// A cached, refreshable session (not BYOK/ApiKey). Reached only after fresh
@@ -802,11 +815,14 @@ fn expired_refreshable_session(auth_manager: &AuthManager) -> Option<GrokAuth> {
 }
 
 /// Cold-start mint via non-interactive providers (external command, devbox);
-/// `None` when none is available.
-async fn mint_session_noninteractive(
+/// `None` when none is available. Persists the result into `auth_manager` (disk
+/// and in-memory) so per-request `auth()` self-heals. Carries no timeout of its
+/// own: the readiness-path caller imposes `STARTUP_AUTH_TIMEOUT`, while the
+/// leader's background re-mint runs uncapped (only the provider's ~300s ceiling).
+pub(crate) async fn mint_session_noninteractive(
     auth_manager: &Arc<AuthManager>,
-    grok_com_config: &GrokComConfig,
 ) -> Option<GrokAuth> {
+    let grok_com_config = auth_manager.grok_com_config();
     // preferred_method=api_key: never auto-mint OIDC (fail-closed).
     if grok_com_config.blocks_automatic_oidc() {
         tracing::debug!(
@@ -1162,6 +1178,7 @@ mod tests {
     use super::*;
     use crate::auth::AuthMode;
     use crate::auth::config::XAI_OAUTH2_ISSUER;
+    use crate::env::EnvVarGuard;
     use chrono::Utc;
 
     /// `os_error` and the reqwest classification are covered in
@@ -1247,6 +1264,28 @@ mod tests {
         // recover on 401 (the gate `for_session` doesn't check this).
         mgr.hot_swap(oidc_session("no-rt", None));
         assert!(expired_refreshable_session(&mgr).is_none());
+
+        // An expired first-party *external* credential with a refresh token
+        // is likewise recoverable — 401 recovery re-runs the provider binary
+        // (the refresh token is a recoverability marker, not a grant input).
+        mgr.hot_swap(GrokAuth {
+            auth_mode: AuthMode::External,
+            expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
+            ..oidc_session("expired-external", Some("rt"))
+        });
+        assert_eq!(
+            expired_refreshable_session(&mgr).map(|a| a.key),
+            Some("expired-external".to_string())
+        );
+
+        // Third-party external (no x.ai issuer) stays excluded.
+        mgr.hot_swap(GrokAuth {
+            oidc_issuer: None,
+            auth_mode: AuthMode::External,
+            expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
+            ..oidc_session("expired-external-3p", Some("rt"))
+        });
+        assert!(expired_refreshable_session(&mgr).is_none());
     }
 
     #[cfg(unix)]
@@ -1291,15 +1330,15 @@ mod tests {
     async fn mint_session_noninteractive_uses_external_provider() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = GrokComConfig {
-            auth_provider_command: Some("printf '%s' xai-ext-token".to_string()),
+            auth_provider_command: Some("printf '%s' agent-tui-ext-token".to_string()),
             ..GrokComConfig::default()
         };
         let mgr = Arc::new(
             AuthManager::new(dir.path(), cfg.clone()).with_proxy_base_url(&dead_proxy_url()),
         );
 
-        let auth = mint_session_noninteractive(&mgr, &cfg).await;
-        assert_eq!(auth.map(|a| a.key), Some("xai-ext-token".to_string()));
+        let auth = mint_session_noninteractive(&mgr).await;
+        assert_eq!(auth.map(|a| a.key), Some("agent-tui-ext-token".to_string()));
     }
 
     #[tokio::test]
@@ -1453,7 +1492,7 @@ mod tests {
         // pick up the provider instead of starting an interactive device login.
         let dir = tempfile::tempdir().unwrap();
         let cfg = GrokComConfig {
-            auth_provider_command: Some("printf '%s' xai-ext-token".to_string()),
+            auth_provider_command: Some("printf '%s' agent-tui-ext-token".to_string()),
             // oauth2=Some, oidc=None → the device flow is available (opt-in).
             ..GrokComConfig::default()
         };
@@ -1475,7 +1514,7 @@ mod tests {
         .await
         .expect("external provider should satisfy login without device flow");
         assert_eq!(
-            auth.key, "xai-ext-token",
+            auth.key, "agent-tui-ext-token",
             "external provider token must win"
         );
         assert!(did_auth);
@@ -1508,28 +1547,37 @@ mod tests {
     #[tokio::test]
     async fn preresolved_bypasses_resolver_and_is_never_cli() {
         // Regression for the double-log / source=cli bug: the inner flow must
-        // honor `Preresolved` WITHOUT re-running the resolver.
-        assert!(
-            should_use_device_flow(LoginTransportOverride::Preresolved(true)).await,
-            "Preresolved(true) honors device without re-resolving"
-        );
-        assert!(
-            !should_use_device_flow(LoginTransportOverride::Preresolved(false)).await,
-            "Preresolved(false) honors loopback without re-resolving"
-        );
+        // honor `Preresolved` WITHOUT re-running the resolver. Each case pins the
+        // opposite env value, so a leak into the resolver would flip the result —
+        // returning the carried value proves the early return (and no second log).
+        {
+            let _guard = EnvVarGuard::set("GROK_LOGIN_DEVICE_FLOW", "false");
+            assert!(
+                should_use_device_flow(LoginTransportOverride::Preresolved(true)).await,
+                "Preresolved(true) honors device without re-resolving"
+            );
+        }
+        {
+            let _guard = EnvVarGuard::set("GROK_LOGIN_DEVICE_FLOW", "true");
+            assert!(
+                !should_use_device_flow(LoginTransportOverride::Preresolved(false)).await,
+                "Preresolved(false) honors loopback without re-resolving"
+            );
+            assert!(
+                should_use_device_flow(LoginTransportOverride::None).await,
+                "the resolver path still honors env (sole resolution)"
+            );
+        }
         // Even if it reached the resolver it carries no CLI value, so a remote
         // decision is the remote tier, never cli.
-        assert_eq!(
-            resolve_device_flow(
-                LoginTransportOverride::Preresolved(true),
-                None,
-                None,
-                Some(true),
-            )
-            .source,
-            crate::agent::config::ConfigSource::Remote,
-            "Preresolved must never resolve as the cli tier"
-        );
+        with_device_flow_env(None, || {
+            assert_eq!(
+                resolve_device_flow(LoginTransportOverride::Preresolved(true), None, Some(true))
+                    .source,
+                crate::agent::config::ConfigSource::Remote,
+                "Preresolved must never resolve as the cli tier"
+            );
+        });
     }
 
     #[test]
@@ -1582,126 +1630,138 @@ mod tests {
     #[test]
     fn device_flow_precedence_cli_beats_env_config_remote() {
         // CLI flag wins over a *conflicting* env + config + remote feature flag.
-        assert!(
-            !resolve_device_flow(
-                LoginTransportOverride::ForceLoopback,
-                Some(true),
-                Some(true),
-                Some(true),
-            )
-            .value,
-            "--oauth must force loopback even when env+config+remote say device"
-        );
-        assert!(
-            resolve_device_flow(
-                LoginTransportOverride::ForceDevice,
-                Some(false),
-                Some(false),
-                Some(false),
-            )
-            .value,
-            "--device-auth must force device even when env+config+remote say loopback"
-        );
+        with_device_flow_env(Some(true), || {
+            assert!(
+                !resolve_device_flow(
+                    LoginTransportOverride::ForceLoopback,
+                    Some(true),
+                    Some(true)
+                )
+                .value,
+                "--oauth must force loopback even when env+config+remote say device"
+            );
+        });
+        with_device_flow_env(Some(false), || {
+            assert!(
+                resolve_device_flow(
+                    LoginTransportOverride::ForceDevice,
+                    Some(false),
+                    Some(false)
+                )
+                .value,
+                "--device-auth must force device even when env+config+remote say loopback"
+            );
+        });
     }
 
     #[test]
     fn device_flow_precedence_env_beats_config() {
         // No CLI flag: env wins over a conflicting config.
-        assert!(
-            !resolve_device_flow(LoginTransportOverride::None, Some(false), Some(true), None).value
-        );
-        assert!(
-            resolve_device_flow(LoginTransportOverride::None, Some(true), Some(false), None).value
-        );
+        with_device_flow_env(Some(false), || {
+            assert!(!resolve_device_flow(LoginTransportOverride::None, Some(true), None).value);
+        });
+        with_device_flow_env(Some(true), || {
+            assert!(resolve_device_flow(LoginTransportOverride::None, Some(false), None).value);
+        });
     }
 
     #[test]
     fn device_flow_env_beats_remote() {
         // env sits above the remote feature flag.
-        assert!(
-            !resolve_device_flow(LoginTransportOverride::None, Some(false), None, Some(true)).value,
-            "env=loopback must win over remote=device"
-        );
-        assert!(
-            resolve_device_flow(LoginTransportOverride::None, Some(true), None, Some(false)).value,
-            "env=device must win over remote=loopback"
-        );
+        with_device_flow_env(Some(false), || {
+            assert!(
+                !resolve_device_flow(LoginTransportOverride::None, None, Some(true)).value,
+                "env=loopback must win over remote=device"
+            );
+        });
+        with_device_flow_env(Some(true), || {
+            assert!(
+                resolve_device_flow(LoginTransportOverride::None, None, Some(false)).value,
+                "env=device must win over remote=loopback"
+            );
+        });
     }
 
     #[test]
     fn device_flow_config_beats_remote() {
         // Local config sits above the remote feature flag (env unset so config decides).
-        assert!(
-            !resolve_device_flow(LoginTransportOverride::None, None, Some(false), Some(true)).value,
-            "config=loopback must win over remote=device"
-        );
-        assert!(
-            resolve_device_flow(LoginTransportOverride::None, None, Some(true), Some(false)).value,
-            "config=device must win over remote=loopback"
-        );
+        with_device_flow_env(None, || {
+            assert!(
+                !resolve_device_flow(LoginTransportOverride::None, Some(false), Some(true)).value,
+                "config=loopback must win over remote=device"
+            );
+            assert!(
+                resolve_device_flow(LoginTransportOverride::None, Some(true), Some(false)).value,
+                "config=device must win over remote=loopback"
+            );
+        });
     }
 
     #[test]
     fn device_flow_precedence_config_then_default() {
         // No CLI flag, no env: config decides; absent everything → loopback.
-        assert!(!resolve_device_flow(LoginTransportOverride::None, None, Some(false), None).value);
-        assert!(resolve_device_flow(LoginTransportOverride::None, None, Some(true), None).value);
-        assert!(
-            !resolve_device_flow(LoginTransportOverride::None, None, None, None).value,
-            "default is loopback"
-        );
+        with_device_flow_env(None, || {
+            assert!(!resolve_device_flow(LoginTransportOverride::None, Some(false), None).value);
+            assert!(resolve_device_flow(LoginTransportOverride::None, Some(true), None).value);
+            assert!(
+                !resolve_device_flow(LoginTransportOverride::None, None, None).value,
+                "default is loopback"
+            );
+        });
     }
 
     #[test]
     fn device_flow_remote_then_default() {
         // No CLI flag, no env, no config: the remote feature flag drives the rollout.
-        assert!(
-            resolve_device_flow(LoginTransportOverride::None, None, None, Some(true)).value,
-            "remote=device rolls device-auth in when nothing local is set"
-        );
-        assert!(
-            !resolve_device_flow(LoginTransportOverride::None, None, None, Some(false)).value,
-            "remote=loopback keeps loopback when nothing local is set"
-        );
-        // remote settings unavailable / flag unset → None → hardcoded loopback default.
-        assert!(
-            !resolve_device_flow(LoginTransportOverride::None, None, None, None).value,
-            "remote settings unavailable falls back to the loopback default"
-        );
+        with_device_flow_env(None, || {
+            assert!(
+                resolve_device_flow(LoginTransportOverride::None, None, Some(true)).value,
+                "remote=device rolls device-auth in when nothing local is set"
+            );
+            assert!(
+                !resolve_device_flow(LoginTransportOverride::None, None, Some(false)).value,
+                "remote=loopback keeps loopback when nothing local is set"
+            );
+            // remote settings unavailable / flag unset → None → hardcoded loopback default.
+            assert!(
+                !resolve_device_flow(LoginTransportOverride::None, None, None).value,
+                "remote settings unavailable falls back to the loopback default"
+            );
+        });
     }
 
     #[test]
     fn device_flow_records_deciding_tier() {
         // The resolver records which tier decided, so the rollout ramp can log it.
         use crate::agent::config::ConfigSource;
-        assert_eq!(
-            resolve_device_flow(
-                LoginTransportOverride::ForceDevice,
-                Some(false),
-                Some(false),
-                None,
-            )
-            .source,
-            ConfigSource::Cli,
-            "an explicit CLI flag is reported as the cli tier"
-        );
-        assert_eq!(
-            resolve_device_flow(LoginTransportOverride::None, Some(true), None, Some(false)).source,
-            ConfigSource::Env
-        );
-        assert_eq!(
-            resolve_device_flow(LoginTransportOverride::None, None, Some(true), Some(false)).source,
-            ConfigSource::Config
-        );
-        assert_eq!(
-            resolve_device_flow(LoginTransportOverride::None, None, None, Some(true)).source,
-            ConfigSource::Remote,
-            "the remote feature flag is reported as the remote tier"
-        );
-        assert_eq!(
-            resolve_device_flow(LoginTransportOverride::None, None, None, None).source,
-            ConfigSource::Default
-        );
+        with_device_flow_env(Some(false), || {
+            assert_eq!(
+                resolve_device_flow(LoginTransportOverride::ForceDevice, Some(false), None).source,
+                ConfigSource::Cli,
+                "an explicit CLI flag is reported as the cli tier"
+            );
+        });
+        with_device_flow_env(Some(true), || {
+            assert_eq!(
+                resolve_device_flow(LoginTransportOverride::None, None, Some(false)).source,
+                ConfigSource::Env
+            );
+        });
+        with_device_flow_env(None, || {
+            assert_eq!(
+                resolve_device_flow(LoginTransportOverride::None, Some(true), Some(false)).source,
+                ConfigSource::Config
+            );
+            assert_eq!(
+                resolve_device_flow(LoginTransportOverride::None, None, Some(true)).source,
+                ConfigSource::Remote,
+                "the remote feature flag is reported as the remote tier"
+            );
+            assert_eq!(
+                resolve_device_flow(LoginTransportOverride::None, None, None).source,
+                ConfigSource::Default
+            );
+        });
     }
 
     fn legacy_auth() -> GrokAuth {
@@ -1752,6 +1812,33 @@ mod tests {
         let cfg = GrokComConfig::default();
         assert!(is_cached_credential_compatible(
             &oidc_auth(XAI_OAUTH2_ISSUER),
+            &cfg,
+        ));
+    }
+
+    #[test]
+    fn external_cred_compatibility_follows_issuer() {
+        let cfg = GrokComConfig::default();
+
+        // A first-party external credential (provider emitted the issuer) is
+        // reused by interactive login like an OIDC session instead of
+        // re-running the provider.
+        assert!(is_cached_credential_compatible(
+            &GrokAuth {
+                auth_mode: AuthMode::External,
+                ..oidc_auth(XAI_OAUTH2_ISSUER)
+            },
+            &cfg,
+        ));
+
+        // Without an issuer (bare-token providers), external credentials stay
+        // incompatible and interactive login starts fresh, as before.
+        assert!(!is_cached_credential_compatible(
+            &GrokAuth {
+                auth_mode: AuthMode::External,
+                oidc_issuer: None,
+                ..legacy_auth()
+            },
             &cfg,
         ));
     }
@@ -2103,5 +2190,77 @@ mod tests {
             !auth_path.exists(),
             "wrong-team auth.json must be cleared, forcing a compliant re-login"
         );
+    }
+
+    /// Mock OIDC IdP whose `/token` endpoint never responds, so a refresh
+    /// attempt hangs until the caller bounds it.
+    async fn start_hanging_oidc_idp() -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let b = base.clone();
+        let app = axum::Router::new()
+            .route(
+                "/.well-known/openid-configuration",
+                axum::routing::get(move || {
+                    let b = b.clone();
+                    async move {
+                        axum::Json(serde_json::json!({
+                            "authorization_endpoint": format!("{b}/authorize"),
+                            "token_endpoint": format!("{b}/token"),
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/token",
+                axum::routing::post(|| async {
+                    // Never responds: the caller must bound the refresh.
+                    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                    axum::Json(serde_json::json!({}))
+                }),
+            );
+        let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (base, handle)
+    }
+
+    /// The readiness-path `_no_mint` variant bounds the refresh (~5s) and never
+    /// engages the cold-mint fallback, so leader readiness can't block on a
+    /// provider command up to the 60s `STARTUP_AUTH_TIMEOUT` cap.
+    #[tokio::test]
+    async fn no_mint_readiness_auth_is_bounded() {
+        let (idp_base, server) = start_hanging_oidc_idp().await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = GrokComConfig::default();
+        let am = Arc::new(AuthManager::new(dir.path(), cfg.clone()));
+        am.configure_refresher(cfg.auth_provider_command.clone(), None);
+        am.hot_swap(GrokAuth {
+            key: "expired".into(),
+            auth_mode: AuthMode::Oidc,
+            oidc_issuer: Some(idp_base.clone()),
+            oidc_client_id: Some("test-client".into()),
+            refresh_token: Some("rt".into()),
+            expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
+            ..GrokAuth::test_default()
+        });
+
+        let started = std::time::Instant::now();
+        let result = try_noninteractive_auth_no_mint_with(&am).await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed >= crate::http::STARTUP_AUTH_REFRESH_TIMEOUT,
+            "expected a bounded refresh attempt (elapsed {elapsed:?})"
+        );
+        assert!(
+            elapsed < crate::http::STARTUP_AUTH_TIMEOUT,
+            "no-mint readiness auth must not engage the 60s cold-mint cap              (elapsed {elapsed:?}); readiness would block on a provider command"
+        );
+        assert!(
+            result.is_none(),
+            "a non-xAI expired session is no first-party fallback and no mint              runs on this path, so no auth is produced"
+        );
+
+        server.abort();
     }
 }

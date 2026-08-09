@@ -12,6 +12,7 @@ pub mod error;
 pub mod messages;
 pub mod provider_error;
 pub mod serde_helpers;
+pub mod tool_overrides;
 pub mod types;
 
 pub use self::conversation::*;

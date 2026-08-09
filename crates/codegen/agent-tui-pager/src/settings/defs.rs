@@ -70,46 +70,6 @@ const THEME_CHOICES: &[EnumChoice] = &[
         display: "Oscura Midnight",
         description: "Deep dark with warm accents; needs truecolor.",
     },
-    EnumChoice {
-        canonical: "opencode",
-        display: "OpenCode",
-        description: "Warm orange primary on near-black; needs truecolor.",
-    },
-    EnumChoice {
-        canonical: "vercel",
-        display: "Vercel",
-        description: "Geist monochrome with blue accents; needs truecolor.",
-    },
-    EnumChoice {
-        canonical: "copilot",
-        display: "Copilot",
-        description: "GitHub Dark with Copilot purple; needs truecolor.",
-    },
-    EnumChoice {
-        canonical: "nerv",
-        display: "NERV",
-        description: "Evangelion Unit-01 purple/green; needs truecolor.",
-    },
-    EnumChoice {
-        canonical: "catppuccin",
-        display: "Catppuccin",
-        description: "Catppuccin Mocha pastel dark; needs truecolor.",
-    },
-    EnumChoice {
-        canonical: "nord",
-        display: "Nord",
-        description: "Arctic north-bluish palette; needs truecolor.",
-    },
-    EnumChoice {
-        canonical: "gruvbox",
-        display: "Gruvbox",
-        description: "Warm retro groove dark; needs truecolor.",
-    },
-    EnumChoice {
-        canonical: "dracula",
-        display: "Dracula",
-        description: "Classic Dracula purple/pink; needs truecolor.",
-    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -342,6 +302,19 @@ const HUNK_TRACKER_MODE_CHOICES: &[EnumChoice] = &[
     },
 ];
 
+const SCREEN_MODE_CHOICES: &[EnumChoice] = &[
+    EnumChoice {
+        canonical: "fullscreen",
+        display: "Fullscreen",
+        description: "Open plain grok in the standard fullscreen TUI. Default when unset.",
+    },
+    EnumChoice {
+        canonical: "minimal",
+        display: "Minimal",
+        description: "Open plain grok in scrollback-native (minimal) mode.",
+    },
+];
+
 // Voice-capture-mode catalog. SHELL-owned, persisted to `[ui].voice_capture_mode`.
 // `hold` is gated on `kitty_releases_reported`; `effective_enum_choices` hides it
 // elsewhere, and it falls back to `toggle` at runtime. "Kitty-protocol terminal"
@@ -529,46 +502,6 @@ const CONCRETE_THEME_CHOICES: &[EnumChoice] = &[
         display: "Oscura Midnight",
         description: "Deep dark with warm accents; needs truecolor.",
     },
-    EnumChoice {
-        canonical: "opencode",
-        display: "OpenCode",
-        description: "Warm orange primary on near-black; needs truecolor.",
-    },
-    EnumChoice {
-        canonical: "vercel",
-        display: "Vercel",
-        description: "Geist monochrome with blue accents; needs truecolor.",
-    },
-    EnumChoice {
-        canonical: "copilot",
-        display: "Copilot",
-        description: "GitHub Dark with Copilot purple; needs truecolor.",
-    },
-    EnumChoice {
-        canonical: "nerv",
-        display: "NERV",
-        description: "Evangelion Unit-01 purple/green; needs truecolor.",
-    },
-    EnumChoice {
-        canonical: "catppuccin",
-        display: "Catppuccin",
-        description: "Catppuccin Mocha pastel dark; needs truecolor.",
-    },
-    EnumChoice {
-        canonical: "nord",
-        display: "Nord",
-        description: "Arctic north-bluish palette; needs truecolor.",
-    },
-    EnumChoice {
-        canonical: "gruvbox",
-        display: "Gruvbox",
-        description: "Warm retro groove dark; needs truecolor.",
-    },
-    EnumChoice {
-        canonical: "dracula",
-        display: "Dracula",
-        description: "Classic Dracula purple/pink; needs truecolor.",
-    },
 ];
 
 /// Child settings shown inside the "Show contextual hints" group sub-sheet.
@@ -583,6 +516,7 @@ const CONTEXTUAL_HINTS_CHILDREN: &[&str] = &[
     "contextual_hints.send_now",
     "contextual_hints.small_screen",
     "contextual_hints.word_select",
+    "contextual_hints.ssh_wrap",
 ];
 
 /// Build the catalog. Called once at process start via
@@ -606,6 +540,34 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 default: ui_default.compact_mode,
             },
             restart_required: false,
+            hidden_in_minimal: false,
+        },
+        SettingMeta {
+            key: "screen_mode",
+            category: SettingCategory::Appearance,
+            owner: SettingOwner::Shell,
+            label: "Default screen mode",
+            description: "How plain grok opens next time: Fullscreen (default when unset) or \
+                          Minimal. Writes [ui] screen_mode in config.toml. Restart required. \
+                          Switch this session only with /minimal or /fullscreen.",
+            keywords: &[
+                "screen",
+                "mode",
+                "minimal",
+                "fullscreen",
+                "full",
+                "scrollback",
+                "native",
+                "alt-screen",
+                "render",
+                "default",
+            ],
+            kind: SettingKind::Enum {
+                default: "fullscreen",
+                choices: SCREEN_MODE_CHOICES,
+                supports_preview: false,
+            },
+            restart_required: true,
             hidden_in_minimal: false,
         },
         SettingMeta {
@@ -1032,8 +994,9 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Appearance,
             owner: SettingOwner::Shell,
             label: "Collapsed edit blocks",
-            description: "Show edits as one-line +N/-M diffstat summaries; expand a row to \
-                          see the diff.",
+            description: "Show edits as one-line +N/-M diffstat summaries and merge \
+                          back-to-back edits to the same file into one block; expand a \
+                          row to see the diffs.",
             keywords: &[
                 "edit",
                 "edits",
@@ -1044,6 +1007,8 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "summary",
                 "expand",
                 "one-line",
+                "merge",
+                "coalesce",
             ],
             kind: SettingKind::Bool {
                 default: ui_default.collapsed_edit_blocks.unwrap_or(false),
@@ -1192,8 +1157,11 @@ pub fn default_settings() -> Vec<SettingMeta> {
         },
         // SHELL-owned. Persisted in auth metadata (not config.toml).
         // Reads from `PagerLocalSnapshot.coding_data_sharing_opt_out`.
-        // Default "opt-in" matches `AuthEntry::coding_data_retention_opt_out = false`.
+        // Default "opt-out" matches `AuthEntry::coding_data_retention_opt_out = true`
+        // (safer consumer default; server enrichment may still opt the user in).
         // ZDR / non-admin guards are enforced at dispatch time.
+        // Do not put "telemetry" in keywords — that word is the config-file
+        // analytics toggle (Monitoring / Configuration docs).
         SettingMeta {
             key: "coding_data_sharing",
             category: SettingCategory::Privacy,
@@ -1209,13 +1177,12 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "sharing",
                 "coding",
                 "retention",
-                "telemetry",
                 "training",
                 "opt-in",
                 "opt-out",
             ],
             kind: SettingKind::Enum {
-                default: "opt-in",
+                default: "opt-out",
                 choices: CODING_DATA_SHARING_CHOICES,
                 supports_preview: false,
             },
@@ -1357,6 +1324,9 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 "small",
                 "screen",
                 "compact",
+                "ssh",
+                "wrap",
+                "remote",
             ],
             kind: SettingKind::Group {
                 children: CONTEXTUAL_HINTS_CHILDREN,
@@ -1397,6 +1367,36 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 supports_preview: false,
             },
             restart_required: true,
+            hidden_in_minimal: false,
+        },
+        // SHELL-owned, persisted to `[ui].voice_keybind_enabled`. Default ON —
+        // `None` (inherit) reads as `true`. Disables only the Ctrl+Space / F8
+        // chord; `/voice` (and Esc / the recording-row `[stop]`) keep working.
+        SettingMeta {
+            key: "voice_keybind_enabled",
+            category: SettingCategory::Editor,
+            owner: SettingOwner::Shell,
+            label: "Voice shortcut",
+            description: "Enable the Ctrl+Space / F8 shortcut for voice dictation. \
+                          When off, the keys are ignored; /voice still starts \
+                          dictation.",
+            keywords: &[
+                "voice",
+                "dictation",
+                "mic",
+                "microphone",
+                "speech",
+                "stt",
+                "keybinding",
+                "hotkey",
+                "ctrl+space",
+                "f8",
+                "disable",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.voice_keybind_enabled.unwrap_or(true),
+            },
+            restart_required: false,
             hidden_in_minimal: false,
         },
         // SHELL-owned, persisted to `[ui].voice_capture_mode`. The `hold` choice
@@ -1553,6 +1553,27 @@ pub fn default_settings() -> Vec<SettingMeta> {
             ],
             kind: SettingKind::Bool {
                 default: ui_default.contextual_hints.word_select.unwrap_or(true),
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+        },
+        SettingMeta {
+            key: "contextual_hints.ssh_wrap",
+            category: SettingCategory::Advanced,
+            owner: SettingOwner::Shell,
+            label: "SSH wrap",
+            description: "Show a `/doctor` tip when an SSH session is not using `grok wrap`.",
+            keywords: &[
+                "ssh",
+                "wrap",
+                "remote",
+                "clipboard",
+                "restore",
+                "startup",
+                "hint",
+            ],
+            kind: SettingKind::Bool {
+                default: ui_default.contextual_hints.ssh_wrap.unwrap_or(true),
             },
             restart_required: false,
             hidden_in_minimal: false,

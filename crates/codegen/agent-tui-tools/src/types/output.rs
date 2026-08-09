@@ -115,10 +115,12 @@ impl MediaGenOutput {
         let message = format!(
             "{action} and saved to {path}. Do not read or re-display it, and do not describe how it appears to the user."
         );
-        serde_json::json!(
-            { "path" : path, "filename" : & self.filename, "session_folder" : & self
-            .session_folder, "message" : message, }
-        )
+        serde_json::json!({
+            "path": path,
+            "filename": &self.filename,
+            "session_folder": &self.session_folder,
+            "message": message,
+        })
         .to_string()
     }
 }
@@ -138,13 +140,6 @@ pub struct ToolRunResult {
     /// Prompt-ready text — layers can append system reminders, etc.
     /// Consumers use this for: model prompt (ConversationItem::tool_result).
     pub prompt_text: String,
-    /// Byte offsets where structurally appended reminder segments begin.
-    ///
-    /// An empty vector means no reminders were appended. Consumers that bound
-    /// model context use these boundaries instead of searching untrusted tool
-    /// output for reminder-like markup.
-    #[serde(default)]
-    pub reminder_starts: Vec<usize>,
     /// When a meta-tool dispatches to a different underlying tool (for example
     /// `use_tool` → `linear__save_issue`), this carries the effective tool name.
     /// `None` means the requested tool and executed tool are the same.
@@ -652,6 +647,7 @@ pub enum ToolOutput {
     SchedulerDelete(crate::implementations::grok_build::scheduler::delete::SchedulerDeleteOutput),
     SchedulerList(crate::implementations::grok_build::scheduler::list::SchedulerListOutput),
     UpdateGoal(crate::implementations::grok_build::update_goal::UpdateGoalOutput),
+    Workflow(crate::implementations::grok_build::workflow::WorkflowToolOutput),
     /// Dynamic output for runtime-registered tools (MCP, test tools, etc.)
     Dynamic(DynamicOutput),
     /// Generic text output for tools that produce simple formatted text
@@ -819,16 +815,14 @@ impl ToolOutput {
                         format!("=== Task {} ===", r.task_id),
                         format!("Command: {}", r.command),
                         format!("Status: {}", r.status),
-                        format!("Started: {}", r.started),
+                        format!("Duration: {:.2}s", r.duration_secs),
                     ];
-                    if let Some(ref ended) = r.ended {
-                        lines.push(format!("Ended: {}", ended));
-                    }
-                    lines.push(format!("Duration: {:.2}s", r.duration_secs));
                     if let Some(code) = r.exit_code {
                         lines.push(format!("Exit Code: {}", code));
                     }
-                    lines.push(format!("Output File: {}", r.output_file));
+                    if !r.output_file.is_empty() {
+                        lines.push(format!("Output File: {}", r.output_file));
+                    }
                     lines.push(String::new());
                     lines.push("=== Output ===".to_string());
                     if r.output.is_empty() {
@@ -986,9 +980,10 @@ impl ToolOutput {
                 }
             }
             ToolOutput::SchedulerCreate(o) => {
+                let verb = if o.updated { "updated" } else { "created" };
                 format!(
-                    "Scheduled task created (ID: {}, {}, recurring: {}).",
-                    o.id, o.human_schedule, o.recurring
+                    "Scheduled task {} (ID: {}, {}).",
+                    verb, o.id, o.human_schedule
                 )
             }
             ToolOutput::SchedulerDelete(o) => o.message.clone(),
@@ -1000,6 +995,7 @@ impl ToolOutput {
                 }
             }
             ToolOutput::UpdateGoal(o) => o.summary.clone(),
+            ToolOutput::Workflow(o) => o.message.clone(),
             ToolOutput::Dynamic(v) => serde_json::to_string_pretty(&v.value).unwrap_or_default(),
             ToolOutput::Text(text) => text.text.clone(),
             ToolOutput::ImageGen(m) => m.prompt_text("Image generated"),
@@ -1598,8 +1594,7 @@ mod tests {
             to_json(ReadFileOutput::FileNotFound("Error: /tmp/x does not exist.".into()).into());
         assert_eq!(
             json,
-            json!({ "type" : "ReadFile", "FileNotFound" :
-            "Error: /tmp/x does not exist." })
+            json!({"type": "ReadFile", "FileNotFound": "Error: /tmp/x does not exist."})
         );
     }
     #[test]
@@ -1608,8 +1603,7 @@ mod tests {
             to_json(ReadFileOutput::IsADirectory("Error: /tmp is a directory.".into()).into());
         assert_eq!(
             json,
-            json!({ "type" : "ReadFile", "IsADirectory" :
-            "Error: /tmp is a directory." })
+            json!({"type": "ReadFile", "IsADirectory": "Error: /tmp is a directory."})
         );
     }
     #[test]
@@ -1619,8 +1613,7 @@ mod tests {
         );
         assert_eq!(
             json,
-            json!({ "type" : "ReadFile", "PermissionDenied" :
-            "Permission denied: /etc/shadow" })
+            json!({"type": "ReadFile", "PermissionDenied": "Permission denied: /etc/shadow"})
         );
     }
     #[test]
@@ -1633,9 +1626,7 @@ mod tests {
         );
         assert_eq!(
             json,
-            json!({ "type" : "ReadFile", "FileTooLarge" :
-            "File content (37044 tokens) exceeds maximum allowed tokens (25000 tokens)."
-            })
+            json!({"type": "ReadFile", "FileTooLarge": "File content (37044 tokens) exceeds maximum allowed tokens (25000 tokens)."})
         );
     }
     #[test]
@@ -1643,7 +1634,7 @@ mod tests {
         let json = to_json(ReadFileOutput::FileReadError("Failed to read file".into()).into());
         assert_eq!(
             json,
-            json!({ "type" : "ReadFile", "FileReadError" : "Failed to read file" })
+            json!({"type": "ReadFile", "FileReadError": "Failed to read file"})
         );
     }
     #[test]
@@ -1651,7 +1642,7 @@ mod tests {
         let json = to_json(ReadFileOutput::ImageSizeError("Image too large".into()).into());
         assert_eq!(
             json,
-            json!({ "type" : "ReadFile", "ImageSizeError" : "Image too large" })
+            json!({"type": "ReadFile", "ImageSizeError": "Image too large"})
         );
     }
     #[test]
@@ -1659,20 +1650,20 @@ mod tests {
         let json = to_json(ListDirOutput::NotFound("does not exist".into()).into());
         assert_eq!(
             json,
-            json!({ "type" : "ListDir", "NotFound" : "does not exist" })
+            json!({"type": "ListDir", "NotFound": "does not exist"})
         );
     }
     #[test]
     fn list_dir_is_a_file_json() {
         let json = to_json(ListDirOutput::IsAFile("is a file".into()).into());
-        assert_eq!(json, json!({ "type" : "ListDir", "IsAFile" : "is a file" }));
+        assert_eq!(json, json!({"type": "ListDir", "IsAFile": "is a file"}));
     }
     #[test]
     fn list_dir_not_a_directory_json() {
         let json = to_json(ListDirOutput::NotADirectory("is not a directory".into()).into());
         assert_eq!(
             json,
-            json!({ "type" : "ListDir", "NotADirectory" : "is not a directory" })
+            json!({"type": "ListDir", "NotADirectory": "is not a directory"})
         );
     }
     #[test]
@@ -1680,20 +1671,20 @@ mod tests {
         let json = to_json(ListDirOutput::PermissionDenied("Permission denied".into()).into());
         assert_eq!(
             json,
-            json!({ "type" : "ListDir", "PermissionDenied" : "Permission denied" })
+            json!({"type": "ListDir", "PermissionDenied": "Permission denied"})
         );
     }
     #[test]
     fn list_dir_generic_error_json() {
         let json = to_json(ListDirOutput::Error("Some error".into()).into());
-        assert_eq!(json, json!({ "type" : "ListDir", "Error" : "Some error" }));
+        assert_eq!(json, json!({"type": "ListDir", "Error": "Some error"}));
     }
     #[test]
     fn search_replace_file_not_found_json() {
         let json = to_json(SearchReplaceOutput::FileNotFound("not found".into()).into());
         assert_eq!(
             json,
-            json!({ "type" : "SearchReplace", "FileNotFound" : "not found" })
+            json!({"type": "SearchReplace", "FileNotFound": "not found"})
         );
     }
     #[test]
@@ -1708,8 +1699,13 @@ mod tests {
         );
         assert_eq!(
             json,
-            json!({ "type" : "SearchReplace", "NoMatchesFound" : { "message" :
-            "no matches", "file_path" : "/project/src/main.c" } })
+            json!({
+                "type": "SearchReplace",
+                "NoMatchesFound": {
+                    "message": "no matches",
+                    "file_path": "/project/src/main.c"
+                }
+            })
         );
     }
     #[test]
@@ -1733,8 +1729,7 @@ mod tests {
         let json = to_json(SearchReplaceOutput::MultipleMatchesFound("3 matches".into()).into());
         assert_eq!(
             json,
-            json!({ "type" : "SearchReplace", "MultipleMatchesFound" : "3 matches"
-            })
+            json!({"type": "SearchReplace", "MultipleMatchesFound": "3 matches"})
         );
     }
     #[test]
@@ -1742,7 +1737,7 @@ mod tests {
         let json = to_json(SearchReplaceOutput::FileAlreadyExists("exists".into()).into());
         assert_eq!(
             json,
-            json!({ "type" : "SearchReplace", "FileAlreadyExists" : "exists" })
+            json!({"type": "SearchReplace", "FileAlreadyExists": "exists"})
         );
     }
     #[test]
@@ -1750,7 +1745,7 @@ mod tests {
         let json = to_json(SearchReplaceOutput::InvalidInput("same strings".into()).into());
         assert_eq!(
             json,
-            json!({ "type" : "SearchReplace", "InvalidInput" : "same strings" })
+            json!({"type": "SearchReplace", "InvalidInput": "same strings"})
         );
     }
     #[test]
@@ -1758,8 +1753,7 @@ mod tests {
         let json = to_json(SearchReplaceOutput::FilenameTooLong("name too long".into()).into());
         assert_eq!(
             json,
-            json!({ "type" : "SearchReplace", "FilenameTooLong" : "name too long"
-            })
+            json!({"type": "SearchReplace", "FilenameTooLong": "name too long"})
         );
     }
     #[test]
@@ -1839,8 +1833,10 @@ mod tests {
         );
         assert_eq!(
             json,
-            json!({ "type" : "KillTask", "TaskNotFound" :
-            "Task abc not found. No background tasks exist in this session." })
+            json!({
+                "type": "KillTask",
+                "TaskNotFound": "Task abc not found. No background tasks exist in this session."
+            })
         );
     }
     #[test]
@@ -1849,8 +1845,7 @@ mod tests {
         let serialized = serde_json::to_value(&original).unwrap();
         let deserialized: KillTaskOutput = serde_json::from_value(serialized).unwrap();
         assert!(
-            matches!(deserialized, KillTaskOutput::TaskNotFound(ref msg) if msg ==
-            "not found")
+            matches!(deserialized, KillTaskOutput::TaskNotFound(ref msg) if msg == "not found")
         );
     }
     #[test]
@@ -1876,6 +1871,55 @@ mod tests {
         assert!(json.get("Result").is_some(), "missing Result key: {json}");
         assert_eq!(json["Result"]["task_id"], "task-1");
         assert_eq!(json["Result"]["status"], "running");
+    }
+    /// The single-task detail view is duration-only: absolute `started` /
+    /// `ended` instants stay on the wire struct but must not reach the prompt.
+    #[test]
+    fn task_output_prompt_is_duration_only() {
+        let out = ToolOutput::TaskOutput(TaskOutputOutput::Result(TaskOutputResult {
+            task_id: "task-1".into(),
+            command: "sleep 10".into(),
+            status: "completed".into(),
+            exit_code: Some(0),
+            started: "2026-03-09T00:00:00Z".into(),
+            ended: Some("2026-03-09T00:00:05Z".into()),
+            duration_secs: 5.0,
+            output: "hello".into(),
+            output_file: "/tmp/task-1.log".into(),
+            truncated: false,
+            truncation_hint: String::new(),
+            raw_output_bytes: 5,
+        }));
+        let prompt = out.to_prompt_format();
+        assert!(prompt.contains("Duration: 5.00s"), "{prompt}");
+        assert!(prompt.contains("Output File: /tmp/task-1.log"), "{prompt}");
+        assert!(
+            !prompt.contains("Started") && !prompt.contains("Ended"),
+            "absolute instants must not be model-visible: {prompt}"
+        );
+        assert!(
+            !prompt.contains("2026-03-09"),
+            "no wall-clock date may survive into the prompt: {prompt}"
+        );
+    }
+    #[test]
+    fn task_output_prompt_omits_empty_output_file() {
+        let out = ToolOutput::TaskOutput(TaskOutputOutput::Result(TaskOutputResult {
+            task_id: "task-2".into(),
+            command: "true".into(),
+            status: "completed".into(),
+            exit_code: Some(0),
+            started: String::new(),
+            ended: None,
+            duration_secs: 0.1,
+            output: "done".into(),
+            output_file: String::new(),
+            truncated: false,
+            truncation_hint: String::new(),
+            raw_output_bytes: 4,
+        }));
+        let prompt = out.to_prompt_format();
+        assert!(!prompt.contains("Output File"), "{prompt}");
     }
     fn make_result(status: &str, raw_output_bytes: usize) -> TaskOutputResult {
         TaskOutputResult {
@@ -1959,8 +2003,10 @@ mod tests {
         );
         assert_eq!(
             json,
-            json!({ "type" : "TaskOutput", "TaskNotFound" :
-            "Task xyz not found. Known task IDs: [task-1, task-2]" })
+            json!({
+                "type": "TaskOutput",
+                "TaskNotFound": "Task xyz not found. Known task IDs: [task-1, task-2]"
+            })
         );
     }
     #[test]
@@ -1969,8 +2015,7 @@ mod tests {
         let serialized = serde_json::to_value(&original).unwrap();
         let deserialized: TaskOutputOutput = serde_json::from_value(serialized).unwrap();
         assert!(
-            matches!(deserialized, TaskOutputOutput::TaskNotFound(ref msg) if msg ==
-            "not found")
+            matches!(deserialized, TaskOutputOutput::TaskNotFound(ref msg) if msg == "not found")
         );
     }
     #[test]
@@ -2011,8 +2056,9 @@ mod tests {
         );
         assert_eq!(
             json,
-            json!({ "type" : "Todo", "DuplicateId" :
-            "Duplicate todo ID in request: \"dup\". Each todo item must have a unique ID."
+            json!({
+                "type": "Todo",
+                "DuplicateId": "Duplicate todo ID in request: \"dup\". Each todo item must have a unique ID."
             })
         );
     }
@@ -2021,10 +2067,7 @@ mod tests {
         let original = TodoWriteOutput::DuplicateId("dup id".into());
         let serialized = serde_json::to_value(&original).unwrap();
         let deserialized: TodoWriteOutput = serde_json::from_value(serialized).unwrap();
-        assert!(
-            matches!(deserialized, TodoWriteOutput::DuplicateId(ref msg) if msg ==
-            "dup id")
-        );
+        assert!(matches!(deserialized, TodoWriteOutput::DuplicateId(ref msg) if msg == "dup id"));
     }
     #[test]
     fn todo_write_success_round_trip() {
@@ -2300,10 +2343,12 @@ mod tests {
     }
     #[test]
     fn enter_plan_mode_output_serde_defaults_tool_hints_when_absent() {
-        let json = json!(
-            { "Entered" : { "message" : "Entered plan mode.", "plan_file_path" :
-            "/tmp/plan.md" } }
-        );
+        let json = json!({
+            "Entered": {
+                "message": "Entered plan mode.",
+                "plan_file_path": "/tmp/plan.md"
+            }
+        });
         let deserialized: EnterPlanModeOutput = serde_json::from_value(json).unwrap();
         match deserialized {
             EnterPlanModeOutput::Entered {
@@ -2352,10 +2397,12 @@ mod tests {
     }
     #[test]
     fn enter_plan_mode_absent_seed_field_prompt_is_missing() {
-        let json = json!(
-            { "Entered" : { "message" : "Entered plan mode.", "plan_file_path" :
-            "/tmp/plan.md" } }
-        );
+        let json = json!({
+            "Entered": {
+                "message": "Entered plan mode.",
+                "plan_file_path": "/tmp/plan.md"
+            }
+        });
         let deserialized: EnterPlanModeOutput = serde_json::from_value(json).unwrap();
         let prompt = ToolOutput::EnterPlanMode(deserialized).to_prompt_format();
         assert!(
@@ -2407,7 +2454,7 @@ mod tests {
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(
             json["Entered"]["plan_file_seed"],
-            json!({ "missing" : "not_a_file" })
+            json!({ "missing": "not_a_file" })
         );
         let back: EnterPlanModeOutput = serde_json::from_value(json).unwrap();
         let EnterPlanModeOutput::Entered { plan_file_seed, .. } = back;
@@ -2651,7 +2698,6 @@ mod tests {
     fn sample_run_result(output: ToolOutput) -> ToolRunResult {
         ToolRunResult {
             prompt_text: "prompt".into(),
-            reminder_starts: Vec::new(),
             effective_tool_name: None,
             output,
         }

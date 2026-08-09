@@ -858,6 +858,7 @@ dependencies = [
  "uuid",
  "wait-timeout",
  "walkdir",
+ "which",
  "windows-sys 0.59.0",
 ]
 
@@ -1685,7 +1686,7 @@ dependencies = [
 
 [[package]]
 name = "agent-tui-version"
-version = "1.0.0"
+version = "0.2.0-dev"
 dependencies = [
  "semver",
 ]

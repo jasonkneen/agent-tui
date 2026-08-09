@@ -1250,7 +1250,9 @@ mod tests {
             rehydrate_worktree_from_ref(&dest, &repo_path, &snap, Some("subagent-42")).unwrap();
 
         // Filter to OUR record by path: concurrent open_default writers may add
-        // other subagent rows since GROK_HOME is process-global.
+        // other subagent rows since GROK_HOME is process-global. Match the
+        // canonical path register_worktree stores (/var → /private/var on macOS).
+        let dest_canon = dunce::canonicalize(&dest).unwrap_or_else(|_| dest.clone());
         let db = crate::db::WorktreeDb::open(&fx.home).unwrap();
         let mine: Vec<_> = db
             .list(&crate::db::ListFilter {
@@ -1259,7 +1261,7 @@ mod tests {
             })
             .unwrap()
             .into_iter()
-            .filter(|r| r.path == dest)
+            .filter(|r| r.path == dest || r.path == dest_canon)
             .collect();
         assert_eq!(mine.len(), 1, "exactly one rehydrated subagent record");
         assert_eq!(mine[0].kind, crate::db::WorktreeKind::Subagent);

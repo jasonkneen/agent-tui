@@ -53,6 +53,7 @@ fn sanitize_tool_arguments(id: &str, name: &str, arguments: Arc<str>) -> Arc<str
 use serde::{Deserialize, Serialize};
 
 use crate::rs;
+use crate::tool_overrides::{ToolOverrides, WebSearchOptions, XSearchOptions, drop_empty};
 use crate::types::{
     ChatCompletionRequest, ChatContentBlock, ChatRequestMessage, ChatResponseMessage, FinishReason,
     ImageUrl, MessageContent, Role, ToolCallRequest, ToolChoice, ToolDefinition, TraceContext,
@@ -155,6 +156,12 @@ pub enum SyntheticReason {
     /// Scheduled task (`/loop`) prompt fired by the scheduler.  Wakes the
     /// agent.
     SchedulerFired,
+    /// Feedback from a `Stop`/`SubagentStop` hook that blocked the agent from
+    /// stopping. Injected in-turn so the model keeps working within the same turn.
+    StopHookFeedback,
+    /// Working-directory switch context appended after a session relocation.
+    /// Carries a generation marker so recovery can detect an existing append.
+    WorkingDirectorySwitch,
     /// Catch-all for unknown/future variants.  Preserves forward compatibility
     /// so older clients can deserialize sessions written by newer versions.
     #[serde(other)]
@@ -189,51 +196,11 @@ impl SyntheticReason {
             | Self::AutoRecovery
             | Self::Interjection
             | Self::GoalSummary
+            | Self::StopHookFeedback
+            | Self::WorkingDirectorySwitch
             | Self::Unknown => false,
         }
     }
-}
-
-/// Hard ceiling for any runtime-synthesized model-facing text item.
-///
-/// Tool results already use the same 10 KiB trust-boundary limit in the shell.
-/// Keeping synthetic reminders, project instructions, compaction state, and
-/// interjections under one absolute ceiling prevents any single runtime-built
-/// item from consuming a material fraction of a model context window.
-pub const MAX_MODEL_ITEM_BYTES: usize = 10_000;
-
-const MODEL_ITEM_TRUNCATION_MARKER: &str =
-    "\n\n[... middle truncated at the Agent TUI model-item boundary ...]\n\n";
-
-/// Bound model-facing text to `max_bytes`, preserving both its leading context
-/// and trailing directive/question. The returned string is always valid UTF-8
-/// and never exceeds the requested byte budget.
-pub fn bound_model_item_text(content: impl Into<String>, max_bytes: usize) -> String {
-    let content = content.into();
-    if content.len() <= max_bytes {
-        return content;
-    }
-    if max_bytes <= MODEL_ITEM_TRUNCATION_MARKER.len() {
-        return truncate_bytes(&content, max_bytes).to_string();
-    }
-
-    let payload_budget = max_bytes - MODEL_ITEM_TRUNCATION_MARKER.len();
-    let tail_budget = (payload_budget / 5).min(2_000);
-    let head_budget = payload_budget - tail_budget;
-    let head = truncate_bytes(&content, head_budget);
-    let mut tail_start = content.len().saturating_sub(tail_budget);
-    while tail_start < content.len() && !content.is_char_boundary(tail_start) {
-        tail_start += 1;
-    }
-    format!(
-        "{head}{MODEL_ITEM_TRUNCATION_MARKER}{}",
-        &content[tail_start..]
-    )
-}
-
-/// Apply the universal model-item ceiling to runtime-synthesized text.
-pub fn bound_synthetic_text(content: impl Into<String>) -> String {
-    bound_model_item_text(content, MAX_MODEL_ITEM_BYTES)
 }
 
 /// How the user *fatally* interrupted (cancelled) the turn immediately
@@ -278,6 +245,10 @@ pub struct UserItem {
     /// deserialize correctly (`serde(default)` fills in `None`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub synthetic_reason: Option<SyntheticReason>,
+    /// Relocation generation for a working-directory switch reminder.
+    /// Structural metadata keeps recovery dedup independent of reminder text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd_generation: Option<u64>,
     /// Set on a genuine user message that directly follows a user-interrupted
     /// turn (see [`PriorTurnInterrupt`]). `None` for synthetic messages and for
     /// real messages that did not follow an interrupt. `skip_serializing_if`
@@ -554,30 +525,52 @@ pub struct ToolSpec {
     pub parameters: serde_json::Value,
 }
 
-/// A tool that the backend executes server-side during inference.
-/// The client sends these as native Responses API tool types (not Function).
-/// The backend's agentic sampler handles execution and streams results back.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostedTool {
-    /// Web search executed server-side by the backend's agentic sampler.
-    WebSearch {
-        /// Optional domain allowlist for search results.
-        allowed_domains: Option<Vec<String>>,
-    },
-    /// X (Twitter) search executed server-side by the backend's agentic sampler.
-    /// This is xAI-specific — not part of the OpenAI Responses API, so it's
-    /// injected as raw JSON into the request body by the sampler client.
-    XSearch,
+    WebSearch { options: Option<WebSearchOptions> },
+    XSearch { options: Option<XSearchOptions> },
 }
 
 impl HostedTool {
-    /// The name the backend registers this tool under server-side.
     pub fn wire_name(&self) -> &'static str {
         match self {
             HostedTool::WebSearch { .. } => "web_search",
-            HostedTool::XSearch => "x_search",
+            HostedTool::XSearch { .. } => "x_search",
         }
     }
+}
+
+/// Resolve `overrides` onto the hosted tools in place so the serialized request matches the returned
+/// echo. Empty options normalize to absent (via `drop_empty`), so a stray `{}` never clears a seeded
+/// bound. Returns the applied overrides.
+pub fn apply_tool_overrides(
+    tools: &mut [HostedTool],
+    overrides: Option<&ToolOverrides>,
+) -> ToolOverrides {
+    let mut applied = ToolOverrides::default();
+    for tool in tools.iter_mut() {
+        match tool {
+            HostedTool::XSearch { options } => {
+                if let Some(x) = drop_empty(
+                    overrides.and_then(|o| o.x_search.clone()),
+                    XSearchOptions::is_empty,
+                ) {
+                    *options = Some(x);
+                }
+                applied.x_search = drop_empty(options.clone(), XSearchOptions::is_empty);
+            }
+            HostedTool::WebSearch { options } => {
+                if let Some(w) = drop_empty(
+                    overrides.and_then(|o| o.web_search.clone()),
+                    WebSearchOptions::is_empty,
+                ) {
+                    *options = Some(w);
+                }
+                applied.web_search = drop_empty(options.clone(), WebSearchOptions::is_empty);
+            }
+        }
+    }
+    applied
 }
 
 impl From<ToolDefinition> for ToolSpec {
@@ -629,6 +622,8 @@ pub struct ConversationRequest {
     pub reasoning_effort: Option<crate::ReasoningEffort>,
     /// JSON Schema for structured output (strict mode).
     pub json_schema: Option<serde_json::Value>,
+    /// Sticky routing key for prompt-cache reuse; overrides `x_grok_conv_id` for routing.
+    pub prompt_cache_key: Option<String>,
 }
 
 impl ConversationRequest {
@@ -940,17 +935,6 @@ impl ConversationResponse {
 // ============================================================================
 
 impl ConversationItem {
-    fn synthetic_user(content: impl Into<String>, reason: SyntheticReason) -> Self {
-        Self::User(UserItem {
-            content: vec![ContentPart::Text {
-                text: Arc::<str>::from(bound_synthetic_text(content)),
-            }],
-            synthetic_reason: Some(reason),
-            prior_turn_interrupt: None,
-            prompt_index: None,
-        })
-    }
-
     /// Create a system message
     pub fn system(content: impl Into<String>) -> Self {
         Self::System(SystemItem {
@@ -969,6 +953,7 @@ impl ConversationItem {
                 text: Arc::<str>::from(content.into()),
             }],
             synthetic_reason: None,
+            cwd_generation: None,
             prior_turn_interrupt: None,
             prompt_index: None,
         })
@@ -981,6 +966,7 @@ impl ConversationItem {
         Self::User(UserItem {
             content: parts,
             synthetic_reason: None,
+            cwd_generation: None,
             prior_turn_interrupt: None,
             prompt_index: None,
         })
@@ -992,7 +978,15 @@ impl ConversationItem {
     /// plain-text user messages. Tagged with [`SyntheticReason::CompactionMeta`]
     /// so downstream code (pruning, compaction helpers) skips it.
     pub fn user_meta(content: impl Into<String>) -> Self {
-        Self::synthetic_user(content, SyntheticReason::CompactionMeta)
+        Self::User(UserItem {
+            content: vec![ContentPart::Text {
+                text: Arc::<str>::from(content.into()),
+            }],
+            synthetic_reason: Some(SyntheticReason::CompactionMeta),
+            cwd_generation: None,
+            prior_turn_interrupt: None,
+            prompt_index: None,
+        })
     }
 
     /// Create a synthetic user message for a runtime system reminder.
@@ -1002,7 +996,28 @@ impl ConversationItem {
     /// [`SyntheticReason::SystemReminder`] so downstream code can skip it when
     /// counting real user prompts.
     pub fn system_reminder(content: impl Into<String>) -> Self {
-        Self::synthetic_user(content, SyntheticReason::SystemReminder)
+        Self::User(UserItem {
+            content: vec![ContentPart::Text {
+                text: Arc::<str>::from(content.into()),
+            }],
+            synthetic_reason: Some(SyntheticReason::SystemReminder),
+            cwd_generation: None,
+            prior_turn_interrupt: None,
+            prompt_index: None,
+        })
+    }
+
+    /// Return the working-directory generation carried by this switch reminder.
+    pub fn working_directory_switch_generation(&self) -> Option<u64> {
+        match self {
+            Self::User(user)
+                if user.synthetic_reason.as_ref()
+                    == Some(&SyntheticReason::WorkingDirectorySwitch) =>
+            {
+                user.cwd_generation
+            }
+            _ => None,
+        }
     }
 
     /// User message containing project instructions (AGENTS.md / CLAUDE.md),
@@ -1010,7 +1025,28 @@ impl ConversationItem {
     /// idempotence. Once in the conversation, MUST NOT be replaced or
     /// re-inserted — see the variant docstring.
     pub fn project_instructions(content: impl Into<String>) -> Self {
-        Self::synthetic_user(content, SyntheticReason::ProjectInstructions)
+        Self::User(UserItem {
+            content: vec![ContentPart::Text {
+                text: Arc::<str>::from(content.into()),
+            }],
+            synthetic_reason: Some(SyntheticReason::ProjectInstructions),
+            cwd_generation: None,
+            prior_turn_interrupt: None,
+            prompt_index: None,
+        })
+    }
+
+    /// Working-directory switch reminder with a structural generation marker.
+    pub fn working_directory_switch(content: impl Into<String>, cwd_generation: u64) -> Self {
+        Self::User(UserItem {
+            content: vec![ContentPart::Text {
+                text: Arc::<str>::from(content.into()),
+            }],
+            synthetic_reason: Some(SyntheticReason::WorkingDirectorySwitch),
+            cwd_generation: Some(cwd_generation),
+            prior_turn_interrupt: None,
+            prompt_index: None,
+        })
     }
 
     /// Create a synthetic user message for an auto-continue prompt.
@@ -1019,7 +1055,15 @@ impl ConversationItem {
     /// [`SyntheticReason::AutoContinue`] so it is not counted as a real user
     /// prompt by truncation / rewind logic.
     pub fn auto_continue(content: impl Into<String>) -> Self {
-        Self::synthetic_user(content, SyntheticReason::AutoContinue)
+        Self::User(UserItem {
+            content: vec![ContentPart::Text {
+                text: Arc::<str>::from(content.into()),
+            }],
+            synthetic_reason: Some(SyntheticReason::AutoContinue),
+            cwd_generation: None,
+            prior_turn_interrupt: None,
+            prompt_index: None,
+        })
     }
 
     /// Create a synthetic user message for an auto-recovery retry prompt.
@@ -1028,7 +1072,15 @@ impl ConversationItem {
     /// with [`SyntheticReason::AutoRecovery`] so it is not counted as a real
     /// user prompt by truncation / rewind logic.
     pub fn auto_recovery(content: impl Into<String>) -> Self {
-        Self::synthetic_user(content, SyntheticReason::AutoRecovery)
+        Self::User(UserItem {
+            content: vec![ContentPart::Text {
+                text: Arc::<str>::from(content.into()),
+            }],
+            synthetic_reason: Some(SyntheticReason::AutoRecovery),
+            cwd_generation: None,
+            prior_turn_interrupt: None,
+            prompt_index: None,
+        })
     }
 
     /// Create a synthetic user message for a mid-turn interjection.
@@ -1038,27 +1090,67 @@ impl ConversationItem {
     /// compaction, replay, and analytics can distinguish it from real
     /// prompts and other synthetic injections.
     pub fn interjection(content: impl Into<String>) -> Self {
-        Self::synthetic_user(content, SyntheticReason::Interjection)
+        Self::User(UserItem {
+            content: vec![ContentPart::Text {
+                text: Arc::<str>::from(content.into()),
+            }],
+            synthetic_reason: Some(SyntheticReason::Interjection),
+            cwd_generation: None,
+            prior_turn_interrupt: None,
+            prompt_index: None,
+        })
     }
 
     /// Auto-wake synthetic prompt for a completed background bash task.
     pub fn task_completed(content: impl Into<String>) -> Self {
-        Self::synthetic_user(content, SyntheticReason::TaskCompleted)
+        Self::User(UserItem {
+            content: vec![ContentPart::Text {
+                text: Arc::<str>::from(content.into()),
+            }],
+            synthetic_reason: Some(SyntheticReason::TaskCompleted),
+            cwd_generation: None,
+            prior_turn_interrupt: None,
+            prompt_index: None,
+        })
     }
 
     /// Auto-wake synthetic prompt for a completed background subagent.
     pub fn subagent_completed(content: impl Into<String>) -> Self {
-        Self::synthetic_user(content, SyntheticReason::SubagentCompleted)
+        Self::User(UserItem {
+            content: vec![ContentPart::Text {
+                text: Arc::<str>::from(content.into()),
+            }],
+            synthetic_reason: Some(SyntheticReason::SubagentCompleted),
+            cwd_generation: None,
+            prior_turn_interrupt: None,
+            prompt_index: None,
+        })
     }
 
     /// Idle-gated notification drain (batched completions / monitor events).
     pub fn notification_drain(content: impl Into<String>) -> Self {
-        Self::synthetic_user(content, SyntheticReason::NotificationDrain)
+        Self::User(UserItem {
+            content: vec![ContentPart::Text {
+                text: Arc::<str>::from(content.into()),
+            }],
+            synthetic_reason: Some(SyntheticReason::NotificationDrain),
+            cwd_generation: None,
+            prior_turn_interrupt: None,
+            prompt_index: None,
+        })
     }
 
     /// Goal orchestrator summary turn.
     pub fn goal_summary(content: impl Into<String>) -> Self {
-        Self::synthetic_user(content, SyntheticReason::GoalSummary)
+        Self::User(UserItem {
+            content: vec![ContentPart::Text {
+                text: Arc::<str>::from(content.into()),
+            }],
+            synthetic_reason: Some(SyntheticReason::GoalSummary),
+            cwd_generation: None,
+            prior_turn_interrupt: None,
+            prompt_index: None,
+        })
     }
 
     /// Goal-achievement classifier nudge injected after the classifier
@@ -1067,12 +1159,41 @@ impl ConversationItem {
     /// synthetic user turns apart even though the wire role/tag is the
     /// same `<system-reminder>` shape.
     pub fn goal_classifier_nudge(content: impl Into<String>) -> Self {
-        Self::synthetic_user(content, SyntheticReason::GoalClassifierNudge)
+        Self::User(UserItem {
+            content: vec![ContentPart::Text {
+                text: Arc::<str>::from(content.into()),
+            }],
+            synthetic_reason: Some(SyntheticReason::GoalClassifierNudge),
+            cwd_generation: None,
+            prior_turn_interrupt: None,
+            prompt_index: None,
+        })
     }
 
     /// Scheduled task (`/loop`) prompt fired by the scheduler.
     pub fn scheduler_fired(content: impl Into<String>) -> Self {
-        Self::synthetic_user(content, SyntheticReason::SchedulerFired)
+        Self::User(UserItem {
+            content: vec![ContentPart::Text {
+                text: Arc::<str>::from(content.into()),
+            }],
+            synthetic_reason: Some(SyntheticReason::SchedulerFired),
+            cwd_generation: None,
+            prior_turn_interrupt: None,
+            prompt_index: None,
+        })
+    }
+
+    /// See [`SyntheticReason::StopHookFeedback`].
+    pub fn stop_hook_feedback(content: impl Into<String>) -> Self {
+        Self::User(UserItem {
+            content: vec![ContentPart::Text {
+                text: Arc::<str>::from(content.into()),
+            }],
+            synthetic_reason: Some(SyntheticReason::StopHookFeedback),
+            cwd_generation: None,
+            prior_turn_interrupt: None,
+            prompt_index: None,
+        })
     }
 
     /// Create an assistant message
@@ -1559,467 +1680,6 @@ impl ConversationItem {
             u.prompt_index = Some(prompt_index);
         }
     }
-}
-
-// ============================================================================
-// ConversationRequest Builder
-// ============================================================================
-
-impl ConversationRequest {
-    /// Create a new empty conversation request
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Create from a list of conversation items
-    pub fn from_items(items: Vec<ConversationItem>) -> Self {
-        Self {
-            items,
-            ..Default::default()
-        }
-    }
-
-    /// Add an item to the conversation
-    pub fn push(&mut self, item: ConversationItem) {
-        self.items.push(item);
-    }
-
-    /// Set the model
-    pub fn with_model(mut self, model: impl Into<String>) -> Self {
-        self.model = Some(model.into());
-        self
-    }
-
-    /// Set tools
-    pub fn with_tools(mut self, tools: Vec<ToolSpec>) -> Self {
-        self.tools = tools;
-        self
-    }
-
-    /// Set tool choice
-    pub fn with_tool_choice(mut self, choice: ConversationToolChoice) -> Self {
-        self.tool_choice = Some(choice);
-        self
-    }
-
-    /// Set temperature
-    pub fn with_temperature(mut self, temperature: f32) -> Self {
-        self.temperature = Some(temperature);
-        self
-    }
-
-    /// Set max output tokens
-    pub fn with_max_output_tokens(mut self, max_tokens: u32) -> Self {
-        self.max_output_tokens = Some(max_tokens);
-        self
-    }
-
-    /// Set conversation ID header
-    pub fn with_conv_id(mut self, conv_id: impl Into<String>) -> Self {
-        self.x_grok_conv_id = Some(conv_id.into());
-        self
-    }
-
-    /// Set request ID header
-    pub fn with_req_id(mut self, req_id: impl Into<String>) -> Self {
-        self.x_grok_req_id = Some(req_id.into());
-        self
-    }
-
-    /// Set trace context for request logging.
-    /// Accepts any type that implements `TraceContext` (i.e., `Clone + Send + Sync + Debug + 'static`).
-    pub fn with_trace(mut self, trace: impl TraceContext + 'static) -> Self {
-        self.trace = Some(Box::new(trace));
-        self
-    }
-
-    pub fn with_json_schema(mut self, schema: serde_json::Value) -> Self {
-        self.json_schema = Some(schema);
-        self
-    }
-}
-
-/// Calculate how many conversation items to keep so that everything from
-/// prompt-turn `target_prompt_index` onward is dropped (the cut lands on the
-/// user item that **started** that turn).
-///
-/// Counting is progressive:
-/// - **Before the first** [`UserItem::prompt_index`]: legacy rules (first
-///   marker-less non-synthetic is the `<user_info>` preamble; later
-///   non-synthetics and [`SyntheticReason::starts_prompt_turn`] synthetics
-///   are turns).
-/// - **From the first marker onward**: only marked rows open turns; unmarked
-///   mid-turn phantoms (bash / permission followup) never open a cut.
-///
-/// Exception: when the first marker's absolute index is **not** contiguous
-/// with the unmarked prefix turn count (post-compaction rebuilds with high
-/// absolute indices), fall back to pure marker mode so structural unmarked
-/// rows in the rebuild prefix are not treated as historic turns.
-pub fn conversation_truncate_for_prompt(
-    conversation: &[ConversationItem],
-    target_prompt_index: usize,
-) -> usize {
-    let first_marker = conversation.iter().find_map(|item| match item {
-        ConversationItem::User(u) => u.prompt_index,
-        _ => None,
-    });
-
-    let Some(first_marker_idx) = first_marker else {
-        return conversation_truncate_legacy(conversation, target_prompt_index);
-    };
-
-    let unmarked_prefix_turns = count_legacy_turns_until_marker(conversation);
-    if unmarked_prefix_turns != first_marker_idx {
-        return conversation_truncate_markers_only(conversation, target_prompt_index);
-    }
-
-    conversation_truncate_progressive(conversation, target_prompt_index)
-}
-
-fn conversation_truncate_markers_only(
-    conversation: &[ConversationItem],
-    target_prompt_index: usize,
-) -> usize {
-    for (i, item) in conversation.iter().enumerate() {
-        let ConversationItem::User(user) = item else {
-            continue;
-        };
-        if let Some(idx) = user.prompt_index
-            && idx >= target_prompt_index
-        {
-            return i;
-        }
-    }
-    conversation.len()
-}
-
-// ============================================================================
-// Conversion: ConversationRequest -> CreateResponse (Responses API)
-// ============================================================================
-
-impl From<&ConversationRequest> for rs::CreateResponse {
-    fn from(req: &ConversationRequest) -> Self {
-        let input = build_responses_input(req);
-        let tools = build_responses_tools(req);
-
-        let tool_choice = req.tool_choice.as_ref().map(|tc| match tc {
-            ConversationToolChoice::Auto => rs::ToolChoiceParam::Mode(rs::ToolChoiceOptions::Auto),
-            ConversationToolChoice::None => rs::ToolChoiceParam::Mode(rs::ToolChoiceOptions::None),
-            ConversationToolChoice::Required => {
-                rs::ToolChoiceParam::Mode(rs::ToolChoiceOptions::Required)
-            }
-            ConversationToolChoice::Function(name) => {
-                rs::ToolChoiceParam::Function(rs::ToolChoiceFunction { name: name.clone() })
-            }
-        });
-
-        let text = req
-            .json_schema
-            .as_ref()
-            .map(|schema| rs::ResponseTextParam {
-                format: rs::TextResponseFormatConfiguration::JsonSchema(
-                    rs::ResponseFormatJsonSchema {
-                        description: None,
-                        name: STRUCTURED_OUTPUT_SCHEMA_NAME.to_string(),
-                        schema: Some(schema.clone()),
-                        strict: Some(true),
-                    },
-                ),
-                verbosity: None,
-            });
-
-        rs::CreateResponse {
-            background: None,
-            conversation: None,
-            include: None,
-            input,
-            instructions: None,
-            max_output_tokens: req.max_output_tokens,
-            max_tool_calls: None,
-            metadata: None,
-            model: req.model.clone(),
-            parallel_tool_calls: None,
-            previous_response_id: None,
-            prompt: None,
-            prompt_cache_key: None,
-            prompt_cache_retention: None,
-            reasoning: Some(rs::Reasoning {
-                effort: req.reasoning_effort.map(|e| e.to_responses_api()),
-                summary: Some(rs::ReasoningSummary::Concise),
-            }),
-            safety_identifier: None,
-            service_tier: None,
-            store: None,
-            stream: None,
-            stream_options: None,
-            temperature: req.temperature,
-            text,
-            tool_choice,
-            tools: if tools.is_empty() { None } else { Some(tools) },
-            top_logprobs: None,
-            top_p: req.top_p,
-            truncation: None,
-        }
-    }
-}
-
-/// Build the [`rs::InputParam`] for a Responses API request.
-///
-/// Conversion is a straight 1:1 map: each [`ConversationItem`] becomes its
-/// natural Responses-API input shape via [`conversation_item_to_input_items`].
-/// Reasoning items are top-level siblings (not bundled into the assistant),
-/// so they appear inline in the same order the model originally emitted —
-/// which is what lets the server-side prefix KV-cache hit on repeat turns.
-fn build_responses_input(req: &ConversationRequest) -> rs::InputParam {
-    let items: Vec<rs::InputItem> = req
-        .items
-        .iter()
-        .flat_map(conversation_item_to_input_items)
-        .collect();
-    rs::InputParam::Items(items)
-}
-
-/// Walk a serialized Responses API request body and inject the
-/// `type: "reasoning_text"` discriminator that the API requires on
-/// `reasoning.content[*]` items.
-///
-/// `async-openai`'s [`rs::ReasoningTextContent`] struct does not carry a
-/// `type` field (only `text`), so its derived `Serialize` emits objects
-/// shaped like `{"text": "..."}`. The Responses API rejects content items
-/// without `type: "reasoning_text"` with a 400. This walker fixes that
-/// post-serialization, scoped narrowly to reasoning items.
-///
-/// This is the last surviving piece of the old `raw_output` machinery,
-/// kept because it papers over a real async-openai gap — not because it's
-/// part of any placeholder dance. When upstream `ReasoningTextContent`
-/// grows a `type` field, this function can be deleted.
-pub fn patch_reasoning_text_types(body: &mut serde_json::Value) {
-    let Some(input) = body.get_mut("input").and_then(|v| v.as_array_mut()) else {
-        return;
-    };
-    for item in input.iter_mut() {
-        if item.get("type").and_then(|t| t.as_str()) != Some("reasoning") {
-            continue;
-        }
-        let Some(content) = item.get_mut("content").and_then(|c| c.as_array_mut()) else {
-            continue;
-        };
-        for c in content.iter_mut() {
-            if let Some(obj) = c.as_object_mut() {
-                obj.entry("type")
-                    .or_insert_with(|| serde_json::Value::String("reasoning_text".into()));
-            }
-        }
-    }
-}
-
-/// Convert a ConversationItem to Responses API InputItem(s)
-fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<rs::InputItem> {
-    match item {
-        ConversationItem::System(s) => {
-            // System messages become an EasyMessage with system role
-            vec![rs::InputItem::EasyMessage(rs::EasyInputMessage {
-                r#type: rs::MessageType::Message,
-                role: rs::Role::System,
-                content: rs::EasyInputContent::Text(s.content.as_ref().to_owned()),
-            })]
-        }
-        ConversationItem::User(u) => {
-            let content = content_parts_to_easy_input_content(&u.content);
-            vec![rs::InputItem::EasyMessage(rs::EasyInputMessage {
-                r#type: rs::MessageType::Message,
-                role: rs::Role::User,
-                content,
-            })]
-        }
-        ConversationItem::Reasoning(r) => {
-            // Reasoning items round-trip back to the Responses API in their
-            // native typed form. `status` is output-only (the API rejects it
-            // on input), so strip it before emission; everything else
-            // (summary, content, encrypted_content, id) passes through.
-            let mut r = r.clone();
-            r.status = None;
-            vec![rs::InputItem::Item(rs::Item::Reasoning(r))]
-        }
-        ConversationItem::Assistant(a) => {
-            let mut items = Vec::new();
-
-            // Reasoning is no longer carried by AssistantItem — it lives as
-            // a sibling `ConversationItem::Reasoning(_)` immediately before
-            // this item (when applicable) and is emitted by its own arm.
-
-            // Add text content as assistant message if present
-            if !a.content.is_empty() {
-                items.push(rs::InputItem::EasyMessage(rs::EasyInputMessage {
-                    r#type: rs::MessageType::Message,
-                    role: rs::Role::Assistant,
-                    content: rs::EasyInputContent::Text(a.content.as_ref().to_owned()),
-                }));
-            }
-
-            // Add each tool call as a FunctionCall item
-            for tc in &a.tool_calls {
-                let arguments = sanitize_tool_arguments(&tc.id, &tc.name, tc.arguments.clone());
-                items.push(rs::InputItem::Item(rs::Item::FunctionCall(
-                    rs::FunctionToolCall {
-                        call_id: tc.id.as_ref().to_owned(),
-                        name: tc.name.clone(),
-                        arguments: arguments.as_ref().to_owned(),
-                        id: None,
-                        status: None,
-                    },
-                )));
-            }
-
-            items
-        }
-        ConversationItem::ToolResult(t) => {
-            // Tool results are sent as FunctionCallOutput items.
-            // When images are present, use Content variant with text + image blocks.
-            let output = if t.images.is_empty() {
-                rs::FunctionCallOutput::Text(t.content.as_ref().to_owned())
-            } else {
-                let mut parts: Vec<rs::InputContent> =
-                    vec![rs::InputContent::InputText(rs::InputTextContent {
-                        text: t.content.as_ref().to_owned(),
-                    })];
-                for img in &t.images {
-                    if let ContentPart::Image { url } = img {
-                        parts.push(rs::InputContent::InputImage(rs::InputImageContent {
-                            detail: rs::ImageDetail::Auto,
-                            file_id: None,
-                            image_url: Some(url.as_ref().to_owned()),
-                        }));
-                    }
-                }
-                rs::FunctionCallOutput::Content(parts)
-            };
-            vec![rs::InputItem::Item(rs::Item::FunctionCallOutput(
-                rs::FunctionCallOutputItemParam {
-                    call_id: t.tool_call_id.clone(),
-                    output,
-                    id: None,
-                    status: None,
-                },
-            ))]
-        }
-        ConversationItem::BackendToolCall(b) => {
-            // Round-trip backend tool calls back to the Responses API as
-            // their native item types, preserving full context continuity.
-            vec![match &b.kind {
-                BackendToolKind::WebSearch(ws) => {
-                    rs::InputItem::Item(rs::Item::WebSearchCall(ws.clone()))
-                }
-                BackendToolKind::XSearch(ct) => {
-                    rs::InputItem::Item(rs::Item::CustomToolCall(ct.clone()))
-                }
-                BackendToolKind::CodeInterpreter(ci) => {
-                    rs::InputItem::Item(rs::Item::CodeInterpreterCall(ci.clone()))
-                }
-            }]
-        }
-    }
-}
-
-/// Convert ContentParts to Responses API EasyInputContent
-fn content_parts_to_easy_input_content(parts: &[ContentPart]) -> rs::EasyInputContent {
-    if parts.len() == 1
-        && let ContentPart::Text { text } = &parts[0]
-    {
-        return rs::EasyInputContent::Text(text.as_ref().to_owned());
-    }
-
-    let items: Vec<rs::InputContent> = parts
-        .iter()
-        .map(|part| match part {
-            ContentPart::Text { text } => rs::InputContent::InputText(rs::InputTextContent {
-                text: text.as_ref().to_owned(),
-            }),
-            ContentPart::Image { url } => rs::InputContent::InputImage(rs::InputImageContent {
-                image_url: Some(url.as_ref().to_owned()),
-                file_id: None,
-                detail: rs::ImageDetail::default(),
-            }),
-        })
-        .collect();
-
-    rs::EasyInputContent::ContentList(items)
-}
-
-/// Build tools for Responses API.
-///
-/// Combines client-side function tools (`req.tools`) with backend-hosted
-/// tools (`req.hosted_tools`). Function tools are sent as `rs::Tool::Function`;
-/// hosted tools are sent as their native Responses API types (e.g.,
-/// `rs::Tool::WebSearch`), which tells the backend to execute them server-side.
-///
-/// Function tools whose name collides with a hosted tool are dropped (the
-/// backend rejects the request with `Duplicate tool names: <name>` otherwise);
-/// the hosted tool wins.
-fn build_responses_tools(req: &ConversationRequest) -> Vec<rs::Tool> {
-    let mut tools: Vec<rs::Tool> = req
-        .tools
-        .iter()
-        .filter(|t| {
-            let collides = req.hosted_tools.iter().any(|h| h.wire_name() == t.name);
-            if collides {
-                tracing::warn!(
-                    tool = %t.name,
-                    "dropping function tool that collides with a backend-hosted tool"
-                );
-            }
-            !collides
-        })
-        .map(|t| {
-            rs::Tool::Function(rs::FunctionTool {
-                name: t.name.clone(),
-                description: t.description.clone(),
-                parameters: Some(t.parameters.clone()),
-                strict: None,
-            })
-        })
-        .collect();
-
-    for hosted in &req.hosted_tools {
-        match hosted {
-            HostedTool::WebSearch { allowed_domains } => {
-                let filters = allowed_domains
-                    .as_ref()
-                    .map(|domains| rs::WebSearchToolFilters {
-                        allowed_domains: Some(domains.clone()),
-                    });
-                tools.push(rs::Tool::WebSearch(rs::WebSearchTool {
-                    filters,
-                    ..Default::default()
-                }));
-            }
-            // XSearch is xAI-specific — not in async_openai's rs::Tool enum.
-            // Injected as raw JSON by the sampler client after serialization.
-            HostedTool::XSearch => {}
-        }
-    }
-
-    tools
-}
-
-/// Return raw JSON tool definitions for xAI-specific hosted tools that
-/// cannot be represented by `async_openai`'s `rs::Tool` enum.
-///
-/// The sampler client injects these into the serialized request body's
-/// `tools` array before sending to the API.
-pub fn extra_raw_tools(hosted_tools: &[HostedTool]) -> Vec<serde_json::Value> {
-    let mut raw = Vec::new();
-    for tool in hosted_tools {
-        match tool {
-            // WebSearch is handled natively via rs::Tool::WebSearch in
-            // build_responses_tools() — no raw JSON injection needed.
-            HostedTool::WebSearch { .. } => {}
-            HostedTool::XSearch => {
-                raw.push(serde_json::json!({"type": "x_search"}));
-            }
-        }
-    }
-    raw
 }
 
 // ============================================================================
@@ -2703,6 +2363,7 @@ mod messages_tests;
 mod tests {
     use super::test_support::*;
     use super::*;
+    use crate::tool_overrides::*;
     use assert_matches::assert_matches;
 
     /// Keeps `forwards_prompt_cache_key()` honest against each mapping: a key that never reaches the wire looks like a 0% cache hit, not a bug.
@@ -3042,434 +2703,6 @@ mod tests {
             description: Some("Does something".to_string()),
             parameters: serde_json::json!({"type": "object"}),
         };
-
-        let def = ToolDefinition::function(
-            spec.name.clone(),
-            spec.description.clone(),
-            spec.parameters.clone(),
-        );
-
-        assert_eq!(def.function.name, "my_tool");
-        assert_eq!(def.function.description, Some("Does something".to_string()));
-    }
-
-    // ============================================================================
-    // ConversationToolChoice Tests
-    // ============================================================================
-
-    fn make_test_tool() -> ToolSpec {
-        ToolSpec {
-            name: "test_tool".to_string(),
-            description: Some("A test tool".to_string()),
-            parameters: serde_json::json!({}),
-        }
-    }
-
-    #[test]
-    fn test_tool_choice_auto_to_chat_completion() {
-        let req = ConversationRequest::from_items(vec![ConversationItem::user("test")])
-            .with_tools(vec![make_test_tool()])
-            .with_tool_choice(ConversationToolChoice::Auto);
-
-        let chat_req: ChatCompletionRequest = req.into();
-        assert!(chat_req.tool_choice.is_some());
-        let ToolChoice::Preset(preset) = chat_req.tool_choice.unwrap() else {
-            panic!("Expected Preset tool choice");
-        };
-        assert_eq!(preset, "auto");
-    }
-
-    #[test]
-    fn test_tool_choice_none_to_chat_completion() {
-        let req = ConversationRequest::from_items(vec![ConversationItem::user("test")])
-            .with_tools(vec![make_test_tool()])
-            .with_tool_choice(ConversationToolChoice::None);
-
-        let chat_req: ChatCompletionRequest = req.into();
-        let ToolChoice::Preset(preset) = chat_req.tool_choice.unwrap() else {
-            panic!("Expected Preset tool choice");
-        };
-        assert_eq!(preset, "none");
-    }
-
-    #[test]
-    fn test_tool_choice_required_to_chat_completion() {
-        let req = ConversationRequest::from_items(vec![ConversationItem::user("test")])
-            .with_tools(vec![make_test_tool()])
-            .with_tool_choice(ConversationToolChoice::Required);
-
-        let chat_req: ChatCompletionRequest = req.into();
-        let ToolChoice::Preset(preset) = chat_req.tool_choice.unwrap() else {
-            panic!("Expected Preset tool choice");
-        };
-        assert_eq!(preset, "required");
-    }
-
-    #[test]
-    fn test_tool_choice_function_to_chat_completion() {
-        let req = ConversationRequest::from_items(vec![ConversationItem::user("test")])
-            .with_tools(vec![make_test_tool()])
-            .with_tool_choice(ConversationToolChoice::Function("read_file".to_string()));
-
-        let chat_req: ChatCompletionRequest = req.into();
-        let ToolChoice::Function { function, .. } = chat_req.tool_choice.unwrap() else {
-            panic!("Expected Function tool choice");
-        };
-        assert_eq!(function.name, "read_file");
-    }
-
-    #[test]
-    fn test_tool_choice_to_responses_api() {
-        // Test Auto
-        let req = ConversationRequest::from_items(vec![ConversationItem::user("test")])
-            .with_tool_choice(ConversationToolChoice::Auto);
-        let responses_req: rs::CreateResponse = (&req).into();
-        assert_matches!(
-            responses_req.tool_choice,
-            Some(rs::ToolChoiceParam::Mode(rs::ToolChoiceOptions::Auto))
-        );
-
-        // Test Required
-        let req = ConversationRequest::from_items(vec![ConversationItem::user("test")])
-            .with_tool_choice(ConversationToolChoice::Required);
-        let responses_req: rs::CreateResponse = (&req).into();
-        assert_matches!(
-            responses_req.tool_choice,
-            Some(rs::ToolChoiceParam::Mode(rs::ToolChoiceOptions::Required))
-        );
-
-        // Test Function
-        let req = ConversationRequest::from_items(vec![ConversationItem::user("test")])
-            .with_tool_choice(ConversationToolChoice::Function("bash".to_string()));
-        let responses_req: rs::CreateResponse = (&req).into();
-        let Some(rs::ToolChoiceParam::Function(fc)) = responses_req.tool_choice else {
-            panic!("Expected Function tool choice");
-        };
-        assert_eq!(fc.name, "bash");
-    }
-
-    #[test]
-    fn test_tool_choice_dropped_when_no_tools_chat_completions() {
-        // Chat Completions API rejects tool_choice without tools
-        let req = ConversationRequest::from_items(vec![ConversationItem::user("test")])
-            .with_tool_choice(ConversationToolChoice::Auto);
-        let chat_req: ChatCompletionRequest = req.into();
-        assert!(chat_req.tool_choice.is_none());
-        assert!(chat_req.tools.is_none());
-    }
-
-    // ============================================================================
-    // Edge Cases Tests
-    // ============================================================================
-
-    #[test]
-    fn test_empty_content() {
-        // Empty user message
-        let user = ConversationItem::user("");
-        assert_eq!(user.text_content(), "");
-
-        // Empty assistant message
-        let assistant = ConversationItem::assistant("");
-        assert_eq!(assistant.text_content(), "");
-
-        // Empty system message
-        let system = ConversationItem::system("");
-        assert_eq!(system.text_content(), "");
-    }
-
-    #[test]
-    fn test_empty_tool_calls() {
-        let assistant = ConversationItem::assistant_tool_calls(vec![]);
-        let ConversationItem::Assistant(a) = assistant else {
-            panic!("Expected Assistant item");
-        };
-        assert!(a.tool_calls.is_empty());
-        assert!(a.content.is_empty());
-    }
-
-    #[test]
-    fn test_user_with_multiple_images() {
-        let parts = vec![
-            ContentPart::Text {
-                text: "Compare these images:".into(),
-            },
-            ContentPart::Image {
-                url: "https://example.com/img1.png".into(),
-            },
-            ContentPart::Image {
-                url: "https://example.com/img2.png".into(),
-            },
-            ContentPart::Image {
-                url: "data:image/png;base64,iVBORw0KGgo=".into(),
-            },
-        ];
-
-        let user = ConversationItem::user_with_parts(parts);
-
-        // Convert to ChatRequestMessage
-        let chat_msg = conversation_item_to_chat_message(user);
-        let blocks = chat_msg.content.blocks();
-        assert_eq!(blocks.len(), 4);
-        assert_matches!(&blocks[0], ChatContentBlock::Text { text } if text == "Compare these images:");
-        assert_matches!(&blocks[1], ChatContentBlock::ImageUrl { .. });
-        assert_matches!(&blocks[2], ChatContentBlock::ImageUrl { .. });
-        assert_matches!(&blocks[3], ChatContentBlock::ImageUrl { .. });
-    }
-
-    #[test]
-    fn test_user_with_only_image() {
-        let parts = vec![ContentPart::Image {
-            url: "https://example.com/image.png".into(),
-        }];
-
-        let user = ConversationItem::user_with_parts(parts);
-        assert_eq!(user.text_content(), ""); // No text content
-    }
-
-    #[test]
-    fn test_special_characters_in_content() {
-        let special_text =
-            "Hello! 🎉 Here's some <xml>content</xml> & \"quotes\" and 'apostrophes'";
-        let user = ConversationItem::user(special_text);
-
-        let chat_msg = conversation_item_to_chat_message(user);
-        assert_eq!(chat_msg.text_content(), special_text);
-    }
-
-    #[test]
-    fn test_json_in_tool_arguments() {
-        let complex_args =
-            r#"{"nested": {"key": "value", "array": [1, 2, 3]}, "special": "a\"b\\c"}"#;
-        let tool_call = ToolCall {
-            id: "call_1".into(),
-            name: "complex_tool".to_string(),
-            arguments: complex_args.into(),
-        };
-
-        let item = ConversationItem::assistant_tool_calls(vec![tool_call]);
-        let chat_msg = conversation_item_to_chat_message(item);
-        assert_eq!(chat_msg.tool_calls[0].function.arguments, complex_args);
-    }
-
-    /// Regression test for the kimi-k2.5 / OpenRouter 400 bug.
-    ///
-    /// When a model emits malformed JSON in tool-call arguments (e.g. a missing
-    /// opening `"` before a key), the next request that includes that assistant
-    /// message in its history must NOT forward the broken string verbatim.
-    /// OpenRouter validates `function.arguments` as JSON before forwarding to
-    /// the upstream model, and returns `400 unexpected character: line 1 column
-    /// 81 (char 80)` — breaking all subsequent retries.
-    ///
-    /// The fix: replace invalid arguments with `"{}"` at the
-    /// `ConversationItem → ChatRequestMessage` boundary.
-    #[test]
-    fn test_malformed_tool_arguments_sanitized_to_empty_object_in_chat_request() {
-        // Exactly the broken string from the real incident:
-        // missing `"` before `new_string` → JSON parse fails at char 80.
-        let bad_args = r#"{"file_path": "/testbed/cxx_polynomial/include/emsr/remez.h", "old_string": "", new_string": "x"}"#;
-        assert!(
-            serde_json::from_str::<serde_json::Value>(bad_args).is_err(),
-            "pre-condition: bad_args must be invalid JSON"
-        );
-
-        let tool_call = ToolCall {
-            id: "functions.search_replace:10".into(),
-            name: "search_replace".to_string(),
-            arguments: bad_args.into(),
-        };
-
-        let item = ConversationItem::assistant_tool_calls(vec![tool_call]);
-        let chat_msg = conversation_item_to_chat_message(item);
-
-        // Arguments must be replaced with valid JSON.
-        let sanitized = &chat_msg.tool_calls[0].function.arguments;
-        assert_eq!(
-            sanitized, "{}",
-            "malformed arguments must be replaced with {{}}"
-        );
-        assert!(
-            serde_json::from_str::<serde_json::Value>(sanitized).is_ok(),
-            "sanitized arguments must be valid JSON"
-        );
-    }
-
-    /// Valid tool-call arguments must pass through unchanged.
-    #[test]
-    fn test_valid_tool_arguments_pass_through_unchanged_in_chat_request() {
-        let valid_args = r#"{"file_path": "/foo.rs", "old_string": "a", "new_string": "b"}"#;
-        let tool_call = ToolCall {
-            id: "call_1".into(),
-            name: "search_replace".to_string(),
-            arguments: valid_args.into(),
-        };
-
-        let item = ConversationItem::assistant_tool_calls(vec![tool_call]);
-        let chat_msg = conversation_item_to_chat_message(item);
-        assert_eq!(
-            chat_msg.tool_calls[0].function.arguments, valid_args,
-            "valid arguments must not be modified"
-        );
-    }
-
-    /// Same sanitization must apply on the Responses API path.
-    #[test]
-    fn test_malformed_tool_arguments_sanitized_in_responses_api() {
-        let bad_args = r#"{"file_path": "/testbed/cxx_polynomial/include/emsr/remez.h", "old_string": "", new_string": "x"}"#;
-
-        let tool_call = ToolCall {
-            id: "call_bad".into(),
-            name: "search_replace".to_string(),
-            arguments: bad_args.into(),
-        };
-
-        let item = ConversationItem::assistant_tool_calls(vec![tool_call]);
-        let req = ConversationRequest {
-            items: vec![item],
-            ..Default::default()
-        };
-
-        let rs_req: crate::rs::CreateResponse = (&req).into();
-
-        // The FunctionCall input item must carry sanitized arguments.
-        let crate::rs::InputParam::Items(items) = rs_req.input else {
-            panic!("Expected InputParam::Items");
-        };
-        let fc_args = items.iter().find_map(|inp| {
-            if let crate::rs::InputItem::Item(crate::rs::Item::FunctionCall(fc)) = inp {
-                Some(fc.arguments.clone())
-            } else {
-                None
-            }
-        });
-
-        let fc_args = fc_args.expect("should find a FunctionCall input item");
-        assert_eq!(
-            fc_args, "{}",
-            "malformed arguments must be replaced with {{}} in Responses API path"
-        );
-    }
-
-    /// Build a minimal `ConversationRequest` for messages-API tests.
-    fn messages_test_request(
-        reasoning_effort: Option<crate::ReasoningEffort>,
-    ) -> ConversationRequest {
-        ConversationRequest {
-            items: vec![ConversationItem::user("Hello")],
-            model: Some("test-model".to_string()),
-            reasoning_effort,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn test_messages_request_wire_format_for_supported_variants() {
-        for (variant, expected) in [
-            (crate::ReasoningEffort::Low, "low"),
-            (crate::ReasoningEffort::Medium, "medium"),
-            (crate::ReasoningEffort::High, "high"),
-            (crate::ReasoningEffort::Xhigh, "max"),
-        ] {
-            let req = messages_test_request(Some(variant));
-            let msgs = build_messages_request(&req);
-            let json = serde_json::to_value(&msgs).unwrap();
-            assert_eq!(
-                json.pointer("/output_config/effort")
-                    .and_then(|v| v.as_str()),
-                Some(expected),
-                "{variant:?} should map to output_config.effort={expected:?}; got: {json:#}",
-            );
-            assert_eq!(
-                json.pointer("/thinking/type").and_then(|v| v.as_str()),
-                Some("adaptive"),
-                "{variant:?} should auto-pair thinking.type=adaptive; got: {json:#}",
-            );
-        }
-    }
-
-    #[test]
-    fn test_messages_request_omits_output_config_when_no_supported_effort() {
-        let none_or_unsupported = [
-            None,
-            Some(crate::ReasoningEffort::None),
-            Some(crate::ReasoningEffort::Minimal),
-        ];
-        for input in none_or_unsupported {
-            let req = messages_test_request(input);
-            let msgs = build_messages_request(&req);
-            assert!(
-                msgs.output_config.is_none(),
-                "input {input:?} must not produce output_config",
-            );
-            assert!(
-                msgs.thinking.is_none(),
-                "input {input:?} must not auto-pair thinking",
-            );
-        }
-    }
-
-    #[test]
-    fn test_chat_completion_request_carries_reasoning_effort_top_level() {
-        for (variant, expected) in [
-            (crate::ReasoningEffort::None, "none"),
-            (crate::ReasoningEffort::Minimal, "minimal"),
-            (crate::ReasoningEffort::Low, "low"),
-            (crate::ReasoningEffort::Medium, "medium"),
-            (crate::ReasoningEffort::High, "high"),
-            (crate::ReasoningEffort::Xhigh, "xhigh"),
-        ] {
-            let req = ConversationRequest::from_items(vec![ConversationItem::user("hi")])
-                .with_model("test");
-            let req = ConversationRequest {
-                reasoning_effort: Some(variant),
-                ..req
-            };
-            let chat: ChatCompletionRequest = req.into();
-            let json = serde_json::to_value(&chat).unwrap();
-            assert_eq!(
-                json.pointer("/reasoning_effort").and_then(|v| v.as_str()),
-                Some(expected),
-                "{variant:?} should serialize as top-level reasoning_effort={expected:?}; got: {json:#}",
-            );
-        }
-    }
-
-    /// OpenAI rejects `null` for this field on some models, so it must be omitted.
-    #[test]
-    fn test_chat_completion_request_omits_reasoning_effort_when_unset() {
-        let req =
-            ConversationRequest::from_items(vec![ConversationItem::user("hi")]).with_model("test");
-        let chat: ChatCompletionRequest = req.into();
-        let json = serde_json::to_value(&chat).unwrap();
-        assert!(
-            json.get("reasoning_effort").is_none(),
-            "reasoning_effort must be absent when unset; got: {json:#}",
-        );
-    }
-
-    #[test]
-    fn test_responses_request_carries_reasoning_effort_nested() {
-        for (variant, expected) in [
-            (crate::ReasoningEffort::None, "none"),
-            (crate::ReasoningEffort::Minimal, "minimal"),
-            (crate::ReasoningEffort::Low, "low"),
-            (crate::ReasoningEffort::Medium, "medium"),
-            (crate::ReasoningEffort::High, "high"),
-            (crate::ReasoningEffort::Xhigh, "xhigh"),
-        ] {
-            let req = ConversationRequest {
-                reasoning_effort: Some(variant),
-                ..ConversationRequest::from_items(vec![ConversationItem::user("hi")])
-                    .with_model("test")
-            };
-            let resp: crate::rs::CreateResponse = (&req).into();
-            let json = serde_json::to_value(&resp).unwrap();
-            assert_eq!(
-                json.pointer("/reasoning/effort").and_then(|v| v.as_str()),
-                Some(expected),
-                "{variant:?} should serialize as reasoning.effort={expected:?}; got: {json:#}",
-            );
-        }
-    }
 
         let def = ToolDefinition::function(
             spec.name.clone(),
@@ -5422,41 +4655,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn synthetic_constructors_share_the_model_item_ceiling() {
-        let oversized = format!("{}TAIL", "界".repeat(MAX_MODEL_ITEM_BYTES));
-        let items = vec![
-            ConversationItem::user_meta(oversized.clone()),
-            ConversationItem::system_reminder(oversized.clone()),
-            ConversationItem::project_instructions(oversized.clone()),
-            ConversationItem::auto_continue(oversized.clone()),
-            ConversationItem::auto_recovery(oversized.clone()),
-            ConversationItem::interjection(oversized.clone()),
-            ConversationItem::task_completed(oversized.clone()),
-            ConversationItem::subagent_completed(oversized.clone()),
-            ConversationItem::notification_drain(oversized.clone()),
-            ConversationItem::goal_summary(oversized.clone()),
-            ConversationItem::goal_classifier_nudge(oversized.clone()),
-            ConversationItem::scheduler_fired(oversized),
-        ];
-        for item in items {
-            let text = item.text_content();
-            assert!(text.len() <= MAX_MODEL_ITEM_BYTES);
-            assert!(text.contains("middle truncated"));
-            assert!(text.ends_with("TAIL"));
-        }
-    }
-
-    #[test]
-    fn model_item_bound_is_utf8_safe_for_tiny_and_normal_budgets() {
-        let content = "é界".repeat(100);
-        for budget in [0, 1, 2, 3, 17, 128] {
-            let bounded = bound_model_item_text(content.clone(), budget);
-            assert!(bounded.len() <= budget);
-            assert!(std::str::from_utf8(bounded.as_bytes()).is_ok());
-        }
-    }
-
     /// Historical `doom_loop_warning` tags deserialize as Unknown after removal.
     #[test]
     fn historical_doom_loop_warning_deserializes_as_unknown() {
@@ -5471,6 +4669,30 @@ mod tests {
         } else {
             panic!("expected User variant");
         }
+    }
+
+    #[test]
+    fn working_directory_switch_round_trips_generation() {
+        let item = ConversationItem::working_directory_switch("moved", 7);
+        let json = serde_json::to_value(&item).expect("serialize");
+        assert_eq!(json["synthetic_reason"], "working_directory_switch");
+        assert_eq!(json["cwd_generation"], 7);
+        let back: ConversationItem = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back.working_directory_switch_generation(), Some(7));
+    }
+
+    #[test]
+    fn legacy_user_defaults_cwd_generation_to_none() {
+        let item: ConversationItem = serde_json::from_value(serde_json::json!({
+            "type": "user",
+            "content": [{"type": "text", "text": "hello"}],
+            "synthetic_reason": "system_reminder"
+        }))
+        .expect("deserialize legacy user");
+        let ConversationItem::User(user) = item else {
+            panic!("expected user");
+        };
+        assert!(user.cwd_generation.is_none());
     }
 
     /// `synthetic_reason` round-trips through JSON.  Old sessions that omit

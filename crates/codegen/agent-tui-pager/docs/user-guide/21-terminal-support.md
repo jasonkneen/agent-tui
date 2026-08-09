@@ -50,9 +50,9 @@ sourced files, conditionals, plugins, and generated tmux setup yourself.
 
 ## Detected Terminals
 
-Agent TUI detects these terminal emulators from environment variables:
+Grok detects these terminal emulators from environment variables:
 
-- **Apple Terminal** (Terminal.app)
+- **Apple Terminal**
 - **Ghostty**
 - **iTerm2**
 - **Warp**
@@ -62,32 +62,26 @@ Agent TUI detects these terminal emulators from environment variables:
 - **Rio**
 - **foot** (Wayland-native, Linux)
 - **VS Code**, **Cursor**, **Windsurf**, and **Zed** integrated terminals
-- **JetBrains** IDE terminals (IntelliJ, PhpStorm, and others)
-- **Agent TUI Desktop**
-- **VTE**-based terminals (GNOME Terminal, GNOME Console, Tilix)
+- **JetBrains** IDE terminals
+- **Grok Desktop**
+- **VTE**-based terminals such as GNOME Terminal, GNOME Console, and Tilix
 - **Windows Terminal**
 
 Detection has these limitations:
 
-- Inside tmux, the variables Agent TUI needs to identify the terminal don't reach the pager.
-- Over SSH, many terminal variables aren't forwarded.
-- tmux's global environment (`tmux -g`) reflects the first client that attached to the server, not your current session.
+- Inside tmux, variables that identify the outer terminal may not reach Grok.
+- Over SSH, many terminal variables are not forwarded.
+- tmux's global environment reflects the first client attached to the server,
+  not necessarily the current terminal.
 
 ---
 
 ## Common Problems and Fixes
 
-### Problem: Colors look wrong or lack truecolor
+### Colors look wrong or lack truecolor
 
-**Cause**: `COLORTERM` not set or tmux not configured for 24-bit RGB.
-
-**Fix**: Apply the two settings above, then restart Agent TUI.
-
-**Verify**: Run `/terminal-setup`. Expect `color truecolor` and `themes all`. If `color` is `256` or `basic`, the issues section has the unlock fix.
-
-### Problem: Clipboard problems
-
-Agent TUI writes to the clipboard through up to three routes, which match the **Clipboard routes** section of `/terminal-setup`:
+Run `/doctor`. A fully supported setup shows `color truecolor` and `themes all`.
+If it does not, Doctor shows the detected limitation and the relevant fix.
 
 Inside tmux there are two separate questions: what color Grok emits, and what
 color survives the multiplexer. The `color` line answers the first. For the
@@ -101,118 +95,153 @@ step alone changes anything.
 
 ### Clipboard problems
 
-**Linux Wayland**: on compositors that support the data-control protocol (GNOME 48+, KDE, Sway, Hyprland — the `data-control` line in `/terminal-setup` shows `yes`) copies work even if the terminal loses focus mid-copy. On older compositors (GNOME 46/47), keep the terminal focused until the copy toast confirms, and install the `wl-clipboard` package (provides `wl-copy`) for the most reliable route — Agent TUI shows a startup warning when this applies. If data-control misbehaves on your compositor, set `GROK_CLIPBOARD_NO_DATA_CONTROL=1` to stop Agent TUI from speaking that protocol entirely — copies then go through the CLI tools (`wl-copy`/`xclip`).
+Grok writes through up to three routes, shown in `/doctor` under **Clipboard**:
 
-**Linux X11 selections**: X11 **PRIMARY** and **CLIPBOARD** are separate. Selecting text usually fills PRIMARY; an explicit Copy action fills CLIPBOARD. In Agent TUI:
+- **native** — the local operating-system clipboard.
+- **tmux** — the tmux paste buffer when Grok runs inside tmux.
+- **OSC 52** — an escape sequence that can cross tmux, containers, or SSH.
 
-- An unmodified middle click reads PRIMARY only when `DISPLAY` is non-empty. Pure X11 can fall back to the native arboard reader. XWayland must have `xclip` or `xsel` on `PATH`; Agent TUI deliberately disables the arboard fallback there so it cannot substitute Wayland PRIMARY.
-- `Ctrl+V` reads CLIPBOARD only and never falls back to PRIMARY. To fill CLIPBOARD from a shell, run `printf %s "text" | xclip -selection clipboard`.
-- `Shift+Insert` remains the terminal-native selected-text paste. Native Wayland PRIMARY behavior is compositor/terminal-specific and is not inferred from `TERM` or an incoming mouse event.
+#### Wayland
 
-**SSH and selected text**: a remote Agent TUI process usually cannot read the local terminal's PRIMARY or CLIPBOARD selection. Use terminal-native `Shift+Insert`, or hold `Shift` while middle-clicking when your terminal uses that gesture to bypass mouse reporting. The terminal then sends the local selection through the PTY instead of asking the remote process to access it.
+Modern Wayland compositors can update the clipboard without keeping the
+terminal focused. Older compositors may require Grok to remain focused until
+the copy message appears. Grok shows a startup warning when this applies; run
+`/doctor` for the detected status and steps.
 
-**Known limitation — Apple Terminal + SSH**:
-Apple Terminal ignores OSC 52, so copying from a Agent TUI session over SSH can't reach your local clipboard. Use the workaround below.
+`GROK_CLIPBOARD_NO_DATA_CONTROL=1` is an advanced fallback that disables the
+data-control route. Copies then use command-line clipboard tools.
 
-**Temporary workaround**: Use `agent-tui wrap ssh` instead of plain `ssh` (for example, `agent-tui wrap ssh user@host`). It runs the command in a local PTY that intercepts OSC 52 sequences, including tmux-wrapped ones, and writes their contents to your local clipboard. The same command wraps anything else whose clipboard can't reach you — for example `agent-tui wrap docker exec -it <container> bash` or `agent-tui wrap kubectl exec -it <pod> -- bash`.
+#### OSC 52 kill switch
 
-> **Warning**: `agent-tui wrap` is **experimental** and may misbehave in some setups.
+Grok emits OSC 52 on Linux and across tmux, SSH, or displayless containers when
+that route is enabled. A terminal that does not implement OSC 52 may display the
+encoded payload as text. Set `GROK_CLIPBOARD_NO_OSC52=1` before starting Grok to
+disable that route. `/doctor` then shows `osc 52 off`; native and tmux routes are
+unchanged.
 
-**iTerm2 setting**:
-iTerm2 requires explicit permission for OSC 52:
+#### Linux X11 selections
 
-1. iTerm2 → **Settings** → **General** → **Selection**
-2. Enable **"Applications in terminal may access clipboard"**
+X11 **PRIMARY** and **CLIPBOARD** are separate:
 
-This setting is off by default for security reasons. Without it, OSC 52 writes from Agent TUI (or any TUI) will be ignored.
+- An unmodified middle click reads PRIMARY only when `DISPLAY` is set. Under
+  XWayland, `xclip` or `xsel` must be on `PATH`.
+- `Ctrl+V` reads CLIPBOARD and never falls back to PRIMARY.
+- `Shift+Insert` remains the terminal's selected-text paste.
 
-**Fix for other cases**:
-- `set -g set-clipboard on` in tmux config
-- For other terminals over SSH, switch to iTerm2, Ghostty, WezTerm, or Kitty for native OSC 52 support
+#### SSH and selected text
 
-### Problem: Fullscreen / alternate screen not activating (inline mode)
+A remote Grok process normally cannot read the local terminal's selection. Use
+terminal-native `Shift+Insert`, or hold `Shift` while middle-clicking when the
+terminal uses that gesture to bypass mouse reporting.
 
-**Cause**: Zellij, tmux control mode (`tmux -CC`), or config set to `never`.
+When Grok cannot identify the outer terminal over SSH, it predicts that OSC 52
+will be sent but marks the route as not verified. The copy toast then names the
+backup file so you can retrieve the text. Run `/doctor` for other copy options.
 
-**Fix**:
-- In Zellij or control mode, Agent TUI intentionally runs inline (no alt screen).
-- Set `[terminal] alt_screen = "always"` in `~/.agent-tui/pager.toml` to force fullscreen.
-- Use the CLI flag `--no-alt-screen` to disable alt-screen mode entirely (useful for debugging or when the alternate screen causes issues in your terminal).
+#### Apple Terminal over SSH
 
-### Problem: Zellij keybindings interfere with Agent TUI (Ctrl+g, Ctrl+o, etc.)
+Apple Terminal does not support OSC 52, so a remote copy cannot reach the local
+clipboard. Each copy is still saved to a backup file (`~/.grok/last-copy.txt` by
+default; override with `GROK_COPY_FILE`); the toast names that path when delivery
+is unverified or the clipboard is unreachable. You can also use `/copy <file>` or
+`/minimal`.
 
-Zellij intercepts many Ctrl/Alt key combinations before they reach full-screen TUIs like Agent TUI.
+For direct clipboard forwarding, run the SSH command from the local computer
+through `grok wrap`, for example `grok wrap ssh user@host`. The same command can
+wrap container and pod shells. It also restores terminal modes after a dropped
+connection.
 
-**Best fix** (Zellij 0.41+): Switch to the **"Unlock-First (non-colliding)"** preset:
+When an SSH session is not using `grok wrap`, Grok shows the one-time tip
+“Run `/doctor` for details and fixes.” The tip stops appearing after the session
+is launched through wrap. Turn it off with `/settings` → **Show contextual
+hints** → **SSH wrap**, or set `ssh_wrap = false` under
+`[ui.contextual_hints]` in `$GROK_HOME/config.toml`. This setting does not hide
+the Doctor recommendation.
 
-1. Press `Ctrl+o` → `c` (open Configuration)
-2. Go to **"Change Mode Behavior"**
-3. Select **"Unlock-First (non-colliding)"**
-4. Press `Enter` (or `Ctrl+a` to save permanently)
+For repeated SSH use, Doctor offers `grok doctor fix ssh-wrap`. It also shows
+the one-off command, the file that would change, and the cases where the alias
+should be bypassed. The ID `terminal.ssh-wrap` remains accepted and appears in
+JSON.
 
-After this, Zellij starts **locked**. Most keys pass through to Agent TUI. Press `Ctrl+g` to temporarily unlock Zellij when you need its pane/session management.
+> **Warning**: `grok wrap` is experimental and may not work in every setup.
 
-Zellij recommends this approach for TUI users.
+#### iTerm2
 
-### Problem: `Ctrl+Enter` doesn't interject in WezTerm
+iTerm2 can require permission for OSC 52 clipboard access. Run `/doctor`; the
+`terminal.iterm2-clipboard-permission` recommendation shows the setting to
+check.
 
-**Cause**: WezTerm ships with the Kitty keyboard protocol disabled. Agent TUI relies on it to tell `Ctrl+Enter` (interject) and `Shift+Enter` (send in multiline mode) apart from plain `Enter`. Most other terminals enable the protocol when Agent TUI requests it.
+### Fullscreen or alternate screen does not activate
 
-For the same reason, in Apple Terminal, Agent TUI binds `Ctrl+O` to interject.
+Zellij and tmux control mode can limit the alternate screen. Grok normally uses
+inline mode in those environments. Run `/doctor` to see the detected condition.
+You can configure `[terminal] alt_screen` in `~/.grok/pager.toml`, or run
+`grok --no-alt-screen` to confirm inline mode works.
 
-**Fix**:
+### Zellij keybindings interfere with Grok
 
-Add this after `config = wezterm.config_builder()` in `~/.config/wezterm/wezterm.lua`:
+Zellij can intercept Ctrl/Alt keys before they reach Grok. On Zellij 0.41 or
+later, use the **Unlock-First (non-colliding)** preset:
 
-```lua
-config.enable_kitty_keyboard = true
-```
+1. Press `Ctrl+o`, then `c`.
+2. Open **Change Mode Behavior**.
+3. Select **Unlock-First (non-colliding)**.
+4. Press `Enter` to apply it.
 
-Reload (`Cmd+Shift+R` or restart WezTerm) and restart `agent-tui`.
+Press `Ctrl+g` when you need Zellij's own pane or session controls. In minimal
+mode, if `Ctrl+G` still does not reach Grok, open the command palette and select
+**Edit Prompt in External Editor**. This preserves the current draft; typing
+`/edit-prompt` starts an empty editor draft because the command itself occupies
+the composer.
 
-**Verify**: Run `/terminal-setup` inside Agent TUI. While a turn is active, you see the interject hint, and `Ctrl+Enter` interjects.
+### Ctrl+Enter does not interject in WezTerm
 
-**Quick workaround** (no global change):
+WezTerm ships with the Kitty keyboard protocol disabled. Run `/doctor` in Grok.
+The `terminal.wezterm-kitty` finding shows the setting and restart step. Over
+SSH, Doctor shows only the workaround that can work in the current session.
+Apple Terminal uses `Ctrl+O` for interjection because it cannot distinguish the
+modified Enter chord.
 
-```lua
-table.insert(config.keys, {
-  key = "Enter",
-  mods = "CTRL",
-  action = wezterm.action.SendString("\x1b[13;5u"),
-})
-```
+### Shift+Enter does not insert a newline in VS Code
 
-### Problem: `Shift+Enter` doesn't insert a newline in VS Code
+VS Code, Cursor, Windsurf, and Zed terminals use xterm.js, which only partially
+implements the Kitty keyboard protocol and mis-encodes some shifted printable
+keys. Grok therefore does not negotiate the protocol there, and Shift+Enter can
+arrive as the same `CR` as Enter. This also affects VS Code reached over SSH when
+`TERM_PROGRAM` is not forwarded. Use `Alt+Enter` to insert a newline; `/doctor`
+reports `terminal.newline-fallback` with the detected explanation and workaround.
 
-**Cause**: VS Code's integrated terminal (and the Cursor / Windsurf / Zed
-forks) use xterm.js, which only partially implements the Kitty keyboard
-protocol — it mis-encodes shifted printable keys (`!@#$%^&*()` arrive as
-plain digits). Agent TUI therefore never negotiates the protocol for these
-terminals. Without it, xterm.js sends a bare `CR` for `Shift+Enter`,
-byte-for-byte identical to plain `Enter`, so the chord can't be told apart
-and the prompt submits.
+### Mouse scrolling stops working
 
-This also affects VS Code reached **over SSH** (e.g. into a devbox or
-container): `TERM_PROGRAM` isn't forwarded, so Agent TUI sees an `Unknown`
-terminal and skips the protocol for the same reason.
+If Grok stops receiving mouse input, re-enable mouse reporting in the terminal:
 
-**Fix**: Use **`Alt+Enter`** to insert a newline. xterm.js delivers it
-reliably as `ESC`+`CR` regardless of the keyboard protocol, and Agent TUI's
-prompt hint bar advertises `Alt+Enter: newline` whenever it detects this
-situation. Run `/terminal-setup` to confirm — the `newline` row shows
-`Alt+Enter` when `Shift+Enter` is unavailable.
+- **Apple Terminal**: **View → Allow Mouse Reporting** (`Cmd+R`).
+- **iTerm2**: **Settings → Profiles → Terminal → Enable mouse reporting**.
 
-### Problem: Mouse scrolling stops working (native scrollbar takes over)
+### Voice dictation records nothing
 
-If Agent TUI's mouse-driven scrolling stops responding and your terminal falls back to its native scrollbar, mouse reporting is off.
+After about 10 seconds without a transcript, Grok stops capture and shows
+**“No speech was detected. Voice stopped.”** with microphone fix steps. On macOS,
+a denied microphone grant can look the same as silence because permission belongs
+to the terminal hosting Grok. Open **System Settings → Privacy & Security →
+Microphone**, enable the terminal, and restart it. If access is already on, check
+the input device and level under **System Settings → Sound → Input** and try
+again.
 
-**Apple Terminal**: Go to **View > Allow Mouse Reporting** (keyboard shortcut `Cmd+R`) to re-enable it. A checkmark appears next to the option when active.
+Run `grok doctor`, or run `/doctor` while voice mode is on. The **Voice** section
+shows the microphone Grok would use. If no input device is available, Doctor
+shows `voice.no-input-device` and the next steps. Doctor cannot detect denied
+macOS microphone access passively when macOS supplies silence.
 
-**iTerm2**: Open **Settings** (`Cmd+,`) → **Profiles** → **Terminal** → ensure **"Enable mouse reporting"** is checked. Alternatively, restart iTerm2.
+On macOS, each dictation uses a short-lived capture helper process so the audio
+stack's memory is released when capture ends. If the helper itself may be the
+problem, set `GROK_VOICE_CAPTURE=inprocess` to use the in-process fallback for
+comparison.
 
-### Problem: Byobu + GNU screen
+### Byobu with GNU screen
 
-Byobu on screen has best-effort support only. Prefer Byobu on tmux.
+Byobu on GNU screen has limited support. `/doctor` reports
+`terminal.byobu-screen` and explains how to switch to Byobu's tmux backend.
 
 ---
 

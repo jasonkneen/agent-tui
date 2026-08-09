@@ -50,7 +50,7 @@ After a plan exists, run **`/view-plan`** (aliases `/show-plan`, `/plan-view`) t
 
 ## The Plan File
 
-The plan is written to `plan.md` inside the session directory (`~/.agent-tui/sessions/<cwd>/<session-id>/plan.md`, where `<cwd>` is an encoded directory name, not the literal path).
+The plan is written to `plan.md` inside the session directory (`~/.grok/sessions/<cwd>/<session-id>/plan.md`, where `<cwd>` is an encoded directory name, not the literal path).
 
 The plan file contains:
 
@@ -77,6 +77,7 @@ Scroll the plan with the arrow keys or `j`/`k`. The action bar shows these short
 | `a`      | Approve the plan and start building. With pending comments, this reads `approve w/ comments` and sends them alongside the approval. |
 | `s`      | Request changes. Focus moves to the prompt so you can type revision notes; press `Enter` to send them. |
 | `c`      | Comment on the selected line or line range.                                                          |
+| `y`      | Copy the full plan to the clipboard.                                                                 |
 | `q`      | Quit plan -- abandon the plan without approving and turn plan mode off.                              |
 
 Press `Tab` to move focus between the plan preview and the prompt.

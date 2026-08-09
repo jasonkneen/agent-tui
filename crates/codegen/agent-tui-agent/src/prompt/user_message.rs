@@ -5,21 +5,21 @@
 //! workspace overview, optional rules / skills / MCP listings).
 //!
 //! `UserMessageTemplate` selects the rendering strategy:
-//! - `Default` -- the legacy Grok Build prefix (built by the shell layer).
-//! - `Custom`  -- caller-supplied template string (MiniJinja, same delimiters
-//!   as the system prompt templates).
+//! - `Default`: the legacy Grok Build prefix (built by the shell layer).
+//! - `Custom`: caller-supplied MiniJinja template string (same delimiters as
+//!   the system prompt templates).
 //!
 //! The shell layer gathers session-scoped inputs (cwd, vcs status, rule
 //! files, skill registry, MCP servers) and hands them to
 //! `UserMessageContext::render`, which dispatches on `template`.
 use crate::prompt::agents_md::AgentConfigFile;
-use agent_tui_tools::bridge::ToolBridge;
-use agent_tui_tools::implementations::skills::types::SkillInfo;
-use agent_tui_tools::types::skill_discovery_tracker::{XmlRenderMode, format_announcement_xml};
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
+use agent_tui_tools::bridge::ToolBridge;
+use agent_tui_tools::implementations::skills::types::SkillInfo;
+use agent_tui_tools::types::skill_discovery_tracker::{XmlRenderMode, format_announcement_xml};
 /// Date format for the `Today's date` field of the user-message preamble
 /// (e.g. "Friday Apr 24, 2026"). Any format change is observable to the model.
 pub const USER_MESSAGE_DATE_FORMAT: &str = "%A %b %-d, %Y";
@@ -27,8 +27,7 @@ pub const USER_MESSAGE_DATE_FORMAT: &str = "%A %b %-d, %Y";
 /// `<git_status>` block has no token budget -- this character cap is the only
 /// size control, and it is applied per repo at render, never at gather, so
 /// other consumers of the raw status are unaffected.
-pub const GIT_STATUS_CHARACTER_LIMIT: usize =
-    agent_tui_sampling_types::MAX_MODEL_ITEM_BYTES - 1_000;
+pub const GIT_STATUS_CHARACTER_LIMIT: usize = 10_000;
 /// Trim, drop-if-empty, and cap a VCS status string for the
 /// `<git_status>` block.
 ///
@@ -64,10 +63,8 @@ pub fn normalize_git_status(status: &str) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum UserMessageTemplate {
-    /// Legacy Grok Build prefix: `<user_info>` + optional `<git_status>`.
-    /// Built directly by the shell layer; this
-    ///   renderer returns `None` for `Default` and the caller falls back to
-    ///   its own legacy path.
+    /// Legacy Grok Build prefix (`<user_info>` + optional `<git_status>`), built directly by the
+    /// shell layer; the renderer returns `None` and the caller uses its own legacy path.
     #[default]
     Default,
     /// Caller-supplied MiniJinja template string.
@@ -76,6 +73,15 @@ pub enum UserMessageTemplate {
 impl UserMessageTemplate {
     pub fn is_cursor(&self) -> bool {
         false
+    }
+    /// Whether this template surfaces the session's local date, scoping the date-rollover reminder.
+    /// A `Custom` template omitting [`TODAY_LOCAL_PLACEHOLDER`] is date-free. The substring check can
+    /// only over-keep the reminder, never wrongly suppress a dated session.
+    pub fn surfaces_local_date(&self) -> bool {
+        match self {
+            Self::Default => true,
+            Self::Custom(body) => body.contains(TODAY_LOCAL_PLACEHOLDER),
+        }
     }
 }
 /// Backward-compatible deserialization: accepts both the new tagged format
@@ -206,6 +212,9 @@ pub struct UserMessageContext {
     /// Used in the skill section's instructional text. Defaults to `"Read"`.
     pub read_tool_name: String,
 }
+/// MiniJinja variable a `Custom` template renders the local date under (pinned to the serialized
+/// field by `placeholders_carry_today_local_key`).
+pub const TODAY_LOCAL_PLACEHOLDER: &str = "today_local";
 /// Typed placeholder bag handed to MiniJinja.
 ///
 /// Field names here must match `${{ … }}` references in any caller-supplied
@@ -305,12 +314,7 @@ impl UserMessageContext {
             UserMessageTemplate::Default => return None,
             UserMessageTemplate::Custom(s) => bridge.render_prompt(s, &placeholders).await,
         };
-        rendered.map(|s| {
-            agent_tui_sampling_types::bound_model_item_text(
-                s.trim_end().to_string(),
-                agent_tui_sampling_types::MAX_MODEL_ITEM_BYTES,
-            )
-        })
+        rendered.map(|s| s.trim_end().to_string())
     }
 }
 #[cfg(test)]
@@ -322,6 +326,30 @@ mod tests {
         assert_eq!(v, UserMessageTemplate::Default);
         let v: UserMessageTemplate = serde_json::from_str(r#""my custom""#).unwrap();
         assert_eq!(v, UserMessageTemplate::Custom("my custom".into()));
+    }
+    #[test]
+    fn placeholders_carry_today_local_key() {
+        let placeholders = UserMessagePlaceholders {
+            workspace_path: "/w".into(),
+            os_family: "macos",
+            shell: "zsh",
+            vcs_root: None,
+            vcs_status: None,
+            today_local: Some("Friday Apr 24, 2026".into()),
+            terminals_folder: None,
+            has_rules: false,
+            workspace_rules: &[],
+            user_rules: &[],
+            skill_listing: String::new(),
+            read_tool_name: "Read".into(),
+            mcp_servers: &[],
+            mcps_root: None,
+        };
+        let json = serde_json::to_value(&placeholders).unwrap();
+        assert!(
+            json.get(TODAY_LOCAL_PLACEHOLDER).is_some(),
+            "the local-date placeholder must serialize under TODAY_LOCAL_PLACEHOLDER"
+        );
     }
     #[test]
     fn template_override_deserialize_custom_map() {

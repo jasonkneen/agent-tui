@@ -1,12 +1,12 @@
 # Cross-Session Memory
 
-Memory lets Agent TUI recall facts, decisions, and patterns from earlier sessions. Agent TUI indexes the information you save and searches it automatically, so a new session can reuse relevant context.
+Memory lets Grok recall facts, decisions, and patterns from earlier sessions. Grok indexes the information you save and searches it automatically, so a new session can reuse relevant context.
 
 ---
 
 ## What Is Memory?
 
-Without memory, each Agent TUI session starts fresh: the model knows nothing about previous sessions. When you enable memory, Agent TUI can:
+Without memory, each Grok session starts fresh: the model knows nothing about previous sessions. When you enable memory, Grok can:
 
 - Recall project conventions you explained before.
 - Reuse debugging steps that worked.
@@ -22,20 +22,20 @@ Memory is experimental and disabled by default.
 ### Per-Session Flag
 
 ```bash
-agent-tui --experimental-memory
+grok --experimental-memory
 ```
 
 ### Environment Variable
 
 ```bash
 export GROK_MEMORY=1
-agent-tui
+grok
 ```
 
 ### Config File (Persistent)
 
 ```toml
-# ~/.agent-tui/config.toml
+# ~/.grok/config.toml
 [memory]
 enabled = true
 ```
@@ -45,7 +45,7 @@ enabled = true
 To disable memory even when other settings enable it:
 
 ```bash
-agent-tui --no-memory
+grok --no-memory
 ```
 
 Or:
@@ -81,15 +81,15 @@ You can also toggle from inside the `/memory` modal by pressing `t`.
 
 ## How Memory Is Stored
 
-Memory is stored as Markdown files under `~/.agent-tui/memory/`:
+Memory is stored as Markdown files under `~/.grok/memory/`:
 
 | Location | Scope | Description |
 |----------|-------|-------------|
-| `~/.agent-tui/memory/MEMORY.md` | Global | Facts that apply across all your projects |
-| `~/.agent-tui/memory/<project-slug>-<hash8>/MEMORY.md` | Workspace | Project-specific conventions and context |
-| `~/.agent-tui/memory/<project-slug>-<hash8>/sessions/` | Sessions | Per-session summaries and logs |
+| `~/.grok/memory/MEMORY.md` | Global | Facts that apply across all your projects |
+| `~/.grok/memory/<project-slug>-<hash8>/MEMORY.md` | Workspace | Project-specific conventions and context |
+| `~/.grok/memory/<project-slug>-<hash8>/sessions/` | Sessions | Per-session summaries and logs |
 
-Agent TUI suffixes each workspace directory with a short hash of the repository's identity. The identity is the `origin` remote in `org/repo` form when the directory is a Git repository with an `origin` remote, or the directory path otherwise. Because clones and worktrees of the same repository share an `origin` remote, they also share one memory directory.
+Grok suffixes each workspace directory with a short hash of the repository's identity. The identity is the `origin` remote in `org/repo` form when the directory is a Git repository with an `origin` remote, or the directory path otherwise. Because clones and worktrees of the same repository share an `origin` remote, they also share one memory directory.
 
 An SQLite index supports hybrid search across all memory files:
 - **FTS5** provides full-text search for keyword matching.
@@ -99,13 +99,13 @@ An SQLite index supports hybrid search across all memory files:
 
 ## Automatic Saves
 
-When a session ends, Agent TUI saves a structured metadata summary to that session's daily log. The summary contains:
+When a session ends, Grok saves a structured metadata summary to that session's daily log. The summary contains:
 
 - Message counts (user, assistant, and tool results).
 - Topics: the first few substantive user prompts from the session, up to five.
 - The session date and time (UTC).
 
-Agent TUI builds the summary from conversation metadata without an LLM call, without added latency. Agent TUI skips the save for trivial sessions -- those with fewer than three substantive prompts, or fewer than 50 bytes of user text.
+Grok builds the summary from conversation metadata without an LLM call, without added latency. Grok skips the save for trivial sessions -- those with fewer than three substantive prompts, or fewer than 50 bytes of user text.
 
 The summary does not record tool usage, file paths, or shell commands. The session ID forms part of the log filename. To turn automatic saves off, set `session.save_on_end = false`. For richer capture of decisions, patterns, and reasoning, use `/flush`.
 
@@ -132,13 +132,13 @@ Use `/flush` when you want to preserve important context:
 
 ### Remember
 
-Ask Agent TUI to remember something, and it appends the note to a `MEMORY.md` file -- the workspace file for project-specific items, or the global `~/.agent-tui/memory/MEMORY.md` for cross-project preferences:
+Ask Grok to remember something, and it appends the note to a `MEMORY.md` file -- the workspace file for project-specific items, or the global `~/.grok/memory/MEMORY.md` for cross-project preferences:
 
 ```
 > remember to always open PR links after pushing
 ```
 
-Agent TUI records entries as durable statements under organized headings, such as `## Preferences`, `## Project Context`, or `## Debugging`. The file watcher reindexes the change on the next memory search, so the new entry is searchable within the current session.
+Grok records entries as durable statements under organized headings, such as `## Preferences`, `## Project Context`, or `## Debugging`. The file watcher reindexes the change on the next memory search, so the new entry is searchable within the current session.
 
 You can also save a note directly with the `/remember` command:
 
@@ -146,31 +146,31 @@ You can also save a note directly with the `/remember` command:
 /remember always open PR links after pushing
 ```
 
-Run `/remember` with no text to enter remember mode, where the next line you type becomes the note. Either way, Agent TUI opens a review panel showing the note (with an optional rewritten version you can toggle with `Tab`); the note is written only after you confirm. On save, Agent TUI shows `Memory saved to ~/.agent-tui/memory/MEMORY.md`.
+Run `/remember` with no text to enter remember mode, where the next line you type becomes the note. Either way, Grok opens a review panel showing the note (with an optional rewritten version you can toggle with `Tab`); the note is written only after you confirm. On save, Grok shows `Memory saved to ~/.grok/memory/MEMORY.md`.
 
 ### Forget
 
-Ask Agent TUI to forget something, and it finds and removes the matching entry:
+Ask Grok to forget something, and it finds and removes the matching entry:
 
 ```
 > forget the snake_case convention
 ```
 
-Forget is best-effort: the model searches memory and removes entries that match. For guaranteed removal, edit the files under `~/.agent-tui/memory/` directly and delete the entry yourself. To locate a file, open the `/memory` browser and press `y` to copy its path.
+Forget is best-effort: the model searches memory and removes entries that match. For guaranteed removal, edit the files under `~/.grok/memory/` directly and delete the entry yourself. To locate a file, open the `/memory` browser and press `y` to copy its path.
 
 ### Recall
 
-Ask what Agent TUI remembers:
+Ask what Grok remembers:
 
 ```
 > what do you remember?
 ```
 
-Agent TUI searches across all memory files and summarizes what it knows, grouped by source: global preferences, project-specific knowledge, and session history. Use `/memory` to browse the raw files.
+Grok searches across all memory files and summarizes what it knows, grouped by source: global preferences, project-specific knowledge, and session history. Use `/memory` to browse the raw files.
 
 ### Direct Editing
 
-You can edit memory files directly under `~/.agent-tui/memory/`. The file watcher reindexes your changes on the next memory search. Use `/flush` to save the current session now, and `/dream` to consolidate session logs into organized topics.
+You can edit memory files directly under `~/.grok/memory/`. The file watcher reindexes your changes on the next memory search. Use `/flush` to save the current session now, and `/dream` to consolidate session logs into organized topics.
 
 ---
 
@@ -212,13 +212,13 @@ You can also open `/memory` from the command palette.
 
 ## Memory Notifications
 
-When you save a note with `/remember`, Agent TUI confirms in the scrollback:
+When you save a note with `/remember`, Grok confirms in the scrollback:
 
 ```
-Memory saved to ~/.agent-tui/memory/MEMORY.md
+Memory saved to ~/.grok/memory/MEMORY.md
 ```
 
-Background saves — flush, dream, and session-end — run silently and do not post a scrollback message. Use `/memory` at any time to browse what Agent TUI has stored.
+Background saves — flush, dream, and session-end — run silently and do not post a scrollback message. Use `/memory` at any time to browse what Grok has stored.
 
 ---
 
@@ -234,7 +234,7 @@ Dream reorganizes individual session logs and memory entries into a coherent, de
 
 ### Auto-Dream
 
-Dream also runs automatically. By default, Agent TUI checks the consolidation gates when a session ends and runs Dream once enough time has passed and enough sessions have accumulated:
+Dream also runs automatically. By default, Grok checks the consolidation gates when a session ends and runs Dream once enough time has passed and enough sessions have accumulated:
 
 ```toml
 [memory.dream]
@@ -251,7 +251,7 @@ min_sessions = 3   # Minimum sessions since the last consolidation
 
 ### First-Turn Injection
 
-On the first turn of each session, Agent TUI automatically searches memory for content relevant to the current project and injects it as context. This means Agent TUI starts with knowledge from previous sessions without a reminder.
+On the first turn of each session, Grok automatically searches memory for content relevant to the current project and injects it as context. This means Grok starts with knowledge from previous sessions without a reminder.
 
 First-turn injection can be configured:
 
@@ -269,7 +269,7 @@ Memory is also searched after auto-compaction to recover relevant context that m
 
 ## Memory Search
 
-Agent TUI searches memory automatically, but you can also trigger searches manually in the chat:
+Grok searches memory automatically, but you can also trigger searches manually in the chat:
 
 ```
 Search memory for "auth middleware patterns"
@@ -324,26 +324,26 @@ lambda = 0.7             # 0.0 = max diversity, 1.0 = pure relevance
 
 ## CLI Commands
 
-The `agent-tui memory` command manages memory from the shell. It has one subcommand, `clear`:
+The `grok memory` command manages memory from the shell. It has one subcommand, `clear`:
 
 ```bash
 # Clear workspace memory (MEMORY.md, sessions/, and index.sqlite). This is the default scope.
-agent-tui memory clear
+grok memory clear
 
 # The same scope, stated explicitly
-agent-tui memory clear --workspace
+grok memory clear --workspace
 
 # Clear the global MEMORY.md
-agent-tui memory clear --global
+grok memory clear --global
 
 # Clear both workspace and global memory
-agent-tui memory clear --all
+grok memory clear --all
 
 # Skip the confirmation prompt (-y is the short form)
-agent-tui memory clear --yes
+grok memory clear --yes
 ```
 
-To edit memory from the shell, open the files in your editor directly -- for example, `$EDITOR ~/.agent-tui/memory/MEMORY.md`.
+To edit memory from the shell, open the files in your editor directly -- for example, `$EDITOR ~/.grok/memory/MEMORY.md`.
 
 ---
 
@@ -355,7 +355,7 @@ To edit memory from the shell, open the files in your editor directly -- for exa
 |-----|---------|-------------|
 | `enabled` | `false` | Enable memory |
 | `session.save_on_end` | `true` | Write metadata summary on session end |
-| `watcher.enabled` | `true` | Watch `~/.agent-tui/memory/` for external edits and reindex |
+| `watcher.enabled` | `true` | Watch `~/.grok/memory/` for external edits and reindex |
 
 ### Index Settings (`[memory.index]`)
 
@@ -386,7 +386,7 @@ To edit memory from the shell, open the files in your editor directly -- for exa
 | Key | Default | Description |
 |-----|---------|-------------|
 | `enabled` | `true` | Enable first-turn memory injection |
-| `min_score` | unset | Score threshold for first-turn results. When unset, Agent TUI applies no threshold, which is equivalent to `0.0`. |
+| `min_score` | unset | Score threshold for first-turn results. When unset, Grok applies no threshold, which is equivalent to `0.0`. |
 
 ### Dream Settings (`[memory.dream]`)
 
@@ -407,7 +407,7 @@ You configure flush under `[compaction]`, not `[memory]`, because it is a compac
 | `enabled` | `true` | Enable the pre-compaction memory flush |
 | `soft_threshold_tokens` | `4000` | Token headroom before the compact threshold that triggers a flush |
 | `max_flush_write_chars` | `8000` | Maximum characters the flush may write to memory |
-| `flush_model` | unset | Model for the flush turn. When unset, Agent TUI uses the session's primary model. |
+| `flush_model` | unset | Model for the flush turn. When unset, Grok uses the session's primary model. |
 | `idle_timeout_secs` | unset | Idle seconds before a background flush. When unset, flush runs only before compaction. |
 | `semantic_dedup_threshold` | unset | Cosine-similarity threshold for de-duplicating flushed content. When unset, defaults to `0.92`. |
 
@@ -428,13 +428,13 @@ You configure pruning under `[compaction]`, not `[memory]`, because it is a comp
 
 ## Memory Staleness
 
-When a session memory is old, Agent TUI attaches a staleness note to it in search results. Older results get a stronger reminder to verify the current state before you rely on them. These notes help you spot stored facts that might no longer be accurate. Global and workspace memories never receive staleness notes, because they hold curated long-term knowledge.
+When a session memory is old, Grok attaches a staleness note to it in search results. Older results get a stronger reminder to verify the current state before you rely on them. These notes help you spot stored facts that might no longer be accurate. Global and workspace memories never receive staleness notes, because they hold curated long-term knowledge.
 
 ---
 
 ## File Watcher
 
-By default, Agent TUI watches `~/.agent-tui/memory/` for external file changes. If you edit memory files directly (e.g., in your editor), the changes are picked up automatically on the next memory search:
+By default, Grok watches `~/.grok/memory/` for external file changes. If you edit memory files directly (e.g., in your editor), the changes are picked up automatically on the next memory search:
 
 - Created or modified files are reindexed.
 - Deleted files have their stale chunks removed from the index.
@@ -450,8 +450,8 @@ enabled = true    # default
 
 ### Memory Not Working
 
-1. Verify memory is enabled: check `agent-tui inspect` output.
-2. Check the flag: `agent-tui --experimental-memory` or `GROK_MEMORY=1`.
+1. Verify memory is enabled: check `grok inspect` output.
+2. Check the flag: `grok --experimental-memory` or `GROK_MEMORY=1`.
 3. Check for `--no-memory` or `GROK_MEMORY=0` overriding your config.
 
 ### Memory Not Appearing in Sessions
@@ -463,14 +463,14 @@ Memory is injected on the first turn. If you started a session before enabling m
 Use `/memory` in the TUI to browse all memory files with a preview. You can also access them directly:
 
 ```bash
-ls ~/.agent-tui/memory/
-cat ~/.agent-tui/memory/MEMORY.md
-$EDITOR ~/.agent-tui/memory/MEMORY.md
+ls ~/.grok/memory/
+cat ~/.grok/memory/MEMORY.md
+$EDITOR ~/.grok/memory/MEMORY.md
 ```
 
 ### Debug Logging
 
 ```bash
-RUST_LOG=debug GROK_LOG_FILE=/tmp/grok.log agent-tui
+RUST_LOG=debug GROK_LOG_FILE=/tmp/grok.log grok
 grep "memory" /tmp/grok.log
 ```

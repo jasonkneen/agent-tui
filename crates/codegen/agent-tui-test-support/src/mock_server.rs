@@ -9,7 +9,7 @@
 //! mode, which echoes the last user message until
 //! [`MockInferenceServer::set_response`] replaces it with a fixed text.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -20,13 +20,18 @@ use anyhow::Context as _;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use futures_util::stream;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
+use crate::inference_override::{ClassifiedInferenceRequest, InferenceOverrides};
+pub use crate::inference_override::{
+    InferenceEndpoint, InferenceExpectation, InferenceRequestMatcher,
+};
+use crate::scripted::TerminalWait;
 pub use crate::scripted::{ScriptedBody, ScriptedResponse, SseEvent};
 use crate::sse;
 
@@ -192,73 +197,28 @@ enum ResponseMode {
     Fixed(String),
 }
 
-/// Opt-in barrier that holds an **agent turn's terminal SSE event** until the
-/// test releases it, so the turn stays deterministically "running" while the
-/// test interacts with it (queue edits/removals) — eliminating turn-end races.
-///
-/// Inert by default (`held == false`): [`wait_if_held`] returns immediately, so
-/// every test that never calls [`MockInferenceServer::hold_agent_completions`]
-/// is completely unaffected.
-///
-/// [`wait_if_held`]: CompletionGate::wait_if_held
-#[derive(Default)]
-struct CompletionGate {
-    held: AtomicBool,
-    notify: tokio::sync::Notify,
-}
-
-impl CompletionGate {
-    fn hold(&self) {
-        self.held.store(true, Ordering::SeqCst);
-    }
-
-    fn release(&self) {
-        self.held.store(false, Ordering::SeqCst);
-        self.notify.notify_waiters();
-    }
-
-    /// Block while the gate is held. Registers the wake-up interest *before*
-    /// re-checking `held` so a concurrent `release` can never be missed.
-    async fn wait_if_held(&self) {
-        loop {
-            let notified = self.notify.notified();
-            if !self.held.load(Ordering::SeqCst) {
-                return;
-            }
-            notified.await;
-        }
-    }
-}
-
-/// Wrap SSE `events` in a stream that emits each one after `delay`. `None`
-/// keeps instant emission (the default fast path); `Some(d)` paces the stream
-/// so tests can interact with a turn while it is visibly in flight.
-///
-/// When `gate` is `Some`, the stream additionally blocks on the gate right
-/// before emitting the **final** event (the SSE terminator), so a held gate
-/// keeps the turn streaming-but-not-complete until released.
+/// Emit each SSE event after `delay` and optionally wait before the final one.
 fn paced_events(
     events: Vec<axum::response::sse::Event>,
     delay: Option<Duration>,
-    gate: Option<Arc<CompletionGate>>,
+    before_terminal: Option<TerminalWait>,
 ) -> impl futures_util::Stream<Item = Result<axum::response::sse::Event, Infallible>> {
-    use futures_util::StreamExt as _;
-    let last_idx = events.len().saturating_sub(1);
-    stream::iter(events.into_iter().enumerate()).then(move |(idx, event)| {
-        let gate = gate.clone();
-        async move {
+    let last_idx = events.len().checked_sub(1);
+    stream::unfold(
+        (events.into_iter().enumerate(), before_terminal),
+        move |(mut events, mut before_terminal)| async move {
+            let (idx, event) = events.next()?;
             if let Some(d) = delay {
                 tokio::time::sleep(d).await;
             }
-            // Hold the terminal event until the gate is released.
-            if idx == last_idx
-                && let Some(gate) = gate.as_deref()
+            if Some(idx) == last_idx
+                && let Some(wait) = before_terminal.take()
             {
-                gate.wait_if_held().await;
+                wait().await;
             }
-            Ok::<_, Infallible>(event)
-        }
-    })
+            Some((Ok::<_, Infallible>(event), (events, before_terminal)))
+        },
+    )
 }
 
 const STORAGE_BODY_CAPTURE_CAP: usize = 256 * 1024;
@@ -281,9 +241,6 @@ struct StorageState {
     uploads: std::sync::Mutex<Vec<StorageUpload>>,
 }
 
-/// Mock `/v1/chat/completions` + `/v1/responses` + `/v1/messages` +
-/// `/v1/models` + `/v1/settings` + `/v1/storage` server.
-/// Logs all requests. Shuts down on drop.
 pub struct MockInferenceServer {
     addr: SocketAddr,
     shutdown_tx: Option<oneshot::Sender<()>>,
@@ -296,9 +253,6 @@ pub struct MockInferenceServer {
     agent_turns: Arc<std::sync::Mutex<VecDeque<String>>>,
     /// `stop_reason` on the `/v1/messages` terminal `message_delta`.
     messages_stop_reason: Arc<std::sync::RwLock<String>>,
-    /// Optional per-SSE-event delay on all inference endpoints. `None`
-    /// (default) streams instantly; `Some(d)` holds the turn "streaming" long
-    /// enough for tests to interact with it mid-flight (e.g. Esc-cancel).
     chunk_delay: Arc<std::sync::RwLock<Option<Duration>>>,
     storage: Arc<StorageState>,
     /// When set, `/v1/models` and `/v1/settings` never respond.
@@ -334,26 +288,25 @@ impl MockInferenceServer {
         let shared_models = Arc::new(std::sync::RwLock::new(models_json));
         let shared_settings = Arc::new(std::sync::RwLock::new(None::<Value>));
         let response_mode = Arc::new(std::sync::RwLock::new(ResponseMode::Echo));
-        let scripted: ScriptQueues = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let overrides = InferenceOverrides::new(required_token);
         let agent_turns = Arc::new(std::sync::Mutex::new(VecDeque::new()));
         let messages_stop_reason = Arc::new(std::sync::RwLock::new("end_turn".to_string()));
         let chunk_delay = Arc::new(std::sync::RwLock::new(None::<Duration>));
         let storage = Arc::new(StorageState::default());
-        let completion_gate = Arc::new(CompletionGate::default());
+        let hang = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let user_tier = Arc::new(std::sync::RwLock::new(None::<String>));
         let app = Self::build_router(
             log.clone(),
             shared_models.clone(),
             shared_settings.clone(),
             response_mode.clone(),
-            scripted.clone(),
+            overrides.clone(),
             agent_turns.clone(),
             messages_stop_reason.clone(),
             chunk_delay.clone(),
             storage.clone(),
-            completion_gate.clone(),
+            hang.clone(),
             user_tier.clone(),
-            required_token,
         );
 
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -387,12 +340,12 @@ impl MockInferenceServer {
             models: shared_models,
             settings: shared_settings,
             response_mode,
-            scripted,
+            overrides,
             agent_turns,
             messages_stop_reason,
             chunk_delay,
             storage,
-            completion_gate,
+            hang,
             user_tier,
         })
     }
@@ -410,14 +363,31 @@ impl MockInferenceServer {
     /// Consumed FIFO per `path`, e.g. `"/v1/chat/completions"`. An empty queue
     /// falls back to the response mode.
     pub fn enqueue_response(&self, path: impl Into<String>, response: ScriptedResponse) {
-        // Fail at the call site, not at serve time.
-        response.validate();
-        self.scripted
-            .lock()
-            .unwrap()
-            .entry(path.into())
-            .or_default()
-            .push_back(response);
+        self.overrides.enqueue_response(path, response);
+    }
+
+    /// Register one named response matched atomically by endpoint and request kind.
+    #[must_use = "keep the handle to synchronize and assert expectation satisfaction"]
+    pub fn expect_response(
+        &self,
+        name: impl Into<String>,
+        matcher: InferenceRequestMatcher,
+        response: ScriptedResponse,
+    ) -> InferenceExpectation {
+        self.overrides
+            .register_expectation(name, matcher, response, false)
+    }
+
+    /// Register a named response that pauses immediately before completion.
+    #[must_use = "keep the handle to release and assert expectation satisfaction"]
+    pub fn expect_response_blocked(
+        &self,
+        name: impl Into<String>,
+        matcher: InferenceRequestMatcher,
+        response: ScriptedResponse,
+    ) -> InferenceExpectation {
+        self.overrides
+            .register_expectation(name, matcher, response, true)
     }
 
     /// Queue one byte-exact response per foreground turn.
@@ -464,12 +434,12 @@ impl MockInferenceServer {
     /// Hold foreground terminal SSE events until
     /// [`Self::release_agent_completions`]. Prefer per-expectation blocking.
     pub fn hold_agent_completions(&self) {
-        self.completion_gate.hold();
+        self.overrides.hold_completions();
     }
 
     /// Let held and future agent turns emit their terminal event.
     pub fn release_agent_completions(&self) {
-        self.completion_gate.release();
+        self.overrides.release_completions();
     }
 
     /// e.g. `http://127.0.0.1:12345/v1`
@@ -655,47 +625,14 @@ impl MockInferenceServer {
             .collect()
     }
 
-    fn pop_scripted(scripted: &ScriptQueues, path: &str) -> Option<ScriptedResponse> {
-        scripted
-            .lock()
-            .unwrap()
-            .get_mut(path)
-            .and_then(VecDeque::pop_front)
-    }
-
-    /// Pop the next scripted turn, gated to agent turns (2+ tools) so aux
-    /// requests don't consume one.
     fn pop_agent_turn(
         agent_turns: &Arc<std::sync::Mutex<VecDeque<String>>>,
-        body: &Value,
+        request: &ClassifiedInferenceRequest,
     ) -> Option<String> {
-        let tool_count = body
-            .get("tools")
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len);
-        if tool_count < 2 {
+        if !request.is_foreground() {
             return None;
         }
         agent_turns.lock().unwrap().pop_front()
-    }
-
-    /// Returns `Some(401)` if auth is required and the Bearer token doesn't match.
-    fn check_auth(auth: Option<&str>, required_token: Option<&str>) -> Option<Response> {
-        let expected = required_token?;
-        let valid = auth.is_some_and(|v| {
-            v.strip_prefix("Bearer ")
-                .or_else(|| v.strip_prefix("bearer "))
-                .is_some_and(|token| token == expected)
-        });
-        if valid {
-            return None;
-        }
-        Some((
-            StatusCode::UNAUTHORIZED,
-            Json(json!({
-                "error": "missing API key; set the x-api-key header or Authorization: Bearer header"
-            })),
-        ).into_response())
     }
 
     fn build_router(
@@ -703,28 +640,29 @@ impl MockInferenceServer {
         models: Arc<std::sync::RwLock<Vec<Value>>>,
         settings: Arc<std::sync::RwLock<Option<Value>>>,
         response_mode: Arc<std::sync::RwLock<ResponseMode>>,
-        scripted: ScriptQueues,
+        overrides: InferenceOverrides,
         agent_turns: Arc<std::sync::Mutex<VecDeque<String>>>,
         messages_stop_reason: Arc<std::sync::RwLock<String>>,
         chunk_delay: Arc<std::sync::RwLock<Option<Duration>>>,
         storage: Arc<StorageState>,
-        completion_gate: Arc<CompletionGate>,
+        hang: Arc<std::sync::atomic::AtomicBool>,
         user_tier: Arc<std::sync::RwLock<Option<String>>>,
-        required_token: Option<String>,
     ) -> Router {
+        let hang_models = hang.clone();
+        let hang_settings = hang;
         let log_cc = log.clone();
         let log_rs = log.clone();
         let log_msg = log.clone();
-        let token_cc = required_token.clone();
-        let token_msg = required_token.clone();
-        let token_rs = required_token;
         let mode_cc = response_mode.clone();
         let mode_rs = response_mode.clone();
         let mode_msg = response_mode;
-        let scripted_cc = scripted.clone();
-        let scripted_rs = scripted.clone();
-        let scripted_settings = scripted.clone();
-        let scripted_msg = scripted;
+        let overrides_cc = overrides.clone();
+        let overrides_rs = overrides.clone();
+        let overrides_settings = overrides.clone();
+        let overrides_msg = overrides;
+        let agent_turns_cc = agent_turns.clone();
+        let agent_turns_rs = agent_turns.clone();
+        let agent_turns_msg = agent_turns;
         let delay_cc = chunk_delay.clone();
         let delay_rs = chunk_delay.clone();
         let delay_msg = chunk_delay;
@@ -734,12 +672,10 @@ impl MockInferenceServer {
                 "/v1/chat/completions",
                 post(move |headers: HeaderMap, Json(body): Json<Value>| {
                     let log = log_cc.clone();
-                    let required = token_cc.clone();
                     let mode = mode_cc.clone();
-                    let scripted = scripted_cc.clone();
-                    let agent_turns = agent_turns.clone();
+                    let overrides = overrides_cc.clone();
+                    let agent_turns = agent_turns_cc.clone();
                     let delay = delay_cc.clone();
-                    let completion_gate = completion_gate.clone();
                     async move {
                         let auth = Self::extract_auth(&headers);
                         log.record(
@@ -750,14 +686,14 @@ impl MockInferenceServer {
                             Self::headers_vec(&headers),
                         );
 
-                        if let Some(s) = Self::pop_scripted(&scripted, "/v1/chat/completions") {
-                            return s.into_response_paced(*delay.read().unwrap());
-                        }
-
-                        if let Some(rejection) =
-                            Self::check_auth(auth.as_deref(), required.as_deref())
+                        let request =
+                            overrides.classify(InferenceEndpoint::ChatCompletions, &headers, &body);
+                        let chunk_delay = *delay.read().unwrap();
+                        if let Some(response) = overrides
+                            .response_override(&request, &headers, chunk_delay)
+                            .await
                         {
-                            return rejection;
+                            return response;
                         }
 
                         let user_msg = body
@@ -777,26 +713,18 @@ impl MockInferenceServer {
                             .and_then(Value::as_str)
                             .unwrap_or("test-model");
 
-                        // Only agent turns are gate-eligible: aux requests
-                        // (title/classifier) must never block session startup.
-                        let (events, gate) = match Self::pop_agent_turn(&agent_turns, &body) {
-                            Some(text) => (
-                                sse::chat_completion_events_exact(&text, model),
-                                Some(completion_gate.clone()),
-                            ),
-                            None => {
-                                let events = match &*mode.read().unwrap() {
-                                    ResponseMode::Echo => sse::chat_completion_events(
-                                        &format!("Echo: {user_msg}"),
-                                        model,
-                                    ),
-                                    ResponseMode::Fixed(text) => {
-                                        sse::chat_completion_events_exact(text, model)
-                                    }
-                                };
-                                (events, None)
-                            }
+                        let events = match Self::pop_agent_turn(&agent_turns, &request) {
+                            Some(text) => sse::chat_completion_events_exact(&text, model),
+                            None => match &*mode.read().unwrap() {
+                                ResponseMode::Echo => {
+                                    sse::chat_completion_events(&format!("Echo: {user_msg}"), model)
+                                }
+                                ResponseMode::Fixed(text) => {
+                                    sse::chat_completion_events_exact(text, model)
+                                }
+                            },
                         };
+                        let gate = overrides.fallback_terminal_wait(&request);
                         let stream = paced_events(events, *delay.read().unwrap(), gate);
                         Sse::new(stream)
                             .keep_alive(KeepAlive::default())
@@ -808,9 +736,9 @@ impl MockInferenceServer {
                 "/v1/responses",
                 post(move |headers: HeaderMap, Json(body): Json<Value>| {
                     let log = log_rs.clone();
-                    let required = token_rs.clone();
                     let mode = mode_rs.clone();
-                    let scripted = scripted_rs.clone();
+                    let overrides = overrides_rs.clone();
+                    let agent_turns = agent_turns_rs.clone();
                     let delay = delay_rs.clone();
                     async move {
                         let auth = Self::extract_auth(&headers);
@@ -822,14 +750,14 @@ impl MockInferenceServer {
                             Self::headers_vec(&headers),
                         );
 
-                        if let Some(s) = Self::pop_scripted(&scripted, "/v1/responses") {
-                            return s.into_response_paced(*delay.read().unwrap());
-                        }
-
-                        if let Some(rejection) =
-                            Self::check_auth(auth.as_deref(), required.as_deref())
+                        let request =
+                            overrides.classify(InferenceEndpoint::Responses, &headers, &body);
+                        let chunk_delay = *delay.read().unwrap();
+                        if let Some(response) = overrides
+                            .response_override(&request, &headers, chunk_delay)
+                            .await
                         {
-                            return rejection;
+                            return response;
                         }
 
                         let user_msg = body
@@ -866,15 +794,19 @@ impl MockInferenceServer {
                             .and_then(Value::as_str)
                             .unwrap_or("test-model");
 
-                        let events = match &*mode.read().unwrap() {
-                            ResponseMode::Echo => {
-                                sse::responses_api_events(&format!("Echo: {user_msg}"), model)
-                            }
-                            ResponseMode::Fixed(text) => {
-                                sse::responses_api_events_exact(text, model)
-                            }
+                        let events = match Self::pop_agent_turn(&agent_turns, &request) {
+                            Some(text) => sse::responses_api_events_exact(&text, model),
+                            None => match &*mode.read().unwrap() {
+                                ResponseMode::Echo => {
+                                    sse::responses_api_events(&format!("Echo: {user_msg}"), model)
+                                }
+                                ResponseMode::Fixed(text) => {
+                                    sse::responses_api_events_exact(text, model)
+                                }
+                            },
                         };
-                        let stream = paced_events(events, *delay.read().unwrap(), None);
+                        let gate = overrides.fallback_terminal_wait(&request);
+                        let stream = paced_events(events, *delay.read().unwrap(), gate);
                         Sse::new(stream)
                             .keep_alive(KeepAlive::default())
                             .into_response()
@@ -885,9 +817,9 @@ impl MockInferenceServer {
                 "/v1/messages",
                 post(move |headers: HeaderMap, Json(body): Json<Value>| {
                     let log = log_msg.clone();
-                    let required = token_msg.clone();
                     let mode = mode_msg.clone();
-                    let scripted = scripted_msg.clone();
+                    let overrides = overrides_msg.clone();
+                    let agent_turns = agent_turns_msg.clone();
                     let stop_reason = messages_stop_reason.clone();
                     let delay = delay_msg.clone();
                     async move {
@@ -900,14 +832,14 @@ impl MockInferenceServer {
                             Self::headers_vec(&headers),
                         );
 
-                        if let Some(s) = Self::pop_scripted(&scripted, "/v1/messages") {
-                            return s.into_response_paced(*delay.read().unwrap());
-                        }
-
-                        if let Some(rejection) =
-                            Self::check_auth(auth.as_deref(), required.as_deref())
+                        let request =
+                            overrides.classify(InferenceEndpoint::Messages, &headers, &body);
+                        let chunk_delay = *delay.read().unwrap();
+                        if let Some(response) = overrides
+                            .response_override(&request, &headers, chunk_delay)
+                            .await
                         {
-                            return rejection;
+                            return response;
                         }
 
                         // Anthropic content is either a plain string or an
@@ -945,17 +877,21 @@ impl MockInferenceServer {
                             .unwrap_or("test-model");
 
                         let stop = stop_reason.read().unwrap().clone();
-                        // Messages streams its text as a single delta, so the
-                        // fixed text is byte-exact by construction.
-                        let events = match &*mode.read().unwrap() {
-                            ResponseMode::Echo => {
-                                sse::messages_api_events(&format!("Echo: {user_msg}"), model, &stop)
-                            }
-                            ResponseMode::Fixed(text) => {
-                                sse::messages_api_events(text, model, &stop)
-                            }
+                        let events = match Self::pop_agent_turn(&agent_turns, &request) {
+                            Some(text) => sse::messages_api_events(&text, model, &stop),
+                            None => match &*mode.read().unwrap() {
+                                ResponseMode::Echo => sse::messages_api_events(
+                                    &format!("Echo: {user_msg}"),
+                                    model,
+                                    &stop,
+                                ),
+                                ResponseMode::Fixed(text) => {
+                                    sse::messages_api_events(text, model, &stop)
+                                }
+                            },
                         };
-                        let stream = paced_events(events, *delay.read().unwrap(), None);
+                        let gate = overrides.fallback_terminal_wait(&request);
+                        let stream = paced_events(events, *delay.read().unwrap(), gate);
                         Sse::new(stream)
                             .keep_alive(KeepAlive::default())
                             .into_response()
@@ -969,8 +905,12 @@ impl MockInferenceServer {
                     move || {
                         let log = log.clone();
                         let models = models.clone();
+                        let hang = hang_models.clone();
                         async move {
                             log.record("GET", "/v1/models", None, None, Vec::new());
+                            if hang.load(std::sync::atomic::Ordering::Acquire) {
+                                tokio::time::sleep(Duration::from_secs(3600)).await;
+                            }
                             let models_json = models.read().unwrap().clone();
                             Json(json!({
                                 "object": "list",
@@ -984,10 +924,13 @@ impl MockInferenceServer {
                 "/v1/settings",
                 get({
                     let log = log.clone();
+                    let settings = settings.clone();
+                    let hang = hang_settings.clone();
                     move || {
                         let log = log.clone();
                         let settings = settings.clone();
-                        let scripted = scripted_settings.clone();
+                        let overrides = overrides_settings.clone();
+                        let hang = hang.clone();
                         async move {
                             log.record("GET", "/v1/settings", None, None, Vec::new());
                             if hang.load(std::sync::atomic::Ordering::Acquire) {
@@ -1003,6 +946,32 @@ impl MockInferenceServer {
                                 Some(s) => Json(s).into_response(),
                                 None => StatusCode::NOT_FOUND.into_response(),
                             }
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/v1/privacy/coding-data-retention",
+                put({
+                    let log = log.clone();
+                    move |headers: HeaderMap, Json(body): Json<Value>| {
+                        let log = log.clone();
+                        async move {
+                            let auth = Self::extract_auth(&headers);
+                            log.record(
+                                "PUT",
+                                "/v1/privacy/coding-data-retention",
+                                Some(&body),
+                                auth.as_deref(),
+                                Self::headers_vec(&headers),
+                            );
+                            // Echo the received flag back like the real
+                            // cli-chat-proxy does on success.
+                            let opt_out = body
+                                .get("codingDataRetentionOptOut")
+                                .cloned()
+                                .unwrap_or(Value::Bool(false));
+                            Json(json!({ "codingDataRetentionOptOut": opt_out }))
                         }
                     }
                 }),
@@ -1134,6 +1103,34 @@ mod tests {
                     .map(String::from)
             })
             .collect()
+    }
+
+    fn foreground_body(endpoint: InferenceEndpoint, content: &str) -> Value {
+        let tools = json!([
+            { "type": "function", "function": { "name": "read_file" } },
+            { "type": "function", "function": { "name": "write" } }
+        ]);
+        match endpoint {
+            InferenceEndpoint::ChatCompletions | InferenceEndpoint::Messages => json!({
+                "model": "test-model",
+                "messages": [{ "role": "user", "content": content }],
+                "tools": tools,
+            }),
+            InferenceEndpoint::Responses => json!({
+                "model": "test-model",
+                "input": [{ "role": "user", "content": content }],
+                "tools": tools,
+            }),
+        }
+    }
+
+    fn endpoint_url(server: &MockInferenceServer, endpoint: InferenceEndpoint) -> String {
+        let suffix = match endpoint {
+            InferenceEndpoint::ChatCompletions => "chat/completions",
+            InferenceEndpoint::Responses => "responses",
+            InferenceEndpoint::Messages => "messages",
+        };
+        format!("{}/{suffix}", server.url())
     }
 
     async fn post_chat(server: &MockInferenceServer, content: &str) -> reqwest::Response {
@@ -1715,6 +1712,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn privacy_coding_data_retention_echoes_flag_and_logs() {
+        let server = MockInferenceServer::start().await.unwrap();
+        let url = format!("{}/privacy/coding-data-retention", server.url());
+
+        for flag in [false, true] {
+            let resp = reqwest::Client::new()
+                .put(&url)
+                .json(&json!({ "codingDataRetentionOptOut": flag }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200);
+            let body: Value = resp.json().await.unwrap();
+            assert_eq!(body, json!({ "codingDataRetentionOptOut": flag }));
+        }
+
+        let entries = server.requests();
+        let puts: Vec<_> = entries
+            .iter()
+            .filter(|e| e.method == "PUT" && e.path == "/v1/privacy/coding-data-retention")
+            .collect();
+        assert_eq!(puts.len(), 2);
+        assert_eq!(
+            puts[0].body,
+            Some(json!({ "codingDataRetentionOptOut": false }))
+        );
+        assert_eq!(
+            puts[1].body,
+            Some(json!({ "codingDataRetentionOptOut": true }))
+        );
+    }
+
+    #[tokio::test]
     async fn request_bodies_returns_bodies_in_arrival_order() {
         let server = MockInferenceServer::start().await.unwrap();
 
@@ -1858,6 +1888,157 @@ mod tests {
             "named event must carry both fields, got:\n{body}"
         );
         assert!(named_then_plain, "events must be served in order:\n{body}");
+    }
+
+    #[tokio::test]
+    async fn matched_barriers_cover_all_endpoints_and_body_modes() {
+        for endpoint in [
+            InferenceEndpoint::ChatCompletions,
+            InferenceEndpoint::Responses,
+            InferenceEndpoint::Messages,
+        ] {
+            for (label, response) in [
+                (
+                    "sse",
+                    ScriptedResponse::sse(vec![
+                        SseEvent::data("chunk"),
+                        SseEvent::data("terminal"),
+                    ]),
+                ),
+                ("empty-sse", ScriptedResponse::sse(Vec::new())),
+                ("json", ScriptedResponse::json(200, json!({ "ok": true }))),
+                ("raw", ScriptedResponse::text(200, "raw body")),
+            ] {
+                let server = MockInferenceServer::start().await.unwrap();
+                let mut expected = server.expect_response_blocked(
+                    format!("blocked {endpoint:?} {label}"),
+                    InferenceRequestMatcher::foreground(endpoint),
+                    response,
+                );
+                let request = read_foreground(&server, endpoint, "body-gate", "hello");
+                tokio::pin!(request);
+                tokio::select! {
+                    response = &mut request => panic!("{endpoint:?}/{label} completed before release: {:?}", response.0),
+                    _ = expected.wait_blocked() => {}
+                }
+                expected.release();
+                let (status, _) = tokio::time::timeout(Duration::from_secs(1), request)
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("{endpoint:?}/{label} did not complete after release")
+                    });
+                assert_eq!(status.as_u16(), 200);
+                expected.wait_satisfied().await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn matched_expectation_precedes_auth_then_auth_resumes() {
+        let server = MockInferenceServer::start_with_required_auth(
+            vec![MockModelEntry::new("test-model")],
+            "secret-token",
+        )
+        .await
+        .unwrap();
+        let mut expected = server.expect_response(
+            "auth bypass",
+            InferenceRequestMatcher::foreground(InferenceEndpoint::Responses),
+            ScriptedResponse::text(218, "matched without auth"),
+        );
+
+        let response = post_foreground(
+            &server,
+            InferenceEndpoint::Responses,
+            "auth-bypass",
+            "first",
+        )
+        .await;
+        assert_eq!(response.status().as_u16(), 218);
+        assert_eq!(response.text().await.unwrap(), "matched without auth");
+        expected.wait_satisfied().await;
+
+        let response = post_foreground(
+            &server,
+            InferenceEndpoint::Responses,
+            "auth-fallback",
+            "second",
+        )
+        .await;
+        assert_eq!(response.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn compatibility_completion_gate_covers_fallback_and_scripted_sse() {
+        for endpoint in [
+            InferenceEndpoint::ChatCompletions,
+            InferenceEndpoint::Responses,
+            InferenceEndpoint::Messages,
+        ] {
+            let server = MockInferenceServer::start().await.unwrap();
+            server.hold_agent_completions();
+            server.set_agent_turns([format!("{endpoint:?} turn")]);
+            let request = read_foreground(&server, endpoint, "global-gate", "hello");
+            tokio::pin!(request);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), &mut request)
+                    .await
+                    .is_err(),
+                "{endpoint:?} bypassed the compatibility gate"
+            );
+            server.release_agent_completions();
+            tokio::time::timeout(Duration::from_secs(1), request)
+                .await
+                .unwrap_or_else(|_| panic!("{endpoint:?} did not complete after release"));
+        }
+
+        let server = MockInferenceServer::start().await.unwrap();
+        server.hold_agent_completions();
+        server.enqueue_response(
+            "/v1/responses",
+            ScriptedResponse::sse(vec![SseEvent::data("chunk"), SseEvent::data("terminal")]),
+        );
+        let request = read_foreground(
+            &server,
+            InferenceEndpoint::Responses,
+            "scripted-global-gate",
+            "hello",
+        );
+        tokio::pin!(request);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut request)
+                .await
+                .is_err(),
+            "scripted SSE bypassed the compatibility gate"
+        );
+        server.release_agent_completions();
+        tokio::time::timeout(Duration::from_secs(1), request)
+            .await
+            .expect("scripted SSE completes after release");
+    }
+
+    #[tokio::test]
+    async fn compatibility_completion_gate_does_not_hold_json_or_raw() {
+        for response in [
+            ScriptedResponse::json(219, json!({ "ok": true })),
+            ScriptedResponse::text(220, "raw body"),
+        ] {
+            let server = MockInferenceServer::start().await.unwrap();
+            server.hold_agent_completions();
+            server.enqueue_response("/v1/responses", response);
+            let (status, _) = tokio::time::timeout(
+                Duration::from_secs(1),
+                read_foreground(
+                    &server,
+                    InferenceEndpoint::Responses,
+                    "compat-non-sse",
+                    "hello",
+                ),
+            )
+            .await
+            .expect("compatibility JSON/raw must not wait for the SSE gate");
+            assert!(matches!(status.as_u16(), 219 | 220));
+        }
     }
 
     #[tokio::test]

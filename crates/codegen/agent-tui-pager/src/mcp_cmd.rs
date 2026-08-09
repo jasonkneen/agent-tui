@@ -254,6 +254,7 @@ async fn run_add(args: AddArgs) -> Result<()> {
         transport: resolved.transport,
         enabled: true,
         oauth: None,
+        setup: None,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
         tool_timeouts: None,
@@ -679,34 +680,6 @@ async fn run_remove(name: &str, requested_scope: Option<McpScope>) -> Result<()>
         );
     }
 
-    Ok(())
-}
-
-async fn run_logout(name: &str, explicit_url: Option<&str>) -> Result<()> {
-    let server_url = if let Some(raw_url) = explicit_url {
-        url::Url::parse(raw_url)
-            .map_err(|error| anyhow::anyhow!("Invalid URL '{raw_url}': {error}"))?
-    } else {
-        let cwd = current_dir_or_exit();
-        let mut config = agent_tui_shell::util::config::get_effective_mcp_server_config(name, &cwd)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "MCP server '{name}' is not configured; pass --url to forget retained credentials"
-                )
-            })?;
-        config.expand_strings(&agent_tui_shell::config::expand_env_vars_in_string);
-        let McpServerTransportConfig::StreamableHttp { url, .. } = config.transport else {
-            bail!("MCP server '{name}' does not use HTTP OAuth credentials");
-        };
-        url::Url::parse(&url)
-            .map_err(|error| anyhow::anyhow!("Invalid configured URL '{url}': {error}"))?
-    };
-
-    if agent_tui_shell::util::config::forget_mcp_credentials(name, &server_url).await? {
-        println!("Forgot stored OAuth credentials for MCP server '{name}'");
-    } else {
-        println!("No stored OAuth credentials found for MCP server '{name}'");
-    }
     Ok(())
 }
 

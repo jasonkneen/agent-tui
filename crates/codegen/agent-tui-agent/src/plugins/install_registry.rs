@@ -72,7 +72,7 @@ pub struct MarketplaceProvenance {
     pub source_url_or_path: String,
     /// User-facing source name (display only, not used for matching).
     pub source_display_name: String,
-    /// Plugin subdirectory within marketplace (e.g., "plugins/xai-code-review").
+    /// Plugin subdirectory within marketplace (e.g., "plugins/agent-tui-code-review").
     pub plugin_subdir: String,
 }
 
@@ -104,33 +104,43 @@ impl InstallRegistry {
     ///
     /// If the registry file doesn't exist, returns an empty registry.
     pub fn load() -> Self {
-        let install_dir = Self::resolve_install_dir();
-        let registry_path = install_dir.join("registry.json");
+        Self::load_from(Self::resolve_install_dir())
+    }
 
-        match std::fs::read_to_string(&registry_path) {
-            Ok(content) => match serde_json::from_str::<InstallRegistry>(&content) {
-                Ok(mut reg) => {
-                    reg.install_dir = install_dir;
-                    reg
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        path = %registry_path.display(),
-                        error = %e,
-                        "failed to parse install registry; starting fresh"
-                    );
-                    Self::empty(install_dir)
-                }
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::empty(install_dir),
+    /// Load the registry from an explicit install directory.
+    ///
+    /// Missing file → empty registry. Read/parse errors → empty registry after a warning.
+    pub fn load_from(install_dir: PathBuf) -> Self {
+        match Self::try_load_from(install_dir.clone()) {
+            Ok(reg) => reg,
             Err(e) => {
                 tracing::warn!(
-                    path = %registry_path.display(),
+                    path = %install_dir.join("registry.json").display(),
                     error = %e,
-                    "failed to read install registry; starting fresh"
+                    "failed to load install registry; starting fresh"
                 );
                 Self::empty(install_dir)
             }
+        }
+    }
+
+    /// Fallible load: missing `registry.json` is empty; read/parse errors are `Err`.
+    pub fn try_load_from(install_dir: PathBuf) -> Result<Self, InstallError> {
+        let registry_path = install_dir.join("registry.json");
+        match std::fs::read_to_string(&registry_path) {
+            Ok(content) => {
+                let mut reg: InstallRegistry =
+                    serde_json::from_str(&content).map_err(|e| InstallError::Json {
+                        detail: e.to_string(),
+                    })?;
+                reg.install_dir = install_dir;
+                Ok(reg)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::empty(install_dir)),
+            Err(e) => Err(InstallError::Io {
+                path: registry_path,
+                source: e,
+            }),
         }
     }
 
@@ -158,7 +168,7 @@ impl InstallRegistry {
         let content = serde_json::to_string_pretty(self).map_err(|e| InstallError::Json {
             detail: e.to_string(),
         })?;
-        if std::env::var_os("AGENT_TUI_TEST_FAIL_REGISTRY_SAVE_AFTER_SERIALIZE").is_some() {
+        if std::env::var_os("XAI_GROK_TEST_FAIL_REGISTRY_SAVE_AFTER_SERIALIZE").is_some() {
             return Err(InstallError::InstallFailed {
                 detail: "test-injected registry save failure".into(),
             });
@@ -333,6 +343,13 @@ pub enum InstallError {
 
     #[error("SHA verification failed: expected {expected}, got {actual}")]
     ShaMismatch { expected: String, actual: String },
+
+    #[error(
+        "refusing unpinned remote plugin code for '{plugin}' from {url}: \
+         marketplace.require_sha / GROK_MARKETPLACE_REQUIRE_SHA is enabled and \
+         no full commit sha (40/64 hex) is pinned"
+    )]
+    UnpinnedRemoteRefused { plugin: String, url: String },
 
     #[error("install failed: {detail}")]
     InstallFailed { detail: String },

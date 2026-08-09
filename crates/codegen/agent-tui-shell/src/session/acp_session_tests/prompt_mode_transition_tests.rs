@@ -46,7 +46,7 @@ fn prompt_mode_from_session_mode_id_uses_acp_session_mode() {
     );
 }
 fn fn_def(name: &str) -> ToolDefinition {
-    ToolDefinition::function(name, None::<&str>, serde_json::json!({ "type" : "object" }))
+    ToolDefinition::function(name, None::<&str>, serde_json::json!({"type": "object"}))
 }
 fn names(defs: &[ToolDefinition]) -> Vec<&str> {
     defs.iter().map(|d| d.function.name.as_str()).collect()
@@ -87,48 +87,6 @@ fn cursor_filter_is_noop_for_non_cursor_tools() {
     assert_eq!(names(&in_plan).len(), defs.len());
     assert_eq!(names(&out_of_plan).len(), defs.len());
 }
-
-#[test]
-fn agent_mode_prompt_replaces_only_bootstrap_system_prompt() {
-    let mut conversation = vec![
-        ConversationItem::system("old prompt"),
-        ConversationItem::user("first request"),
-    ];
-
-    let reminder =
-        prepare_agent_mode_prompt_update(&mut conversation, "browser_use", "new browser prompt");
-
-    assert!(reminder.is_none());
-    assert!(matches!(
-        &conversation[0],
-        ConversationItem::System(system) if system.content.as_ref() == "new browser prompt"
-    ));
-}
-
-#[test]
-fn agent_mode_prompt_preserves_inference_history_and_returns_bounded_delta() {
-    let mut conversation = vec![
-        ConversationItem::system("original prompt"),
-        ConversationItem::user("first request"),
-        ConversationItem::assistant("first response"),
-    ];
-    let original = serde_json::to_value(&conversation).expect("serialize original history");
-
-    let reminder = prepare_agent_mode_prompt_update(
-        &mut conversation,
-        "browser_use",
-        &"new browser prompt ".repeat(2_000),
-    )
-    .expect("inference history should produce an append-only reminder");
-
-    assert_eq!(
-        serde_json::to_value(&conversation).expect("serialize updated history"),
-        original
-    );
-    assert!(reminder.starts_with("<agent-mode-change"));
-    assert!(reminder.len() <= agent_tui_sampling_types::MAX_MODEL_ITEM_BYTES);
-}
-
 /// Pins the `reconcile_plan_mode_with_prompt` transitions:
 /// Plan → Pending, idempotent, non-plan modes exit cleanly.
 #[test]

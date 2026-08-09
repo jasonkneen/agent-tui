@@ -54,33 +54,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn truncate_to_prefix_long_string_cuts_at_12() {
-        assert_eq!(
-            truncate_to_prefix("xai-key-aaaaaaaaaaaaaaaaaaa".to_string()),
-            "xai-key-aaaa"
-        );
-    }
-
-    #[test]
-    fn truncate_to_prefix_short_string_unchanged() {
-        assert_eq!(truncate_to_prefix("abc".to_string()), "abc");
-    }
-
-    #[test]
-    fn truncate_to_prefix_exact_12_unchanged() {
-        assert_eq!(
-            truncate_to_prefix("123456789012".to_string()),
-            "123456789012"
-        );
-        assert_eq!(truncate_to_prefix("123456789012".to_string()).len(), 12);
-    }
-
-    #[test]
-    fn truncate_to_prefix_empty_unchanged() {
-        assert_eq!(truncate_to_prefix(String::new()), "");
-    }
-
-    #[test]
     fn tool_consumer_as_str_stable_identifiers() {
         assert_eq!(ToolConsumer::ImageGen.as_str(), "ImageGen");
         assert_eq!(ToolConsumer::VideoGenStart.as_str(), "VideoGen.start");

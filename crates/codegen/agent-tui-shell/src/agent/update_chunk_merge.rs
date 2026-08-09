@@ -997,7 +997,7 @@ mod tests {
     }
 
     #[test]
-    fn xai_same_id_deltas_merge_args_and_preserve_name() {
+    fn agent_tui_same_id_deltas_merge_args_and_preserve_name() {
         let mut buf = ReplayBuffer::new(Some(settings(100, 1_000_000)));
         let init = delta_chunk("s", Some("call_1"), 0, Some("read_file"), None);
         let d1 = delta_chunk("s", None, 0, None, Some("{\"path\":"));
@@ -1028,7 +1028,7 @@ mod tests {
     }
 
     #[test]
-    fn xai_different_tool_call_id_forces_flush() {
+    fn agent_tui_different_tool_call_id_forces_flush() {
         let mut buf = ReplayBuffer::new(Some(settings(100, 1_000_000)));
         let first = delta_chunk("s", Some("call_a"), 0, Some("grep"), Some("a-args"));
         let second = delta_chunk("s", Some("call_b"), 1, Some("read_file"), Some("b-args"));
@@ -1043,7 +1043,7 @@ mod tests {
     }
 
     #[test]
-    fn xai_tool_call_delta_is_bufferable() {
+    fn agent_tui_tool_call_delta_is_bufferable() {
         let mut buf = ReplayBuffer::new(Some(settings(100, 1_000_000)));
         let chunk = delta_chunk("s", Some("call_1"), 0, Some("bash"), Some("{\"cmd\":"));
 
@@ -1054,13 +1054,13 @@ mod tests {
     }
 
     #[test]
-    fn xai_after_acp_forces_flush() {
+    fn agent_tui_after_acp_forces_flush() {
         let mut buf = ReplayBuffer::new(Some(settings(100, 1_000_000)));
         let acp_chunk = msg_chunk("s", 1, "thinking...");
-        let xai_chunk = delta_chunk("s", Some("call_1"), 0, Some("bash"), Some("args"));
+        let agent_tui_chunk = delta_chunk("s", Some("call_1"), 0, Some("bash"), Some("args"));
 
         assert!(buf.consume_chunk(acp_chunk).is_none());
-        let (flushed, rest) = buf.consume_chunk(xai_chunk).expect("should force-flush");
+        let (flushed, rest) = buf.consume_chunk(agent_tui_chunk).expect("should force-flush");
 
         // Both emitted immediately — different kinds can't merge.
         assert!(matches!(flushed, SessionNotification::Acp(_)));

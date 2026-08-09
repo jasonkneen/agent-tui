@@ -125,9 +125,14 @@ pub fn minimal_commit_display_mode(
 ) -> DisplayMode {
     let collapse_thinking = appearance.minimal_collapse_thinking;
     match block {
-        // Diffs are the key artifact of an edit — always full.
         RenderBlock::ToolCall(ToolCallBlock::Edit(_)) => DisplayMode::Expanded,
-        // Other tool calls: truncated (first/last N + hidden-line count).
+        RenderBlock::ToolCall(
+            tc @ (ToolCallBlock::Search(_)
+            | ToolCallBlock::Read(_)
+            | ToolCallBlock::ListDir(_)
+            | ToolCallBlock::MemorySearch(_)
+            | ToolCallBlock::IntegrationSearch(_)),
+        ) if tc.is_success() => DisplayMode::Collapsed,
         RenderBlock::ToolCall(_) => DisplayMode::Truncated,
         RenderBlock::Thinking(_) if collapse_thinking => DisplayMode::Collapsed,
         RenderBlock::Thinking(_) => DisplayMode::Expanded,

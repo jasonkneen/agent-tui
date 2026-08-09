@@ -830,11 +830,13 @@ mod tests {
             !theme_is_dark(ThemeKind::GrokDay),
             "GrokDay is the light theme"
         );
-        for &kind in ThemeKind::ALL {
-            if kind == ThemeKind::GrokDay {
-                continue;
-            }
-            assert!(theme_is_dark(kind), "{kind:?} should be dark");
+        for dark in [
+            ThemeKind::GrokNight,
+            ThemeKind::TokyoNight,
+            ThemeKind::RosePineMoon,
+            ThemeKind::OscuraMidnight,
+        ] {
+            assert!(theme_is_dark(dark), "{dark:?} should be dark");
         }
     }
 

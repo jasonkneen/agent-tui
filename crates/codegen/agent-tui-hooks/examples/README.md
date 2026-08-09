@@ -1,6 +1,6 @@
 # Hook Examples
 
-Sample hooks for Grok. Copy to `~/.agent-tui/hooks/` to enable globally, or to `<project>/.grok/hooks/` for project-scoped hooks (requires `/hooks-trust`).
+Sample hooks for Grok. Copy to `~/.grok/hooks/` to enable globally, or to `<project>/.grok/hooks/` for project-scoped hooks (requires `/hooks-trust`).
 
 ## Available Examples
 
@@ -13,10 +13,10 @@ Denies obviously destructive shell commands before they execute:
 
 **Install:**
 ```sh
-mkdir -p ~/.agent-tui/hooks/bin
-cp examples/hooks/safe-shell.json ~/.agent-tui/hooks/
-cp examples/hooks/bin/safe-shell-guard.sh ~/.agent-tui/hooks/bin/
-chmod +x ~/.agent-tui/hooks/bin/safe-shell-guard.sh
+mkdir -p ~/.grok/hooks/bin
+cp examples/hooks/safe-shell.json ~/.grok/hooks/
+cp examples/hooks/bin/safe-shell-guard.sh ~/.grok/hooks/bin/
+chmod +x ~/.grok/hooks/bin/safe-shell-guard.sh
 ```
 
 ### 2. No Recursive Grep (`no-recursive-grep.json`)
@@ -38,10 +38,10 @@ allowed.
 
 **Install:**
 ```sh
-mkdir -p ~/.agent-tui/hooks/bin
-cp examples/hooks/no-recursive-grep.json ~/.agent-tui/hooks/
-cp examples/hooks/bin/no-recursive-grep-guard.py ~/.agent-tui/hooks/bin/
-chmod +x ~/.agent-tui/hooks/bin/no-recursive-grep-guard.py
+mkdir -p ~/.grok/hooks/bin
+cp examples/hooks/no-recursive-grep.json ~/.grok/hooks/
+cp examples/hooks/bin/no-recursive-grep-guard.py ~/.grok/hooks/bin/
+chmod +x ~/.grok/hooks/bin/no-recursive-grep-guard.py
 ```
 (Requires `python3` on `PATH`.)
 
@@ -49,28 +49,42 @@ chmod +x ~/.agent-tui/hooks/bin/no-recursive-grep-guard.py
 
 **Type:** passive (`SessionStart` + `SessionEnd`)
 
-Appends session metadata to `~/.agent-tui/session-audit.log` — event, session ID, cwd, timestamp.
+Appends session metadata to `~/.grok/session-audit.log` — event, session ID, cwd, timestamp.
 
 **Install:**
 ```sh
-mkdir -p ~/.agent-tui/hooks/bin
-cp examples/hooks/session-log.json ~/.agent-tui/hooks/
-cp examples/hooks/bin/session-log.sh ~/.agent-tui/hooks/bin/
-chmod +x ~/.agent-tui/hooks/bin/session-log.sh
+mkdir -p ~/.grok/hooks/bin
+cp examples/hooks/session-log.json ~/.grok/hooks/
+cp examples/hooks/bin/session-log.sh ~/.grok/hooks/bin/
+chmod +x ~/.grok/hooks/bin/session-log.sh
 ```
 
 ### 4. Tool Activity Logger (`tool-logger.json`)
 
 **Type:** passive (`PreToolUse` + `PostToolUse`)
 
-Logs all tool calls to `~/.agent-tui/tool-activity.log` — tool name, event type, effective tool name, backgrounded status.
+Logs all tool calls to `~/.grok/tool-activity.log` — tool name, event type, effective tool name, backgrounded status.
 
 **Install:**
 ```sh
-mkdir -p ~/.agent-tui/hooks/bin
-cp examples/hooks/tool-logger.json ~/.agent-tui/hooks/
-cp examples/hooks/bin/tool-logger.sh ~/.agent-tui/hooks/bin/
-chmod +x ~/.agent-tui/hooks/bin/tool-logger.sh
+mkdir -p ~/.grok/hooks/bin
+cp examples/hooks/tool-logger.json ~/.grok/hooks/
+cp examples/hooks/bin/tool-logger.sh ~/.grok/hooks/bin/
+chmod +x ~/.grok/hooks/bin/tool-logger.sh
+```
+
+### 5. Stop Gate: verify before finishing (`stop-verify.json`)
+
+**Type:** blocking (`Stop`)
+
+Keeps the agent working until `cargo build` passes. A `Stop` hook runs when the agent is about to finish its turn; returning `{"decision":"block","reason":"…"}` feeds the reason back to the model and runs another round. The built-in cap ends the turn after 8 continuations. The hook sets a 300-second timeout because a timed-out Stop hook fails open and lets the agent stop.
+
+**Install:**
+```sh
+mkdir -p ~/.grok/hooks/bin
+cp examples/hooks/stop-verify.json ~/.grok/hooks/
+cp examples/hooks/bin/stop-verify.sh ~/.grok/hooks/bin/
+chmod +x ~/.grok/hooks/bin/stop-verify.sh
 ```
 
 ## Format
@@ -92,7 +106,7 @@ Hook files use the Claude-compatible JSON format:
 }
 ```
 
-- **Event names:** `SessionStart`, `PreToolUse`, `PostToolUse`, `SessionEnd`
+- **Event names:** `SessionStart`, `PreToolUse`, `PostToolUse`, `Stop`, `SubagentStop`, `SessionEnd` (see the [user guide](../../agent-tui-pager/docs/user-guide/10-hooks.md) for the full set)
 - **Matcher:** regex on tool name. Claude names like `Bash`, `Read`, `Edit` are auto-expanded to also match Grok names (`run_terminal_cmd`, `read_file`, `search_replace`)
 - **Timeout:** in seconds (default: 5)
 - **Command:** path to script (relative to hook file directory) or inline shell command
@@ -101,7 +115,7 @@ Hook files use the Claude-compatible JSON format:
 
 Scripts receive the hook event envelope as JSON on **stdin** and should write a response to **stdout**:
 
-**For blocking hooks (`PreToolUse`):**
+**For tool gates (`PreToolUse`):**
 ```json
 {"decision":"allow"}
 ```
@@ -110,10 +124,22 @@ or
 {"decision":"deny","reason":"Explanation for the user"}
 ```
 
-**Exit codes:** `0` = allow, `2` = deny, other = fail-open.
+**For stop gates (`Stop` / `SubagentStop`):** keep the agent working or force it to stop:
+```json
+{"decision":"block","reason":"Feedback fed back to the model"}
+```
+```json
+{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"Non-error feedback"}}
+```
+```json
+{"continue":false,"stopReason":"Shown to the user; overrides any block"}
+```
+The turn ends after 8 consecutive continuations. The input carries `stopHookActive` (true once a block has already continued this turn) so a hook can give up.
+
+**Exit codes:** `0` = allow / no decision, `2` = deny (`PreToolUse`) or block-stop with stderr as the feedback, other = fail-open. Valid decision JSON on stdout wins over the exit code.
 
 **For passive hooks:** stdout is informational only. Exit `0` for success.
 
 ## Uninstall
 
-Remove the JSON file from `~/.agent-tui/hooks/`. The hook stops running on the next session.
+Remove the JSON file from `~/.grok/hooks/`. The hook stops running on the next session.

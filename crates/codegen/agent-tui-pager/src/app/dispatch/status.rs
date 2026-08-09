@@ -1,5 +1,7 @@
 //! Session status, sharing, privacy, usage, and info dispatchers.
 
+use agent_client_protocol as acp;
+
 use super::ctx::get_active_agent;
 use super::queue::push_and_page_flip;
 use super::settings::ui::refresh_open_settings_modals;
@@ -134,39 +136,6 @@ pub(super) fn dispatch_show_session_info(app: &mut AppView) -> Vec<Effect> {
         show_resolved_model: app.show_resolved_model,
         nonce: 0,
     }]
-}
-
-/// Show privacy and data retention status as a system message in scrollback.
-///
-/// Three-state display: Enterprise ZDR, coding data sharing opted out,
-/// or opted in. Labels align with `CODING_DATA_SHARING_CHOICES` in
-/// `settings/defs.rs` and the `coding_data_sharing_toast` format.
-pub(super) fn dispatch_show_privacy_info(app: &mut AppView) -> Vec<Effect> {
-    let mut lines = Vec::new();
-
-    if app.is_zdr {
-        // Enterprise ZDR -- the team has disabled retention entirely.
-        lines.push("  Zero Data Retention: enabled");
-        lines.push("  Your data is not retained or used for training (ZDR enabled).");
-    } else if app.coding_data_retention_opt_out {
-        // Coding data sharing opted out -- matches desktop's "Privacy mode" state.
-        lines.push("  Privacy: privacy mode");
-        lines.push("  Your code data will not be trained on or used to improve the product.");
-        lines.push("");
-        lines.push("  Use /privacy opt-in to share data and help improve the product.");
-    } else {
-        // Coding data sharing opted in -- matches desktop's "Share data" state.
-        lines.push("  Privacy: share data");
-        lines.push("  Usage and code data may be used by SpaceXAI to improve the product.");
-        lines.push("");
-        lines.push("  Use /privacy opt-out to enable privacy mode.");
-    }
-
-    lines.push("");
-    lines.push("  Learn more: https://x.ai/legal");
-    let text = lines.join("\n");
-    push_system_to_any_agent(app, &text);
-    vec![]
 }
 
 /// State-only mutation for `coding_data_sharing`. SHELL-owned.
@@ -402,7 +371,7 @@ pub(super) fn append_consumer_billing_surface(app: &mut AppView, agent_id: Agent
     // Remote-settings kill switch (`grok_build_usage_redirect_url`): link out
     // instead of fetching billing from the backend.
     if let Some(url) = app.usage_billing_redirect_url.clone() {
-        if let Some(agent) = app.agents.get_mut(&id) {
+        if let Some(agent) = app.agents.get_mut(&agent_id) {
             agent.scrollback.push_block(RenderBlock::System(
                 crate::scrollback::blocks::SystemMessageBlock::new(format!(
                     "Please check your usage on {url}"
@@ -411,13 +380,27 @@ pub(super) fn append_consumer_billing_surface(app: &mut AppView, agent_id: Agent
         }
         return vec![];
     }
-    // Non-silent fetch: the effect also pulls the auto top-up rule so the
-    // summary can render usage, prepaid credits, and auto top-up together.
+    if !app.agents.contains_key(&agent_id) {
+        return vec![];
+    }
+    // Non-silent: the effect also pulls the auto top-up rule so the summary
+    // renders usage, prepaid credits, and auto top-up together.
     vec![Effect::FetchBilling {
-        agent_id: id,
+        agent_id,
         silent: false,
         nonce: 0,
     }]
+}
+
+/// `/usage manage` — open consumer billing. No-op when the surface is hidden.
+pub(super) fn dispatch_manage_billing(app: &mut AppView) -> Vec<Effect> {
+    if !app.usage_visible {
+        return vec![];
+    }
+    super::router::dispatch(
+        crate::app::actions::Action::OpenUrl("https://grok.com/?_s=usage".to_string()),
+        app,
+    )
 }
 
 /// Commit a one-line "update available" notice into the active agent's
@@ -701,9 +684,26 @@ pub(super) fn dispatch_copy_session_id(app: &mut AppView, index: usize) -> Vec<E
                 .map(|e| e.id.clone())
         });
     if let Some(id) = id {
-        let r = crate::clipboard::copy_text(&id);
-        app.show_toast(r.message);
+        let delivery = crate::clipboard::copy_text_or_file(&id);
+        app.show_toast(delivery.toast_message().as_ref());
     }
+    vec![]
+}
+
+/// Open the onboarding tutorial overlay (top-level modal — works over both
+/// the welcome screen and an agent session). Toggles: dispatching while
+/// open closes instead of stacking.
+pub(super) fn dispatch_open_tutorial(app: &mut AppView) -> Vec<Effect> {
+    // Minimal mode has no modal host: the overlay would render nothing
+    // while the app-level intercept swallowed all input.
+    if app.screen_mode.is_minimal() {
+        return vec![];
+    }
+    if app.tutorial.is_some() {
+        app.tutorial = None;
+        return vec![];
+    }
+    app.tutorial = Some(crate::views::tutorial::TutorialState::new());
     vec![]
 }
 

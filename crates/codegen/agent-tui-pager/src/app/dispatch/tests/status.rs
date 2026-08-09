@@ -60,73 +60,6 @@ fn send_while_idle_with_nonempty_shared_queue_routes_to_server() {
     assert_eq!(q.last().map(|e| e.text.as_str()), Some("c"));
 }
 
-#[test]
-fn show_privacy_info_zdr() {
-    let mut app = test_app_with_agent();
-    app.is_zdr = true;
-    let effects = dispatch(Action::ShowPrivacyInfo, &mut app);
-    assert!(effects.is_empty());
-    let text = last_system_text(&app, AgentId(0));
-    assert!(text.contains("Zero Data Retention"));
-}
-
-/// `/privacy` info-print uses the desktop-aligned "privacy mode" /
-/// "share data" labels from the user's intentional rewrite.
-#[test]
-fn show_privacy_info_opted_out() {
-    let mut app = test_app_with_agent();
-    app.coding_data_retention_opt_out = true;
-    let effects = dispatch(Action::ShowPrivacyInfo, &mut app);
-    assert!(effects.is_empty());
-    let text = last_system_text(&app, AgentId(0));
-    assert!(
-        text.contains("Privacy: privacy mode"),
-        "info-print must use 'Privacy: privacy mode' (desktop-aligned label): {text}",
-    );
-    assert!(text.contains("/privacy opt-in"));
-}
-
-#[test]
-fn show_privacy_info_opted_in() {
-    let mut app = test_app_with_agent();
-    app.coding_data_retention_opt_out = false;
-    let effects = dispatch(Action::ShowPrivacyInfo, &mut app);
-    assert!(effects.is_empty());
-    let text = last_system_text(&app, AgentId(0));
-    assert!(
-        text.contains("Privacy: share data"),
-        "info-print must use 'Privacy: share data' (desktop-aligned label): {text}",
-    );
-    assert!(text.contains("/privacy opt-out"));
-}
-
-/// The info-print uses desktop-aligned labels ("privacy mode" /
-/// "share data"). This test pins those labels to catch accidental
-/// regressions to the registry's "Opt in" / "Opt out" display
-/// strings.
-#[test]
-fn show_privacy_info_does_not_use_old_desktop_labels() {
-    // opted-out → "Privacy: privacy mode"
-    let mut app = test_app_with_agent();
-    app.coding_data_retention_opt_out = true;
-    let _ = dispatch(Action::ShowPrivacyInfo, &mut app);
-    let text = last_system_text(&app, AgentId(0));
-    assert!(
-        text.contains("privacy mode"),
-        "[opted-out] info-print must contain 'privacy mode': {text:?}",
-    );
-
-    // opted-in → "Privacy: share data"
-    let mut app = test_app_with_agent();
-    app.coding_data_retention_opt_out = false;
-    let _ = dispatch(Action::ShowPrivacyInfo, &mut app);
-    let text = last_system_text(&app, AgentId(0));
-    assert!(
-        text.contains("share data"),
-        "[opted-in] info-print must contain 'share data': {text:?}",
-    );
-}
-
 // ── coding_data_sharing dispatch tests ───
 //
 // The dispatcher uses **optimistic + rollback**, matching the
@@ -639,18 +572,11 @@ fn scrub_error_for_toast_unit() {
     );
 }
 
-/// The no-agent path
-/// returns empty cleanly — no toast (the show_toast call would
-/// no-op anyway), no panic, no Effect emitted. A "✗ No active
-/// session" toast would be dead UX (no agent = no toast surface
-/// to render on), so this path emits a tracing::warn! instead.
+/// Synthetic AgentId(0) when no agents (welcome banner Accept path).
 #[test]
-fn set_coding_data_sharing_no_agents_returns_empty_without_panic() {
+fn set_coding_data_sharing_no_agents_still_emits_effect() {
     let mut app = test_app_with_agent();
-    // Remove every agent so the dispatcher hits the no-agent path.
     app.agents.clear();
-    // Force the view off Agent so the dispatcher falls through to
-    // app.agents.keys().next() which is now empty.
     app.active_view = ActiveView::Welcome;
     app.coding_data_retention_opt_out = true;
     let effects = dispatch(Action::SetCodingDataSharing { opted_in: true }, &mut app);
@@ -802,7 +728,6 @@ fn privacy_banner_opt_out_noop_while_opt_in_inflight() {
         }),
         &mut app,
     );
-    // State unchanged (we never reach the optimistic mutation).
     assert!(
         app.privacy_banner_should_show(),
         "a failed [Opt in] must keep the banner even after a raced [Opt out]"
@@ -1000,30 +925,34 @@ fn dispatch_confirm_reset_setting_reset_dispatches_typed_setter_for_shared_bool(
 fn dispatch_confirm_reset_setting_reset_dispatches_typed_setter_for_shared_enum() {
     use crate::settings::SettingValue;
     use crate::views::modal::ResetSettingsResult;
-    let mut app = test_app_with_agent();
-    // Flip theme to a non-default first.
-    let _ = dispatch(Action::SetTheme("tokyonight".to_string()), &mut app);
-    assert_eq!(app.current_ui.theme.as_deref(), Some("tokyonight"));
+    // SetTheme mutates the global theme cache — serialize with the
+    // other theme tests via the theme test lock.
+    with_theme_test_env(|| {
+        let mut app = test_app_with_agent();
+        // Flip theme to a non-default first.
+        let _ = dispatch(Action::SetTheme("tokyonight".to_string()), &mut app);
+        assert_eq!(app.current_ui.theme.as_deref(), Some("tokyonight"));
 
-    setup_reset_confirm_open(&mut app, "theme");
+        setup_reset_confirm_open(&mut app, "theme");
 
-    let effects = dispatch(
-        Action::ConfirmResetSetting {
-            choice: ResetSettingsResult::Reset,
-        },
-        &mut app,
-    );
+        let effects = dispatch(
+            Action::ConfirmResetSetting {
+                choice: ResetSettingsResult::Reset,
+            },
+            &mut app,
+        );
 
-    // Reset → SetTheme("groknight") (the registered default).
-    assert_eq!(effects.len(), 1);
-    match &effects[0] {
-        Effect::PersistSetting { key, value, .. } => {
-            assert_eq!(*key, "theme");
-            assert_eq!(value, &SettingValue::Enum("groknight"));
+        // Reset → SetTheme("groknight") (the registered default).
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::PersistSetting { key, value, .. } => {
+                assert_eq!(*key, "theme");
+                assert_eq!(value, &SettingValue::Enum("groknight"));
+            }
+            other => panic!("expected PersistSetting, got {other:?}"),
         }
-        other => panic!("expected PersistSetting, got {other:?}"),
-    }
-    assert_eq!(app.current_ui.theme.as_deref(), Some("groknight"));
+        assert_eq!(app.current_ui.theme.as_deref(), Some("groknight"));
+    });
 }
 
 fn seed_scrolled_up(app: &mut AppView) {
@@ -1150,25 +1079,21 @@ fn show_usage_on_welcome_screen_is_noop() {
 }
 
 #[test]
-fn show_usage_with_redirect_url_shows_link_and_skips_fetch() {
+fn show_usage_with_redirect_url_fetches_session_only() {
+    // Redirect link is deferred until SessionUsageComplete (see billing tests).
     let mut app = test_app_with_agent();
     app.screen_mode = crate::app::ScreenMode::Minimal;
     app.usage_billing_redirect_url = Some("https://billing.example.com/me".to_string());
     let before = agent_scrollback_len(&app);
     let effects = dispatch(Action::ShowUsage, &mut app);
     assert!(
-        effects.is_empty(),
-        "with a redirect URL set, ShowUsage should not fetch (billing or auto-topup), got: {effects:?}"
+        matches!(
+            effects.as_slice(),
+            [Effect::FetchSessionUsage { agent_id, .. }] if *agent_id == AgentId(0)
+        ),
+        "got: {effects:?}"
     );
-    assert_eq!(
-        agent_scrollback_len(&app),
-        before + 1,
-        "redirect path should push one system message with the billing link"
-    );
-    assert!(
-        last_system_text(&app, AgentId(0)).contains("https://billing.example.com/me"),
-        "redirect message should use the remote settings-provided URL"
-    );
+    assert_eq!(agent_scrollback_len(&app), before);
 }
 
 // ── Minimal update-notice tests ──────────────────────────────────────

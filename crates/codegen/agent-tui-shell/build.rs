@@ -33,8 +33,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gen_dir = if in_bazel {
         // OUT_DIR is always set by Cargo/Bazel for build scripts.
         PathBuf::from(env::var("OUT_DIR")?)
-    } else if let Ok(xai_root) = env::var("XAI_ROOT") {
-        PathBuf::from(xai_root).join("target/tmp/grok-shell-bundle-rg")
+    } else if let Ok(agent_tui_root) = env::var("XAI_ROOT") {
+        PathBuf::from(agent_tui_root).join("target/tmp/grok-shell-bundle-rg")
     } else {
         PathBuf::from(env::var("OUT_DIR")?)
     };

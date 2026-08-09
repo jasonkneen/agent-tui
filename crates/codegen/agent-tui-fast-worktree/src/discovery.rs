@@ -132,10 +132,12 @@ impl DiscoveredWorktree {
             .unwrap_or_else(|| "unknown".to_string());
         let source_repo = self.source_repo.unwrap_or_else(|| PathBuf::from("unknown"));
         let created_at = fs_creation_time(&self.path);
+        // Match `WorktreeDb::get`, which looks up by canonical path.
+        let path = dunce::canonicalize(&self.path).unwrap_or(self.path);
 
         WorktreeRecord {
-            id: id_from_path(&self.path),
-            path: self.path,
+            id: id_from_path(&path),
+            path,
             source_repo,
             repo_name,
             kind: self.kind,
@@ -187,6 +189,8 @@ pub fn rebuild_worktree_db(
         discovered: discovery.found.len() as u64,
         ..Default::default()
     };
+    let now = now_epoch_secs();
+    let roots = managed_worktree_roots(grok_home);
 
     for wt in discovery.found {
         let path = dunce::canonicalize(&wt.path).unwrap_or_else(|_| wt.path.clone());
@@ -204,7 +208,10 @@ pub fn rebuild_worktree_db(
             report.already_tracked += 1;
             continue;
         }
-        db.register(&wt.into_record())?;
+        let mut rec = wt.into_record();
+        // Touch so same-pass age GC does not reclaim solely from old FS mtime.
+        rec.last_accessed_at = Some(now);
+        db.register(&rec)?;
         report.registered += 1;
     }
 
@@ -358,5 +365,46 @@ mod tests {
         assert_eq!(deser.discovered, 5);
         assert_eq!(deser.registered, 3);
         assert_eq!(deser.already_tracked, 2);
+    }
+
+    #[test]
+    fn rebuild_sets_last_accessed_at() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let grok_home = tmp.path();
+        let wt = grok_home.join("worktrees/repo/sess");
+        make_fake_standalone_worktree(&wt);
+        let db = crate::db::WorktreeDb::open_in_memory().unwrap();
+        rebuild_worktree_db(&db, grok_home).unwrap();
+        let rec = db.get(&wt.to_string_lossy()).unwrap().expect("registered");
+        assert!(
+            rec.last_accessed_at.is_some(),
+            "rebuild must touch last_accessed_at for same-pass age safety"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rebuild_skips_symlink_escape_outside_managed_roots() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let grok_home = tmp.path().join("grok");
+        let outside = tmp.path().join("outside-real");
+        make_fake_standalone_worktree(&outside);
+        let link_parent = grok_home.join("worktrees/repo");
+        std::fs::create_dir_all(&link_parent).unwrap();
+        std::os::unix::fs::symlink(&outside, link_parent.join("escaped")).unwrap();
+
+        let db = crate::db::WorktreeDb::open_in_memory().unwrap();
+        let report = rebuild_worktree_db(&db, &grok_home).unwrap();
+        assert_eq!(report.discovered, 1);
+        assert_eq!(report.registered, 0, "symlink escape must not register");
+        assert!(
+            db.list(&crate::db::ListFilter::default())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!path_under_managed_worktree_roots(
+            &dunce::canonicalize(&outside).unwrap(),
+            &grok_home
+        ));
     }
 }

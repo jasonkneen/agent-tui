@@ -82,6 +82,8 @@ pub mod user_prompt_meta {
     /// block's `text`; only meaningful when that text is displayed verbatim
     /// (never stamped alongside `displayText`).
     pub const SKILL_TOKEN_RANGES: &str = "skillTokenRanges";
+    /// See [`agent_tui_prompt_queue::COMBINED_DISPLAY_TEXTS_META`].
+    pub const COMBINED_DISPLAY_TEXTS: &str = agent_tui_prompt_queue::COMBINED_DISPLAY_TEXTS_META;
 }
 
 /// `UserMessageChunk` / `ContentChunk._meta` keys stamped by the shell and

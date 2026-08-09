@@ -13,7 +13,7 @@ use crate::app::dispatch::ctx::{
 };
 use crate::app::dispatch::modes::inherit_auto_mode;
 use crate::app::dispatch::prompt::{consume_chat_kind, dispatch_initial_prompt};
-use crate::app::dispatch::queue::maybe_drain_queue;
+use crate::app::dispatch::queue::{QueueDrain, maybe_drain_queue, note_peek_page_flip};
 use crate::app::dispatch::router::dispatch;
 use crate::app::dispatch::status::notify_session_ready;
 use crate::app::dispatch::task_result::unregister_session_effect;
@@ -24,43 +24,6 @@ use crate::scrollback::state::ScrollbackState;
 use agent_client_protocol as acp;
 use std::time::Instant;
 use agent_tui_shell::sampling::types::ReasoningEffort;
-use crate::runtime_backend::RuntimeBackend;
-
-/// Effects that replace the prompt/session model chrome with the active
-/// **vendor addon** catalog (Codex / Claude / Lazar / Hermes).
-///
-/// Grok ACP still creates the session and may ship a Grok model list; without
-/// this, product skins (`./codex`, `./claude`, …) and a pre-set `runtime.toml`
-/// leave the chrome stuck on e.g. "Grok 4.5".
-pub(crate) fn vendor_catalog_refresh_effects() -> Vec<Effect> {
-    match crate::runtime_backend::active() {
-        RuntimeBackend::Grok => vec![],
-        RuntimeBackend::Codex => vec![Effect::RefreshCodexModels],
-        RuntimeBackend::Claude => vec![Effect::RefreshClaudeModels],
-        RuntimeBackend::Lazar => vec![Effect::RefreshLazarModels],
-        RuntimeBackend::Hermes => vec![Effect::RefreshHermesModels],
-    }
-}
-
-/// Resolve models from the Grok ACP session response into what the UI should
-/// show. Pure enough for use under an `app.agents.get_mut` borrow (no
-/// `&mut AppView`).
-///
-/// When a non-Grok runtime owns turns, stashes the Grok catalog (for
-/// `/runtime grok` restore) and returns a cached vendor catalog if any —
-/// never paints Grok as the active model chrome.
-pub(crate) fn session_models_after_acp(
-    new_models: Option<acp::SessionModelState>,
-) -> Option<ModelState> {
-    let m = new_models?;
-    let state: ModelState = Some(m).into();
-    if crate::runtime_backend::active() == RuntimeBackend::Grok {
-        return Some(state);
-    }
-    crate::runtime_backend::stash_grok_catalog(state);
-    crate::runtime_backend::codex_catalog()
-}
-
 /// A deferred model switch to apply once the session exists, plus any effort
 /// error to surface. `switch` is still populated when a `-m` model was stashed
 /// even if the effort token failed, so an invalid effort never drops the CLI
@@ -435,6 +398,7 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
             bg_tool_call_to_task: std::collections::HashMap::new(),
             scheduled_tasks: std::collections::HashMap::new(),
             in_flight_prompt: None,
+            compact_held_prompt: None,
             current_prompt_id: None,
             created_via_new: true,
         },
@@ -445,6 +409,7 @@ pub(in crate::app::dispatch) fn dispatch_new_session_inner_with_id(
         let agent = app.agents.get_mut(&agent_id).unwrap();
         agent.prompt.set_compact(app.appearance.prompt.compact);
         agent.prompt.adopt_slash_mru(app.slash_mru.clone());
+        agent.prompt.adopt_command_tags(app.command_tags.clone());
         agent
             .prompt
             .set_contextual_hints(app.contextual_hints.undo, app.contextual_hints.plan_mode);
@@ -946,6 +911,7 @@ pub(in crate::app::dispatch) fn dispatch_new_worktree_session(
             bg_tool_call_to_task: std::collections::HashMap::new(),
             scheduled_tasks: std::collections::HashMap::new(),
             in_flight_prompt: None,
+            compact_held_prompt: None,
             current_prompt_id: None,
             created_via_new: false,
         },
@@ -968,6 +934,7 @@ pub(in crate::app::dispatch) fn dispatch_new_worktree_session(
         let agent = app.agents.get_mut(&agent_id).unwrap();
         agent.prompt.set_compact(app.appearance.prompt.compact);
         agent.prompt.adopt_slash_mru(app.slash_mru.clone());
+        agent.prompt.adopt_command_tags(app.command_tags.clone());
         agent
             .prompt
             .set_contextual_hints(app.contextual_hints.undo, app.contextual_hints.plan_mode);
@@ -1071,6 +1038,7 @@ pub(in crate::app::dispatch) fn handle_session_created(
     agent_id: AgentId,
     session_id: acp::SessionId,
     new_models: Option<acp::SessionModelState>,
+    scheduler_background_loops: Option<bool>,
 ) -> Vec<Effect> {
     let agent_count = app.agents.len();
     let switch_hint =
@@ -1092,18 +1060,26 @@ pub(in crate::app::dispatch) fn handle_session_created(
             )));
         }
         agent.bind_session_id(session_id);
-        if let Some(state) = session_models_after_acp(new_models) {
-            app.models = state.clone();
-            agent.session.models = state;
+        agent.scheduler_background_loops = scheduler_background_loops;
+        if let Some(m) = new_models {
+            app.models = Some(m).into();
+            agent.session.models = app.models.clone();
         }
         let deferred = apply_deferred_model_switch(agent, app.cli_effort_token.as_deref());
         let deferred_mode = agent.deferred_session_mode.take();
         let cwd = agent.session.cwd.clone();
-        let mut effects = if app.reconnect_pending {
-            vec![]
+        if deferred.is_some() {
+            agent.session.model_switch_pending = true;
+        }
+        let mut drain = if app.reconnect_pending {
+            QueueDrain {
+                effects: vec![],
+                page_flip_entry: None,
+            }
         } else {
             maybe_drain_queue(agent)
         };
+        let mut effects = std::mem::take(&mut drain.effects);
         agent.session.prompt_history_loading = true;
         effects.push(Effect::FetchPromptHistory {
             agent_id,
@@ -1114,7 +1090,10 @@ pub(in crate::app::dispatch) fn handle_session_created(
             agent_id,
             session_id: session_id_clone.clone(),
         });
-        effects.push(Effect::RefreshAvailableCommands { agent_id, cwd });
+        effects.push(Effect::RefreshAvailableCommands {
+            agent_id,
+            session_id: session_id_clone.clone(),
+        });
         effects.push(Effect::CheckMarketplaceUpdates {
             agent_id,
             session_id: session_id_clone.clone(),
@@ -1145,8 +1124,11 @@ pub(in crate::app::dispatch) fn handle_session_created(
                 mode_id: acp::SessionModeId::new(mode.as_id()),
             });
         }
-        if std::mem::take(&mut agent.pending_extensions_fetch) && agent.extensions_modal.is_some() {
+        if std::mem::take(&mut agent.pending_extensions_fetch)
+            && let Some(modal) = agent.extensions_modal.as_mut()
+        {
             effects.extend(extensions_modal_tab_fetches(
+                modal,
                 agent_id,
                 session_id_clone.clone(),
             ));
@@ -1156,6 +1138,7 @@ pub(in crate::app::dispatch) fn handle_session_created(
             cwd: agent.session.cwd.display().to_string(),
         });
         notify_session_ready(&app.notification_service, agent);
+        note_peek_page_flip(app, agent_id, drain.page_flip_entry);
         return effects;
     }
     vec![]
@@ -1167,17 +1150,19 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
     worktree_path: std::path::PathBuf,
     session_cwd: std::path::PathBuf,
     new_models: Option<acp::SessionModelState>,
+    scheduler_background_loops: Option<bool>,
 ) -> Vec<Effect> {
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         agent.session.finish_command();
         agent.mark_turn_finished();
         let session_id_clone = session_id.clone();
         agent.bind_session_id(session_id);
+        agent.scheduler_background_loops = scheduler_background_loops;
         agent.session.cwd = session_cwd.clone();
         agent.session.is_worktree = true;
-        if let Some(state) = session_models_after_acp(new_models) {
-            app.models = state.clone();
-            agent.session.models = state;
+        if let Some(m) = new_models {
+            app.models = Some(m).into();
+            agent.session.models = app.models.clone();
         }
         agent.prompt.file_search.retarget(&session_cwd);
         agent.scrollback.push_block(RenderBlock::system(format!(
@@ -1187,11 +1172,18 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
         let deferred = apply_deferred_model_switch(agent, app.cli_effort_token.as_deref());
         let deferred_mode = agent.deferred_session_mode.take();
         let cwd = agent.session.cwd.clone();
-        let mut effects = if app.reconnect_pending {
-            vec![]
+        if deferred.is_some() {
+            agent.session.model_switch_pending = true;
+        }
+        let mut drain = if app.reconnect_pending {
+            QueueDrain {
+                effects: vec![],
+                page_flip_entry: None,
+            }
         } else {
             maybe_drain_queue(agent)
         };
+        let mut effects = std::mem::take(&mut drain.effects);
         agent.session.prompt_history_loading = true;
         effects.push(Effect::FetchPromptHistory {
             agent_id,
@@ -1202,7 +1194,10 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
             agent_id,
             session_id: session_id_clone.clone(),
         });
-        effects.push(Effect::RefreshAvailableCommands { agent_id, cwd });
+        effects.push(Effect::RefreshAvailableCommands {
+            agent_id,
+            session_id: session_id_clone.clone(),
+        });
         effects.push(Effect::CheckMarketplaceUpdates {
             agent_id,
             session_id: session_id_clone.clone(),
@@ -1233,8 +1228,11 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
                 mode_id: acp::SessionModeId::new(mode.as_id()),
             });
         }
-        if std::mem::take(&mut agent.pending_extensions_fetch) && agent.extensions_modal.is_some() {
+        if std::mem::take(&mut agent.pending_extensions_fetch)
+            && let Some(modal) = agent.extensions_modal.as_mut()
+        {
             effects.extend(extensions_modal_tab_fetches(
+                modal,
                 agent_id,
                 session_id_clone.clone(),
             ));
@@ -1244,6 +1242,7 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
             cwd: agent.session.cwd.display().to_string(),
         });
         notify_session_ready(&app.notification_service, agent);
+        note_peek_page_flip(app, agent_id, drain.page_flip_entry);
         return effects;
     }
     vec![]
@@ -1340,14 +1339,12 @@ pub(in crate::app::dispatch) fn handle_worktree_session_failed(
     agent_id: AgentId,
     error: String,
 ) -> Vec<Effect> {
-    tracing::error!(
-        agent = ? agent_id, error = % error, "Worktree session creation failed"
-    );
-    let is_orphan_zombie = app
+    tracing::error!(agent = ?agent_id, error = %error, "Worktree session creation failed");
+    let is_orphan = app
         .agents
         .get(&agent_id)
         .is_some_and(|a| a.session.session_id.is_none() && a.session.forked_from.is_none());
-    if is_orphan_zombie {
+    if is_orphan {
         let fallback = app.agents.keys().copied().find(|id| *id != agent_id);
         remove_agent_and_cleanup(app, agent_id);
         if let Some(target) = fallback {
@@ -1374,6 +1371,7 @@ pub(in crate::app::dispatch) fn handle_worktree_session_failed(
     } else if let Some(agent) = app.agents.get_mut(&agent_id) {
         agent.pending_extensions_fetch = false;
         agent.session.prompt_history_loading = false;
+        agent.mcp_init_progress = None;
         agent.session.finish_command();
         let elapsed = agent.turn_elapsed();
         agent.mark_turn_finished();
@@ -1446,7 +1444,9 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
                 vec![]
             }
         };
-        effects.extend(maybe_drain_queue(agent));
+        let drain = maybe_drain_queue(agent);
+        effects.extend(drain.effects);
+        note_peek_page_flip(app, agent_id, drain.page_flip_entry);
         effects
     } else {
         vec![]

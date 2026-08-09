@@ -235,4 +235,143 @@ mod tests {
         let s: RemoteSettings = serde_json::from_str(json).unwrap();
         assert_eq!(s.tips, Some(vec!["a".to_string(), "b".to_string()]));
     }
+
+    // Hermetic: drive the resolver through `_with_env` with an EXPLICIT env map
+    // so ambient `GROK_SLASH_COMMAND_TAGS` can't affect these assertions.
+    #[test]
+    fn resolve_slash_command_tags_local_overrides_remote_per_key() {
+        let mut remote = std::collections::BTreeMap::new();
+        remote.insert("workflows".to_string(), "beta".to_string());
+        remote.insert("model".to_string(), "remote-only".to_string());
+        let local: TomlValue =
+            toml::from_str("[slash_command_tags]\nworkflows = \"new\"\nplan = \"local-only\"\n")
+                .unwrap();
+
+        let resolved = resolve_slash_command_tags_with_env(
+            &local,
+            Some(&remote),
+            std::collections::HashMap::new(),
+        );
+        // Local wins per key.
+        assert_eq!(resolved.get("workflows").map(String::as_str), Some("new"));
+        // Remote-only key passes through.
+        assert_eq!(
+            resolved.get("model").map(String::as_str),
+            Some("remote-only")
+        );
+        // Local-only key is added.
+        assert_eq!(resolved.get("plan").map(String::as_str), Some("local-only"));
+        assert_eq!(resolved.len(), 3);
+    }
+
+    #[test]
+    fn resolve_slash_command_tags_missing_is_empty_and_remote_passes_through() {
+        let empty = TomlValue::Table(toml::map::Map::new());
+        assert!(
+            resolve_slash_command_tags_with_env(&empty, None, std::collections::HashMap::new())
+                .is_empty()
+        );
+
+        let mut remote = std::collections::BTreeMap::new();
+        remote.insert("commit".to_string(), "new".to_string());
+        let resolved = resolve_slash_command_tags_with_env(
+            &empty,
+            Some(&remote),
+            std::collections::HashMap::new(),
+        );
+        assert_eq!(resolved.get("commit").map(String::as_str), Some("new"));
+        assert_eq!(resolved.len(), 1);
+    }
+
+    // Env wins through the public composition — proven hermetically via `_with_env`
+    // (no process-env mutation).
+    #[test]
+    fn resolve_slash_command_tags_env_overrides_local_and_remote() {
+        let mut remote = std::collections::BTreeMap::new();
+        remote.insert("workflows".to_string(), "remote".to_string());
+        let local: TomlValue =
+            toml::from_str("[slash_command_tags]\nworkflows = \"local\"\n").unwrap();
+        let mut env = std::collections::HashMap::new();
+        env.insert("workflows".to_string(), "env".to_string());
+
+        let resolved = resolve_slash_command_tags_with_env(&local, Some(&remote), env);
+        assert_eq!(resolved.get("workflows").map(String::as_str), Some("env"));
+        assert_eq!(resolved.len(), 1);
+    }
+
+    #[test]
+    fn remote_settings_slash_command_tags_absent_and_malformed() {
+        // Absent → None.
+        let s: RemoteSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.slash_command_tags, None);
+        // Malformed (array instead of map) → tolerated as None, whole parse ok.
+        let s: RemoteSettings =
+            serde_json::from_str(r#"{"slash_command_tags": ["oops"]}"#).unwrap();
+        assert_eq!(s.slash_command_tags, None);
+        // Well-formed map parses.
+        let s: RemoteSettings =
+            serde_json::from_str(r#"{"slash_command_tags": {"commit": "new"}}"#).unwrap();
+        assert_eq!(
+            s.slash_command_tags
+                .as_ref()
+                .and_then(|m| m.get("commit"))
+                .map(String::as_str),
+            Some("new")
+        );
+    }
+
+    #[test]
+    fn merge_command_tags_env_beats_local_beats_remote_per_key() {
+        let mut remote = std::collections::BTreeMap::new();
+        remote.insert("a".to_string(), "remote-a".to_string());
+        remote.insert("b".to_string(), "remote-b".to_string());
+        remote.insert("r".to_string(), "remote-only".to_string());
+
+        let mut local = std::collections::HashMap::new();
+        local.insert("a".to_string(), "local-a".to_string());
+        local.insert("b".to_string(), "local-b".to_string());
+        local.insert("l".to_string(), "local-only".to_string());
+
+        let mut env = std::collections::HashMap::new();
+        env.insert("a".to_string(), "env-a".to_string());
+        env.insert("e".to_string(), "env-only".to_string());
+
+        let merged = merge_command_tags(Some(&remote), local, env);
+        assert_eq!(merged.get("a").map(String::as_str), Some("env-a")); // env > local > remote
+        assert_eq!(merged.get("b").map(String::as_str), Some("local-b")); // local > remote (no env)
+        assert_eq!(merged.get("r").map(String::as_str), Some("remote-only")); // remote-only survives
+        assert_eq!(merged.get("l").map(String::as_str), Some("local-only")); // local-only survives
+        assert_eq!(merged.get("e").map(String::as_str), Some("env-only")); // env-only survives
+        assert_eq!(merged.len(), 5);
+
+        // All sources empty → empty map.
+        assert!(
+            merge_command_tags(
+                None,
+                std::collections::HashMap::new(),
+                std::collections::HashMap::new()
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn parse_slash_command_tags_json_handles_none_valid_and_malformed() {
+        // Unset → empty (no warn).
+        assert!(parse_slash_command_tags_json(None).is_empty());
+        // Empty / whitespace-only is the normal "no override" state → empty (no warn).
+        assert!(parse_slash_command_tags_json(Some("")).is_empty());
+        assert!(parse_slash_command_tags_json(Some("   ")).is_empty());
+        // Valid JSON object of string→string → parsed.
+        let parsed = parse_slash_command_tags_json(Some(r#"{"commit":"new","plan":"beta"}"#));
+        assert_eq!(parsed.get("commit").map(String::as_str), Some("new"));
+        assert_eq!(parsed.get("plan").map(String::as_str), Some("beta"));
+        assert_eq!(parsed.len(), 2);
+        // Array instead of object → empty (tolerated).
+        assert!(parse_slash_command_tags_json(Some(r#"["oops"]"#)).is_empty());
+        // Non-string value → whole parse fails → empty (only string values kept).
+        assert!(parse_slash_command_tags_json(Some(r#"{"commit": 3}"#)).is_empty());
+        // Not JSON → empty.
+        assert!(parse_slash_command_tags_json(Some("garbage")).is_empty());
+    }
 }

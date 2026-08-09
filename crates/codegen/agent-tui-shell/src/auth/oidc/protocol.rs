@@ -194,7 +194,8 @@ pub(crate) fn enforce_login_principal(
         format!("one of teams: {}", allowed.join(", "))
     };
     tracing::warn!(
-        expected = % expected, actual = ? actual,
+        expected = %expected,
+        actual = ?actual,
         "OIDC: login principal does not satisfy required policy; rejecting"
     );
     Err(anyhow::Error::new(OidcError::PinnedPrincipalMismatch {
@@ -303,7 +304,7 @@ fn discovery_retry_policy() -> backon::ExponentialBuilder {
 }
 async fn discover_once(issuer_key: &str) -> anyhow::Result<Discovery> {
     let url = format!("{issuer_key}/.well-known/openid-configuration");
-    tracing::debug!(url = % url, "OIDC: fetching discovery document");
+    tracing::debug!(url = %url, "OIDC: fetching discovery document");
     let resp = with_alpha_test_key(
         crate::http::shared_client()
             .get(&url)
@@ -320,9 +321,11 @@ async fn discover_once(issuer_key: &str) -> anyhow::Result<Discovery> {
     }
     let doc: Discovery = resp.json().await?;
     tracing::debug!(
-        authorization_endpoint = % doc.authorization_endpoint, token_endpoint = % doc
-        .token_endpoint, jwks_uri = ? doc.jwks_uri, id_token_algs = ? doc
-        .id_token_signing_alg_values_supported, "OIDC: discovery complete"
+        authorization_endpoint = %doc.authorization_endpoint,
+        token_endpoint = %doc.token_endpoint,
+        jwks_uri = ?doc.jwks_uri,
+        id_token_algs = ?doc.id_token_signing_alg_values_supported,
+        "OIDC: discovery complete"
     );
     Ok(doc)
 }
@@ -405,9 +408,7 @@ pub(super) async fn exchange_code(
     client_id: &str,
     code_verifier: &str,
 ) -> anyhow::Result<TokenResponse> {
-    tracing::debug!(
-        token_endpoint = % token_endpoint, "OIDC: exchanging code for tokens"
-    );
+    tracing::debug!(token_endpoint = %token_endpoint, "OIDC: exchanging code for tokens");
     let resp = with_alpha_test_key(
         crate::http::shared_client()
             .post(token_endpoint)
@@ -472,8 +473,10 @@ pub(super) async fn refresh_tokens(
 ) -> anyhow::Result<TokenResponse> {
     use backon::Retryable;
     tracing::debug!(
-        token_endpoint = % token_endpoint, principal_type = ? principal_type,
-        principal_id = ? principal_id, "OIDC: refreshing token"
+        token_endpoint = %token_endpoint,
+        principal_type = ?principal_type,
+        principal_id = ?principal_id,
+        "OIDC: refreshing token"
     );
     let probe = super::refresh::SuspendProbe::start();
     (|| {
@@ -586,9 +589,7 @@ pub(super) fn aud_matches(aud: &serde_json::Value, expected: &str) -> bool {
 }
 pub(super) fn validate_state(expected: &str, received: &str) -> anyhow::Result<()> {
     if received != expected {
-        tracing::warn!(
-            expected = % expected, received = % received, "OIDC: state mismatch"
-        );
+        tracing::warn!(expected = %expected, received = %received, "OIDC: state mismatch");
         return Err(anyhow::Error::new(OidcError::StateMismatch));
     }
     Ok(())
@@ -709,7 +710,7 @@ pub(super) async fn validate_and_extract_user_info(
         organization_role: None,
         user_blocked_reason: None,
         team_blocked_reasons: vec![],
-        coding_data_retention_opt_out: false,
+        coding_data_retention_opt_out: crate::auth::default_coding_data_retention_opt_out(),
     })
 }
 pub(super) async fn extract_user_info(
@@ -740,7 +741,7 @@ pub(super) async fn extract_user_info(
             organization_role: None,
             user_blocked_reason: None,
             team_blocked_reasons: vec![],
-            coding_data_retention_opt_out: false,
+            coding_data_retention_opt_out: crate::auth::default_coding_data_retention_opt_out(),
         });
     }
     let token = id_token.ok_or_else(|| anyhow::Error::new(OidcError::MissingIdToken))?;
@@ -1013,23 +1014,31 @@ mod tests {
             )
             .unwrap()
         }
-        let team_jwt = make_jwt(serde_json::json!(
-            { "sub" : "user-42", "iss" : "https://auth.x.ai", "aud" : "test-client",
-            "exp" : 9999999999u64, "iat" : 1000000000u64, "scope" :
-            "offline_access grok-cli:access api:access", "principal_type" : "Team",
-            "principal_id" : "team-abc-123", "client_id" : "test-client", "jti" :
-            "token-1", }
-        ));
+        let team_jwt = make_jwt(serde_json::json!({
+            "sub": "user-42",
+            "iss": "https://auth.x.ai",
+            "aud": "test-client",
+            "exp": 9999999999u64,
+            "iat": 1000000000u64,
+            "scope": "offline_access grok-cli:access api:access",
+            "principal_type": "Team",
+            "principal_id": "team-abc-123",
+            "client_id": "test-client",
+            "jti": "token-1",
+        }));
         let (pt, pid, tid) = peek_access_token_principal(&team_jwt).expect("team principal");
         assert_eq!(pt, "Team");
         assert_eq!(pid, "team-abc-123");
         assert_eq!(tid, None);
         assert!(peek_access_token_principal("not-a-jwt-token").is_none());
         assert!(peek_access_token_principal("").is_none());
-        let no_principal = make_jwt(serde_json::json!(
-            { "sub" : "user-42", "iss" : "https://auth.x.ai", "aud" : "test-client",
-            "exp" : 9999999999u64, "iat" : 1000000000u64, }
-        ));
+        let no_principal = make_jwt(serde_json::json!({
+            "sub": "user-42",
+            "iss": "https://auth.x.ai",
+            "aud": "test-client",
+            "exp": 9999999999u64,
+            "iat": 1000000000u64,
+        }));
         assert!(peek_access_token_principal(&no_principal).is_none());
     }
     /// `peek_access_token_principal_id` extracts the id even when
@@ -1046,7 +1055,7 @@ mod tests {
             )
             .unwrap()
         }
-        let id_only = make_jwt(serde_json::json!({ "principal_id" : "team-abc", "sub" : "u" }));
+        let id_only = make_jwt(serde_json::json!({ "principal_id": "team-abc", "sub": "u" }));
         assert_eq!(
             peek_access_token_principal_id(&id_only).as_deref(),
             Some("team-abc"),
@@ -1055,7 +1064,7 @@ mod tests {
             peek_access_token_principal(&id_only).is_none(),
             "the strict peek still needs principal_type",
         );
-        let none = make_jwt(serde_json::json!({ "sub" : "u" }));
+        let none = make_jwt(serde_json::json!({ "sub": "u" }));
         assert!(peek_access_token_principal_id(&none).is_none());
         assert!(peek_access_token_principal_id("not-a-jwt").is_none());
     }
@@ -1133,10 +1142,10 @@ mod tests {
                 let counter = hits_for_handler.clone();
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
-                    axum::Json(serde_json::json!(
-                        { "authorization_endpoint" : format!("{b}/authorize"),
-                        "token_endpoint" : format!("{b}/token"), }
-                    ))
+                    axum::Json(serde_json::json!({
+                        "authorization_endpoint": format!("{b}/authorize"),
+                        "token_endpoint": format!("{b}/token"),
+                    }))
                 }
             }),
         );

@@ -31,6 +31,13 @@ fn grok_home_override_path_helpers() {
         "$GROK_HOME/memory/MEMORY.md"
     );
 
+    // Copy-toast paths follow the same abbreviation convention, so a custom
+    // $GROK_HOME outside $HOME still displays short.
+    assert_eq!(
+        agent_tui_pager::clipboard::display_copy_path(&grok_home.join("last-copy.txt")),
+        "$GROK_HOME/last-copy.txt"
+    );
+
     assert!(agent_tui_pager::util::is_under_user_grok_home(&memory_path));
     assert!(!agent_tui_pager::util::is_under_user_grok_home(
         PathBuf::from("/tmp/other").as_path()

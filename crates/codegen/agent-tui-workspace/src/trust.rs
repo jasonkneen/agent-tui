@@ -492,6 +492,10 @@ impl Drop for ExclusiveLock {
 /// read only once. A no-op when the legacy file is absent/already migrated or no
 /// user grok home resolves.
 pub fn migrate_legacy_hook_trust() {
+    // Local/dev builds do NO trust-store I/O: skip the load + legacy-file rename.
+    if crate::folder_trust::folder_trust_inert() {
+        return;
+    }
     static MIGRATED: Once = Once::new();
     MIGRATED.call_once(|| {
         let Some(legacy_file) = agent_tui_hooks::trust::legacy_trust_file_path() else {

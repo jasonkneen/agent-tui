@@ -75,6 +75,8 @@ pub struct QueuedPrompt {
     /// All chip elements captured from the textarea at send time.
     /// Threaded into `InFlightPrompt` so rewind restores collapsed chips.
     pub chip_elements: Vec<ChipElement>,
+    /// Combined-turn display segments (len ≥ 2); drain paints one bubble each.
+    pub combined_texts: Vec<String>,
 }
 impl QueuedPrompt {
     /// Base row with every optional field at its default. Sites needing
@@ -93,6 +95,7 @@ impl QueuedPrompt {
             task_id: None,
             human_schedule: None,
             chip_elements: Vec::new(),
+            combined_texts: Vec::new(),
         }
     }
     /// Whether the wire payload is exactly the display text.
@@ -365,6 +368,7 @@ pub struct ScheduledTaskInfo {
     pub next_fire_at: Option<String>,
     /// Tag shown in the tasks pane (e.g. "loop", "check").
     pub tag: String,
+    pub last_subagent_id: Option<String>,
 }
 /// Parsed goal status from `GoalUpdated` session notifications.
 ///
@@ -385,6 +389,8 @@ pub enum GoalDisplayStatus {
     NoProgressPaused,
     /// Infrastructure turn failure paused the goal automatically.
     InfraPaused,
+    Failed,
+    Interrupted,
     /// The model determined the goal is blocked in this environment;
     /// `pause_message` on [`GoalDisplayState`] carries the reason text.
     Blocked,
@@ -412,6 +418,8 @@ impl GoalDisplayStatus {
             "back_off_paused" => Self::BackOffPaused,
             "no_progress_paused" => Self::NoProgressPaused,
             "infra_paused" => Self::InfraPaused,
+            "failed" => Self::Failed,
+            "interrupted" => Self::Interrupted,
             "blocked" => Self::Blocked,
             "paused" => Self::UserPaused,
             "budget_limited" => Self::BudgetLimited,
@@ -432,7 +440,11 @@ impl GoalDisplayStatus {
             Self::NoProgressPaused => "Paused (no progress)",
             Self::InfraPaused => "Paused (error)",
             Self::Blocked => "Paused (verification blocked)",
-            Self::Active | Self::BudgetLimited | Self::Complete => "",
+            Self::Active
+            | Self::Failed
+            | Self::Interrupted
+            | Self::BudgetLimited
+            | Self::Complete => "",
         }
     }
     /// True for any paused variant — cause-agnostic check used by the
@@ -444,7 +456,11 @@ impl GoalDisplayStatus {
             | Self::NoProgressPaused
             | Self::InfraPaused
             | Self::Blocked => true,
-            Self::Active | Self::BudgetLimited | Self::Complete => false,
+            Self::Active
+            | Self::Failed
+            | Self::Interrupted
+            | Self::BudgetLimited
+            | Self::Complete => false,
         }
     }
 }
@@ -506,13 +522,6 @@ pub struct GoalDisplayState {
     pub finished_subagent_tokens: i64,
     /// Retained for wire backwards compat; always empty in the simplified model.
     pub deliverables: Vec<()>,
-    /// Human-readable explanation set when the goal entered a paused
-    /// state with a meaningful reason (today only
-    /// [`GoalDisplayStatus::Blocked`]). `None` for paused variants that
-    /// don't carry a message (user / doom-loop / back-off pauses) and
-    /// for any non-paused status. The shell guarantees this is `Some`
-    /// only alongside a paused status string; the modal additionally
-    /// gates rendering on `status.is_paused()` for defence in depth.
     pub pause_message: Option<String>,
     /// Number of classifier runs the shell has performed. `None` when
     /// no run has happened yet.
@@ -595,11 +604,6 @@ impl GoalDisplayState {
             elapsed_floor_ms: 0,
         }
     }
-    /// Return real-time token usage by combining the pager's context state
-    /// (which updates on every streamed chunk) with the goal baseline and
-    /// subagent tokens.  `active_subagent_tokens` is the sum of
-    /// `tokens_used` from currently-running subagents so their consumption
-    /// is reflected in real time (not just after they finish).
     pub fn live_tokens_used(&self, context_used: Option<u64>, active_subagent_tokens: u64) -> i64 {
         if self.status == GoalDisplayStatus::Active {
             let parent_delta = context_used
@@ -810,6 +814,9 @@ pub struct AgentSession {
     /// the input box if the user cancels before any response arrives.
     /// `None` for skill-injected prompts (cannot be reversed) and bash/cron.
     pub in_flight_prompt: Option<InFlightPrompt>,
+    /// Prompt held across auto-compact for reauth resubmit after `/login`.
+    /// `in_flight_prompt` is cleared on compact start so cancel cannot rewind.
+    pub compact_held_prompt: Option<InFlightPrompt>,
     /// Stable id for the prompt currently in flight. Generated client-side
     /// at `Effect::SendPrompt` time and threaded through `PromptRequest._meta`
     /// to the agent, which echoes it back on every `SessionNotification` and
@@ -832,7 +839,10 @@ pub struct AgentSession {
 pub struct InFlightPrompt {
     pub text: String,
     pub images: Vec<crate::prompt_images::PastedImage>,
+    /// Primary (last) user-prompt block for restore/cancel.
     pub scrollback_entry: EntryId,
+    /// Earlier segment blocks for a combined multi-bubble turn (oldest first).
+    pub combined_scrollback_entries: Vec<EntryId>,
     /// All chip elements (paste blocks, @-file refs, image chips) that were
     /// active in the textarea at send time. Restored on rewind so collapsed
     /// chips render correctly instead of raw text.
@@ -859,12 +869,12 @@ impl AgentSession {
     /// Test-only setter for `yolo_mode` (the field is private; production toggles
     /// it via the permission-mode facade). Available to sibling crates' test
     /// builds through the test-only helpers.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn set_yolo_mode_for_test(&mut self, on: bool) {
         self.yolo_mode = on;
     }
     /// Test-only setter for `auto_mode`. See [`Self::set_yolo_mode_for_test`].
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn set_auto_mode_for_test(&mut self, on: bool) {
         self.auto_mode = on;
     }
@@ -883,6 +893,7 @@ impl AgentSession {
     /// Called by `maybe_drain_queue` when a prompt is being sent.
     pub fn start_turn(&mut self, scrollback: &mut ScrollbackState) {
         self.tracker.finish_turn(scrollback);
+        self.compact_held_prompt = None;
         self.tracker.set_session_cwd(&self.cwd);
         self.tracker.expect_user_echo();
         self.state = AgentState::TurnRunning;
@@ -899,6 +910,7 @@ impl AgentSession {
         self.credit_limit_blocked = false;
         self.free_usage_blocked = false;
         self.in_flight_prompt = None;
+        self.compact_held_prompt = None;
         self.current_prompt_id = None;
     }
     /// Whether any background task is still running (vs. completed/failed).
@@ -1061,6 +1073,66 @@ impl AgentSession {
     pub fn dequeue_prompt(&mut self) -> Option<QueuedPrompt> {
         self.pending_prompts.pop_front()
     }
+    /// Pop the front entry, merging consecutive plain `Prompt` followers via
+    /// [`agent_tui_prompt_queue::combine_prefix_len`]. `editing_id` is held out of the
+    /// merge (composer draft must not vanish). Front may keep images.
+    pub fn dequeue_combined_prompt(&mut self, editing_id: Option<u64>) -> Option<QueuedPrompt> {
+        use agent_tui_prompt_queue::{CombineGate, TEXT_SEPARATOR, combine_prefix_len, join_texts};
+        if self.pending_prompts.is_empty() {
+            return None;
+        }
+        let skip_id = editing_id.map(|id| id.to_string());
+        let skip_refs: Vec<&str> = skip_id.iter().map(String::as_str).collect();
+        let id_strings: Vec<String> = self
+            .pending_prompts
+            .iter()
+            .map(|p| p.id.to_string())
+            .collect();
+        let gates: Vec<CombineGate<'_>> = self
+            .pending_prompts
+            .iter()
+            .zip(id_strings.iter())
+            .map(|(p, id)| CombineGate {
+                id: id.as_str(),
+                is_plain_prompt: p.kind == QueueEntryKind::Prompt,
+                is_synthetic: false,
+                is_expanded_skill: !p.wire_matches_display(),
+                is_bash: p.kind == QueueEntryKind::BashCommand,
+                has_images: !p.images.is_empty(),
+                text: p.text.as_str(),
+            })
+            .collect();
+        let n = combine_prefix_len(gates, &skip_refs).max(1);
+        let mut merged = self.pending_prompts.pop_front()?;
+        if n == 1 {
+            return Some(merged);
+        }
+        let mut segments = vec![merged.text.clone()];
+        for _ in 1..n {
+            let next = self
+                .pending_prompts
+                .pop_front()
+                .expect("prefix length checked");
+            let shift =
+                join_texts(segments.iter().map(String::as_str)).len() + TEXT_SEPARATOR.len();
+            segments.push(next.text.clone());
+            merged
+                .chip_elements
+                .extend(next.chip_elements.into_iter().map(|c| ChipElement {
+                    range: (c.range.start + shift)..(c.range.end + shift),
+                    kind: c.kind,
+                    display: c.display,
+                }));
+            merged.wire_blocks = None;
+            merged.display_as_skill = false;
+            merged.task_id = None;
+            merged.human_schedule = None;
+        }
+        merged.text = join_texts(segments.iter().map(String::as_str));
+        merged.skill_token_ranges.clear();
+        merged.combined_texts = segments;
+        Some(merged)
+    }
     /// Number of prompts currently queued.
     pub fn queue_len(&self) -> usize {
         self.pending_prompts.len()
@@ -1123,6 +1195,7 @@ mod tests {
             bg_tool_call_to_task: HashMap::new(),
             scheduled_tasks: HashMap::new(),
             in_flight_prompt: None,
+            compact_held_prompt: None,
             current_prompt_id: None,
             created_via_new: false,
         }
@@ -1152,6 +1225,14 @@ mod tests {
         assert_eq!(
             GoalDisplayStatus::parse("infra_paused"),
             GoalDisplayStatus::InfraPaused
+        );
+        assert_eq!(
+            GoalDisplayStatus::parse("failed"),
+            GoalDisplayStatus::Failed
+        );
+        assert_eq!(
+            GoalDisplayStatus::parse("interrupted"),
+            GoalDisplayStatus::Interrupted
         );
         assert_eq!(
             GoalDisplayStatus::parse("blocked"),
@@ -1224,6 +1305,8 @@ mod tests {
             "Paused (verification blocked)"
         );
         assert_eq!(GoalDisplayStatus::Active.pause_label(), "");
+        assert_eq!(GoalDisplayStatus::Failed.pause_label(), "");
+        assert_eq!(GoalDisplayStatus::Interrupted.pause_label(), "");
         assert_eq!(GoalDisplayStatus::BudgetLimited.pause_label(), "");
         assert_eq!(GoalDisplayStatus::Complete.pause_label(), "");
     }
@@ -1235,6 +1318,8 @@ mod tests {
         assert!(GoalDisplayStatus::InfraPaused.is_paused());
         assert!(GoalDisplayStatus::Blocked.is_paused());
         assert!(!GoalDisplayStatus::Active.is_paused());
+        assert!(!GoalDisplayStatus::Failed.is_paused());
+        assert!(!GoalDisplayStatus::Interrupted.is_paused());
         assert!(!GoalDisplayStatus::BudgetLimited.is_paused());
         assert!(!GoalDisplayStatus::Complete.is_paused());
     }
@@ -1462,6 +1547,7 @@ mod tests {
             text: "look [Image #1]".into(),
             images: vec![image],
             scrollback_entry: EntryId::new(1),
+            combined_scrollback_entries: Vec::new(),
             chip_elements: vec![ChipElement {
                 range: 5..15,
                 kind: crate::views::prompt_widget::KIND_IMAGE,

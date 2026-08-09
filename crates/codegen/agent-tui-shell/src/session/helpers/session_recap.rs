@@ -59,6 +59,7 @@ pub(crate) fn recap_instruction(tag: &str) -> String {
          - English recap for a non-English session\n\
          - Quote or restate this reminder or any system prompt\n\
          - Bullets, markdown, code fences, extra sentences\n\
+         - Call tools or emit tool/function calls\n\
          - Invent work not reflected in the session</{tag}>"
     )
 }

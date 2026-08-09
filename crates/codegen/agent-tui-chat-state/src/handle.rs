@@ -8,7 +8,7 @@ use agent_tui_sampling_types::{
     ToolSpec, TraceContext,
 };
 
-use crate::commands::{ChatStateCommand, RepairHistoryBlocked};
+use crate::commands::{ChatStateCommand, RepairHistoryBlocked, StrictAppendAck, StrictAppendError};
 use crate::types::{
     AutoCompactTrigger, ChatStateSnapshot, ConversationCounts, Credentials, NotificationMeta,
     TurnCapture,
@@ -48,6 +48,29 @@ impl ChatStateHandle {
             ChatStateCommand::PushUserMessageAndAck { item, reply }
         })
         .await
+    }
+
+    /// Strictly append one working-directory switch and await persistence.
+    /// A matching generation returns `AlreadyPresent`; indeterminate errors must be retried.
+    pub async fn append_working_directory_switch_and_ack(
+        &self,
+        content: String,
+        cwd_generation: std::num::NonZeroU64,
+    ) -> Result<StrictAppendAck, StrictAppendError> {
+        self.query("AppendWorkingDirectorySwitchAndAck", |reply| {
+            ChatStateCommand::AppendWorkingDirectorySwitchAndAck {
+                content,
+                cwd_generation,
+                reply,
+            }
+        })
+        .await
+        .unwrap_or_else(|| {
+            Err(StrictAppendError::Indeterminate(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "chat-state actor unavailable; retry by generation",
+            )))
+        })
     }
 
     /// Push a user message with an explicit dangling-repair reason.
@@ -210,17 +233,6 @@ impl ChatStateHandle {
         let prompt = prompt.to_owned();
         self.query("ReplaceSystemHead", |reply| {
             ChatStateCommand::ReplaceSystemHead { prompt, reply }
-        })
-        .await
-    }
-
-    /// Atomically align the system head only before any model inference output
-    /// exists. Returns `Some(None)` when history blocks the mutation,
-    /// `Some(Some(changed))` when allowed, or outer `None` if the actor is dead.
-    pub async fn replace_system_head_before_inference(&self, prompt: &str) -> Option<Option<bool>> {
-        let prompt = prompt.to_owned();
-        self.query("ReplaceSystemHeadBeforeInference", |reply| {
-            ChatStateCommand::ReplaceSystemHeadBeforeInference { prompt, reply }
         })
         .await
     }
@@ -562,6 +574,20 @@ impl ChatStateHandle {
     pub async fn get_last_assistant_text(&self) -> Option<String> {
         self.query("GetLastAssistantText", |reply| {
             ChatStateCommand::GetLastAssistantText { reply }
+        })
+        .await
+        .flatten()
+    }
+
+    /// Get the current turn's last assistant message text, or `None` when the
+    /// turn produced none (or the actor is dead). Turn-scoped, unlike
+    /// [`get_last_assistant_text`], and cheaper than [`get_conversation`].
+    ///
+    /// [`get_conversation`]: Self::get_conversation
+    /// [`get_last_assistant_text`]: Self::get_last_assistant_text
+    pub async fn get_last_assistant_text_in_turn(&self) -> Option<String> {
+        self.query("GetLastAssistantTextInTurn", |reply| {
+            ChatStateCommand::GetLastAssistantTextInTurn { reply }
         })
         .await
         .flatten()

@@ -1,15 +1,4 @@
-//! `/minimal` and `/fullscreen` — reopen the current session in the other
-//! screen mode.
-//!
-//! The two commands are exact mirrors, so one parameterized [`SlashCommand`]
-//! backs both: each is offered only while the *other* mode is active, and
-//! `run` dispatches [`Action::RelaunchInScreenMode`], which quits the event
-//! loop and re-execs the pager with `--resume <session_id>` plus an explicit
-//! `--minimal`/`--fullscreen` so the same conversation comes back under the
-//! requested render path. The relaunched process persists the flag as the
-//! sticky `[ui] screen_mode` config.toml preference, so future plain `grok`
-//! invocations reuse the mode. See `crate::app::screen_mode_relaunch` for the
-//! re-exec side.
+//! `/minimal` and `/fullscreen` — session-scoped re-exec of the active session.
 
 use crate::app::actions::Action;
 use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand};
@@ -55,9 +44,9 @@ impl SlashCommand for ScreenModeSwitchCommand {
 
     fn description(&self) -> &str {
         if self.to_minimal {
-            "Reopen this session in minimal (scrollback-native) mode and make it the default"
+            "Reopen this session in minimal (scrollback-native) mode — switch back with /fullscreen"
         } else {
-            "Reopen this session in fullscreen mode and make it the default"
+            "Reopen this session in fullscreen mode — switch back with /minimal"
         }
     }
 
@@ -100,15 +89,6 @@ mod tests {
     use crate::acp::model_state::ModelState;
     use crate::app::ScreenMode;
     use crate::app::bundle::BundleState;
-
-    fn app_ctx<'a>(models: &'a ModelState, mode: ScreenMode) -> AppCtx<'a> {
-        AppCtx {
-            models,
-            cwd: std::path::Path::new("."),
-            has_session_announcements: false,
-            screen_mode: mode,
-        }
-    }
 
     fn exec_ctx<'a>(
         models: &'a ModelState,

@@ -346,8 +346,10 @@ pub enum PaletteCommand {
     NewSessionInWorktree,
     Home,
     Quit,
-    /// Execute a slash command by inserting it into the prompt.
+    /// Execute a slash command through the palette's draft-preserving route.
     SlashCommand(String),
+    /// Edit the minimal-mode composer draft without routing through slash text.
+    EditPromptExternal,
     /// Non-selectable section header for visual grouping.
     SectionHeader(String),
     /// Open the how-to documentation picker.
@@ -372,6 +374,7 @@ pub(crate) fn default_palette_entries(
 ) -> Vec<PaletteEntry> {
     let screen_mode = slash.screen_mode();
     let mut entries = vec![
+        // ── Session ──
         PaletteEntry {
             label: "Session".into(),
             shortcut: String::new(),
@@ -427,6 +430,7 @@ pub(crate) fn default_palette_entries(
             shortcut: "/feedback".into(),
             command: PaletteCommand::SlashCommand("/feedback ".into()),
         },
+        // ── Context ──
         PaletteEntry {
             label: "Context".into(),
             shortcut: String::new(),
@@ -452,6 +456,7 @@ pub(crate) fn default_palette_entries(
             shortcut: "/memory".into(),
             command: PaletteCommand::Memory,
         },
+        // ── Model & Input ──
         PaletteEntry {
             label: "Model & Input".into(),
             shortcut: String::new(),
@@ -472,6 +477,12 @@ pub(crate) fn default_palette_entries(
             shortcut: "/multiline".into(),
             command: PaletteCommand::SlashCommand("/multiline".into()),
         },
+        PaletteEntry {
+            label: "Edit Prompt in External Editor".into(),
+            shortcut: "Ctrl+G".into(),
+            command: PaletteCommand::EditPromptExternal,
+        },
+        // ── Tools ──
         PaletteEntry {
             label: "Tools".into(),
             shortcut: String::new(),
@@ -517,6 +528,7 @@ pub(crate) fn default_palette_entries(
             shortcut: "/config-agents".into(),
             command: PaletteCommand::OpenAgentsModal,
         },
+        // ── Other ──
         PaletteEntry {
             label: "Other".into(),
             shortcut: String::new(),
@@ -545,6 +557,11 @@ pub(crate) fn default_palette_entries(
             label: "How-to Guides".into(),
             shortcut: "/docs".into(),
             command: PaletteCommand::HowTo,
+        },
+        PaletteEntry {
+            label: "Tutorial".into(),
+            shortcut: "/tutorial".into(),
+            command: PaletteCommand::SlashCommand("/tutorial".into()),
         },
         PaletteEntry {
             label: "Quit".into(),
@@ -1044,10 +1061,10 @@ pub fn render_doc_picker_overlay(
         render_centered_tip_footer, split_content_for_tip_footer,
     };
     use super::picker::{self, PickerEntry, PickerRow};
-    let filtered: Vec<_> = if state.query.is_empty() {
+    let filtered: Vec<_> = if state.query().is_empty() {
         entries.iter().enumerate().collect()
     } else {
-        let q = state.query.to_lowercase();
+        let q = state.query().to_lowercase();
         entries
             .iter()
             .enumerate()
@@ -1165,8 +1182,7 @@ pub fn render_doc_viewer_overlay(
     compact: bool,
     theme: &Theme,
 ) {
-    use ratatui::widgets::{Paragraph, Widget, Wrap};
-    let doc_shortcuts = vec![
+    let doc_shortcuts = [
         super::modal_window::Shortcut {
             label: "\u{2191}/\u{2193} scroll",
             clickable: false,
@@ -1178,10 +1194,39 @@ pub fn render_doc_viewer_overlay(
             id: 0,
         },
     ];
+    render_doc_viewer_overlay_with_shortcuts(
+        buf,
+        area,
+        window,
+        title,
+        content,
+        scroll,
+        cached_lines,
+        compact,
+        theme,
+        &doc_shortcuts,
+    );
+}
+/// [`render_doc_viewer_overlay`] with caller-supplied footer shortcuts (the
+/// tutorial adds a next-topic hint).
+#[allow(clippy::too_many_arguments)]
+pub fn render_doc_viewer_overlay_with_shortcuts(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    window: &mut super::modal_window::ModalWindowState,
+    title: &str,
+    content: &str,
+    scroll: &mut u16,
+    cached_lines: &mut Option<(u16, Vec<ratatui::text::Line<'static>>)>,
+    compact: bool,
+    theme: &Theme,
+    shortcuts: &[super::modal_window::Shortcut<'_>],
+) {
+    use ratatui::widgets::{Paragraph, Widget, Wrap};
     let modal_config = super::modal_window::ModalWindowConfig {
         title,
         tabs: None,
-        shortcuts: &doc_shortcuts,
+        shortcuts,
         sizing: super::modal_window::ModalSizing {
             width_pct: 0.80,
             max_width: 120,
@@ -1268,11 +1313,9 @@ mod doc_viewer_scroll_tests {
 mod palette_sharing_tests {
     use super::*;
     fn has_share(entries: &[PaletteEntry]) -> bool {
-        entries.iter().any(|e| {
-            matches!(
-                & e.command, PaletteCommand::SlashCommand(s) if s.trim() == "/share"
-            )
-        })
+        entries
+            .iter()
+            .any(|e| matches!(&e.command, PaletteCommand::SlashCommand(s) if s.trim() == "/share"))
     }
     fn slash(mode: crate::app::ScreenMode) -> crate::slash::SlashController {
         let mut controller =
@@ -1408,8 +1451,10 @@ mod palette_sharing_tests {
                 .find(|e| e.label == label)
                 .unwrap_or_else(|| panic!("Tools entry {label:?} missing from palette"));
             assert!(
-                matches!(& entry.command, PaletteCommand::OpenExtensionsTab(t) if * t ==
-                expected,),
+                matches!(
+                    &entry.command,
+                    PaletteCommand::OpenExtensionsTab(t) if *t == expected,
+                ),
                 "Tools entry {label:?} dispatches to the wrong tab",
             );
         }

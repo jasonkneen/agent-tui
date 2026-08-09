@@ -560,7 +560,7 @@ async fn manual_recap_generation_failure_persists_request_artifact() {
                         "artifact must include the recap request items"
                     );
                     assert!(
-                        artifact.x_grok_req_id.starts_with("xai-recap-"),
+                        artifact.x_grok_req_id.starts_with("agent-tui-recap-"),
                         "req id: {}",
                         artifact.x_grok_req_id
                     );

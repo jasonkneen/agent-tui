@@ -371,7 +371,7 @@ mod tests {
         let path = write_auth_json(
             dir.path(),
             r#"{
-            "legacy": { "key": "xai-plainkey", "user_id": "u1" },
+            "legacy": { "key": "agent-tui-plainkey", "user_id": "u1" },
             "oidc": {
                 "key": "eyJhbGciOiJFUzI1NiJ9.test",
                 "user_id": "u2",
@@ -397,7 +397,7 @@ mod tests {
         let path = write_auth_json(
             dir.path(),
             r#"{
-            "api_key": { "key": "xai-plainkey", "user_id": "u1" }
+            "api_key": { "key": "agent-tui-plainkey", "user_id": "u1" }
         }"#,
         );
 
@@ -518,7 +518,7 @@ mod tests {
         let path = write_auth_json(
             dir.path(),
             r#"{
-            "legacy": { "key": "xai-old", "user_id": "u1" },
+            "legacy": { "key": "agent-tui-old", "user_id": "u1" },
             "oidc": { "key": "eyJ.old", "user_id": "u2", "refresh_token": "rt-old", "oidc_issuer": "https://auth.x.ai" }
         }"#,
         );
@@ -534,7 +534,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(updated["oidc"]["key"], "eyJ.new");
         assert_eq!(updated["oidc"]["refresh_token"], "rt-new");
-        assert_eq!(updated["legacy"]["key"], "xai-old"); // untouched
+        assert_eq!(updated["legacy"]["key"], "agent-tui-old"); // untouched
     }
 
     /// With several OIDC entries (personal + enterprise login), the one with

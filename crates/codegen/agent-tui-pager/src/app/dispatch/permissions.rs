@@ -146,7 +146,9 @@ pub(super) fn dispatch_permission_select(
         option_id.0.as_ref() == agent_tui_workspace::permission::ENABLE_ALWAYS_APPROVE_OPTION_ID;
 
     // Remember the user's choice (by option kind) so the next prompt's cursor
-    // sticks to it. Skip the two options that aren't per-prompt choices:
+    // sticks to it. Allow-flavored choices only — a rejection must not steer a
+    // later prompt's cursor onto a reject row. Also skip the two options that
+    // aren't per-prompt choices:
     //  - the global always-approve (YOLO) option flips global auto-approve, so
     //    there will be no subsequent prompt to land on;
     //  - "allow all edits during this session" is edit-scoped (kind
@@ -160,6 +162,10 @@ pub(super) fn dispatch_permission_select(
             .iter()
             .find(|o| o.option_id == option_id)
             .map(|o| o.kind)
+        && matches!(
+            kind,
+            acp::PermissionOptionKind::AllowOnce | acp::PermissionOptionKind::AllowAlways
+        )
     {
         crate::appearance::permission_cursor::set_last_used_permission(
             crate::appearance::permission_cursor::DefaultSelectedPermission::from_kind(&kind),
@@ -282,9 +288,8 @@ pub(super) fn dispatch_permission_cancel(app: &mut AppView) -> Vec<Effect> {
 
 /// Drain all queued permission requests, sending `Cancelled` to each.
 ///
-/// Called on turn-end and turn-cancel. After draining, restores the stashed
-/// prompt text (if any). This is distinct from `dispatch_permission_cancel`
-/// which cancels only the front request.
+/// Called on turn-end and turn-cancel. After draining, restores stashed
+/// prompt/pane. Distinct from `dispatch_permission_cancel` (front only).
 pub(super) fn drain_permission_queue(agent: &mut AgentView) {
     agent.last_permission_click = None;
     if agent.permission_queue.is_empty() {
@@ -298,28 +303,21 @@ pub(super) fn drain_permission_queue(agent: &mut AgentView) {
             )))
             .ok();
     }
-    // Queue is now empty — restore stashed prompt.
-    if let Some(stashed) = agent.permission_stashed_prompt.take() {
-        agent.prompt.restore(stashed);
-    }
+    restore_permission_stashes(agent);
 }
 
 /// Handle queue transition after resolving (select/followup/cancel) the front
 /// permission request.
 ///
-/// - Queue now empty → restore stashed prompt text.
-/// - Queue still has items → clear prompt text (for next followup input)
-///   and reset next front's focus to Options.
+/// - Queue now empty → restore stashed prompt/pane.
+/// - Queue still has items → clear prompt text and reset next front to Options.
 pub(crate) fn resolve_permission_queue_transition(agent: &mut AgentView) {
     agent.last_permission_click = None;
     // The pattern editor is front-request scoped: drop any buffer when the
     // front request is resolved (covers cancel/followup/select paths).
     agent.permission_pattern_edit = None;
     if agent.permission_queue.is_empty() {
-        // Restore original prompt.
-        if let Some(stashed) = agent.permission_stashed_prompt.take() {
-            agent.prompt.restore(stashed);
-        }
+        restore_permission_stashes(agent);
     } else {
         // Clear any followup text from the just-resolved permission so it
         // doesn't leak into the next permission's UI.

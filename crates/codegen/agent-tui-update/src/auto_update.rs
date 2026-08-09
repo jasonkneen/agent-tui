@@ -8,7 +8,6 @@ use std::os::unix::process::CommandExt;
 
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
-use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 use crate::version::{
@@ -39,17 +38,8 @@ fn manual_install_cmd() -> &'static str {
 /// Build a reinstall hint for a known installer type.
 fn reinstall_hint(installer: &str) -> String {
     match installer {
-        "npm" => format!(
-            "Please reinstall via npm:\n  npm i -g {}",
-            crate::version::NPM_PACKAGE
-        ),
-        "gh-release" => format!(
-            "Please reinstall via GitHub Releases:\n  gh release download --repo {} --pattern '{}-*' --output {} && chmod +x {}",
-            crate::version::GH_RELEASE_REPO,
-            crate::version::RELEASE_ASSET_PREFIX,
-            crate::version::MANAGED_BIN_NAME,
-            crate::version::MANAGED_BIN_NAME,
-        ),
+        "npm" => "Please reinstall via npm:\n  npm i -g @agent-tui/agent-tui".to_string(),
+        "gh-release" => "Please reinstall via GitHub Releases:\n  gh release download --repo jasonkneen/agent-tui --pattern 'agent-tui-*' --output agent-tui && chmod +x agent-tui".to_string(),
         _ => format!("Please reinstall via:\n  {}", manual_install_cmd()),
     }
 }
@@ -129,43 +119,56 @@ pub async fn check_update_status(update_config: &UpdateConfig) -> UpdateStatus {
     };
 
     match get_latest_version(inst, update_config).await {
-        Ok(latest_version) => {
-            let mut error = None;
-            // --check reports upgrades only; a rolled-back pointer isn't a "new version" to advertise here (auto-update converges separately).
-            let allow_downgrade = false;
-            let update_available =
-                match needs_update(&current_version, &latest_version, &channel, allow_downgrade) {
+        // --check shares the updater's decision, so it never advertises a version
+        // the policy would skip, clamp away, or can't satisfy.
+        Ok(latest) => match plan_for(&config::VersionPolicy::resolve(), latest) {
+            UpdatePlan::Install { target, .. } => {
+                let mut error = None;
+                let update_available = match needs_update(
+                    &current_version,
+                    &target,
+                    &channel,
+                    false,
+                ) {
                     Some(value) => value,
                     None => {
-                        // Distinguish parse failure from unsupported channel for clearer diagnostics.
+                        // Distinguish parse failure from unsupported channel.
                         let parse_ok = semver::Version::parse(&current_version).is_ok()
-                            && semver::Version::parse(&latest_version).is_ok();
+                            && semver::Version::parse(&target).is_ok();
                         error = Some(if parse_ok {
                             format!(
-                                "Unsupported release channel '{}' (current={}, latest={}). \
-                             Supported channels: stable, alpha, enterprise.",
-                                channel, current_version, latest_version
+                                "Unsupported release channel '{channel}' (current={current_version}, latest={target}). \
+                                     Supported channels: stable, alpha, enterprise."
                             )
                         } else {
                             format!(
-                                "Failed to parse versions (current={}, latest={})",
-                                current_version, latest_version
+                                "Failed to parse versions (current={current_version}, latest={target})"
                             )
                         });
                         false
                     }
                 };
-
-            UpdateStatus {
+                UpdateStatus {
+                    current_version,
+                    latest_version: Some(target),
+                    update_available,
+                    installer,
+                    channel,
+                    auto_update,
+                    error,
+                }
+            }
+            // Policy skips (anti-downgrade) or can't satisfy the floor: no upgrade.
+            UpdatePlan::Skip { latest } | UpdatePlan::Unavailable { latest, .. } => UpdateStatus {
                 current_version,
-                latest_version: Some(latest_version),
-                update_available,
+                latest_version: Some(latest),
+                update_available: false,
                 installer,
                 channel,
                 auto_update,
-                error,
-            }
-        }
+                error: None,
+            },
+        },
         Err(err) => UpdateStatus {
             current_version,
             latest_version: None,
@@ -178,6 +181,49 @@ pub async fn check_update_status(update_config: &UpdateConfig) -> UpdateStatus {
     }
 }
 
+enum UpdatePlan {
+    /// Anti-downgrade skip; `latest` is reported to the user.
+    Skip {
+        latest: String,
+    },
+    /// A hard `required_minimum` exceeds the latest release, so nothing satisfies it.
+    Unavailable {
+        latest: String,
+        target: String,
+    },
+    Install {
+        latest: String,
+        target: String,
+    },
+}
+
+/// Classify a fetched `latest` release under `policy`. Pure; `fetch_update_plan`
+/// is the IO wrapper. `--check` shares this so it can't diverge from the updater.
+fn plan_for(policy: &config::VersionPolicy, latest: String) -> UpdatePlan {
+    let Some(target) = policy.resolve_target(&latest) else {
+        return UpdatePlan::Skip { latest };
+    };
+    // A hard `required_minimum` can clamp above the latest release; that version
+    // doesn't exist.
+    if matches!(
+        (semver::Version::parse(&target), semver::Version::parse(&latest)),
+        (Ok(t), Ok(l)) if t > l
+    ) {
+        UpdatePlan::Unavailable { latest, target }
+    } else {
+        UpdatePlan::Install { latest, target }
+    }
+}
+
+async fn fetch_update_plan(
+    installer: &str,
+    update_config: &UpdateConfig,
+    policy: &config::VersionPolicy,
+) -> Result<UpdatePlan> {
+    let latest = fetch_latest_version(installer, update_config).await?;
+    Ok(plan_for(policy, latest))
+}
+
 /// Installer + version the leader/background path should converge to: an
 /// upgrade OR an authoritative-installer rollback. `None` means stay put. Gates
 /// on the installer (via `installer_allows_downgrade`) so npm is never
@@ -185,15 +231,21 @@ pub async fn check_update_status(update_config: &UpdateConfig) -> UpdateStatus {
 pub async fn auto_update_target(update_config: &UpdateConfig) -> Option<(&'static str, String)> {
     let installer = get_installer().await?;
     let current = get_installed_grok_version();
-    let latest = fetch_latest_version(installer, update_config).await.ok()?;
+    let policy = config::VersionPolicy::resolve();
+    let UpdatePlan::Install { target, .. } = fetch_update_plan(installer, update_config, &policy)
+        .await
+        .ok()?
+    else {
+        return None;
+    };
     needs_update(
         &current,
-        &latest,
+        &target,
         &update_config.channel,
         installer_allows_downgrade(installer),
     )
     .unwrap_or(false)
-    .then_some((installer, latest))
+    .then_some((installer, target))
 }
 
 /// Outcome of [`ensure_latest_on_disk`].
@@ -232,21 +284,27 @@ pub async fn ensure_latest_on_disk(update_config: &UpdateConfig) -> Result<Ensur
     let Some(installer) = get_installer().await else {
         return Ok(outcome);
     };
+    heal_managed_install(installer).await;
     let allow_downgrade = installer_allows_downgrade(installer);
-    let latest = fetch_latest_version(installer, update_config).await?;
+    let policy = config::VersionPolicy::resolve();
+    let UpdatePlan::Install { target, .. } =
+        fetch_update_plan(installer, update_config, &policy).await?
+    else {
+        return Ok(outcome);
+    };
 
     let effective_current =
         disk_version_for_installer(installer).unwrap_or_else(get_installed_grok_version);
     if needs_update(
         &effective_current,
-        &latest,
+        &target,
         &update_config.channel,
         allow_downgrade,
     )
     .unwrap_or(false)
     {
-        run_install_script(installer, Some(&latest), update_config).await?;
-        outcome.installed = Some(latest.clone());
+        run_install_script(installer, Some(&target), update_config).await?;
+        outcome.installed = Some(target.clone());
     }
 
     // Relaunch when the running binary differs from what's on disk in the
@@ -400,6 +458,8 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
         return BackgroundUpdateCheck::none();
     };
 
+    heal_managed_install(installer).await;
+
     if is_version_cache_fresh().await {
         return BackgroundUpdateCheck::none();
     }
@@ -410,22 +470,25 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
     }
 
     let current_version = get_installed_grok_version();
-    let latest_version = match fetch_latest_version(installer, update_config).await {
-        Ok(v) => v,
-        Err(_) => return BackgroundUpdateCheck::none(),
+    let policy = config::VersionPolicy::resolve();
+    let target_version = match fetch_update_plan(installer, update_config, &policy).await {
+        Ok(UpdatePlan::Install { target, .. }) => target,
+        Ok(UpdatePlan::Skip { .. } | UpdatePlan::Unavailable { .. }) | Err(_) => {
+            return BackgroundUpdateCheck::none();
+        }
     };
 
     let allow_downgrade = installer_allows_downgrade(installer);
     if !needs_update(
         &current_version,
-        &latest_version,
+        &target_version,
         &update_config.channel,
         allow_downgrade,
     )
     .unwrap_or(false)
     {
         let stable_ptr = try_fetch_stable_pointer().await;
-        write_version_cache(&latest_version, stable_ptr.as_deref()).await;
+        write_version_cache(&target_version, stable_ptr.as_deref()).await;
         return BackgroundUpdateCheck::none();
     }
 
@@ -438,7 +501,7 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
     let disk_needs_download = match disk_version_for_installer(installer) {
         Some(disk) => needs_update(
             &disk,
-            &latest_version,
+            &target_version,
             &update_config.channel,
             allow_downgrade,
         )
@@ -458,14 +521,16 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
         }
     } else {
         tracing::info!(
-            latest_version = %latest_version,
+            target_version = %target_version,
             "Background update: target already on disk, skipping download"
         );
         None
     };
 
     BackgroundUpdateCheck {
-        update: Some(UpdateAvailable { latest_version }),
+        update: Some(UpdateAvailable {
+            latest_version: target_version,
+        }),
         download,
     }
 }
@@ -476,11 +541,12 @@ pub async fn run_update_if_available(
     interactive: bool,
     update_config: &UpdateConfig,
 ) -> Result<bool> {
-    let installer = get_installer().await;
-    if installer.is_none() {
+    let Some(inst) = get_installer().await else {
         // Skip update check if no known installer.
         return Ok(false);
-    }
+    };
+
+    heal_managed_install(inst).await;
 
     if is_version_cache_fresh().await {
         return Ok(false);
@@ -508,14 +574,13 @@ pub async fn run_update_if_available(
     }
 
     let current_version = get_installed_grok_version();
-    // installer is guaranteed Some by the guard at the top of this function.
-    let inst = installer.unwrap();
-    // Fetch without writing version.json — we only cache after confirming the
-    // update is not needed or after a successful blocking install. This prevents
-    // a failed background download from suppressing retries for the TTL window.
-    let latest_version = match fetch_latest_version(inst, update_config).await {
-        Ok(v) => v,
-        Err(_) => return Ok(false),
+    let policy = config::VersionPolicy::resolve();
+    // Don't write version.json here; only cache after confirming no update is
+    // needed or after a successful install, so a failed background download
+    // doesn't suppress retries for the TTL window.
+    let latest_version = match fetch_update_plan(inst, update_config, &policy).await {
+        Ok(UpdatePlan::Install { target, .. }) => target,
+        Ok(UpdatePlan::Skip { .. } | UpdatePlan::Unavailable { .. }) | Err(_) => return Ok(false),
     };
     if !needs_update(
         &current_version,
@@ -1041,136 +1106,6 @@ pub async fn download_silent(url: &str, dest: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-const MAX_CHECKSUM_MANIFEST_BYTES: usize = 4096;
-
-fn parse_sha256_manifest(manifest: &str, expected_asset: &str) -> Result<String> {
-    let line = manifest
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .ok_or_else(|| anyhow::anyhow!("empty SHA-256 manifest for {expected_asset}"))?;
-    let mut fields = line.split_whitespace();
-    let hash = fields
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("missing SHA-256 for {expected_asset}"))?
-        .to_ascii_lowercase();
-    if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        anyhow::bail!("invalid SHA-256 manifest for {expected_asset}");
-    }
-
-    if let Some(name) = fields.next() {
-        let name = name.trim_start_matches('*');
-        let manifest_asset = std::path::Path::new(name)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(name);
-        if manifest_asset != expected_asset {
-            anyhow::bail!("SHA-256 manifest names {manifest_asset}, expected {expected_asset}");
-        }
-    }
-    Ok(hash)
-}
-
-async fn sha256_file(path: &std::path::Path) -> Result<String> {
-    let path = path.to_owned();
-    tokio::task::spawn_blocking(move || -> Result<String> {
-        use std::io::Read;
-
-        let mut file = std::fs::File::open(&path)
-            .with_context(|| format!("opening {} for SHA-256 verification", path.display()))?;
-        let mut hasher = Sha256::new();
-        let mut buffer = [0_u8; 64 * 1024];
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            hasher.update(&buffer[..read]);
-        }
-        Ok(format!("{:x}", hasher.finalize()))
-    })
-    .await
-    .map_err(|error| anyhow::anyhow!("SHA-256 worker failed: {error}"))?
-}
-
-async fn fetch_release_sha256(url: &str, expected_asset: &str) -> Result<String> {
-    let client = reqwest::Client::builder()
-        .timeout(DOWNLOAD_REQUEST_TIMEOUT)
-        .build()?;
-    let response = client.get(url).send().await?;
-    if !response.status().is_success() {
-        anyhow::bail!("checksum download failed: HTTP {}", response.status());
-    }
-
-    let mut bytes = Vec::new();
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        if bytes.len().saturating_add(chunk.len()) > MAX_CHECKSUM_MANIFEST_BYTES {
-            anyhow::bail!("SHA-256 manifest for {expected_asset} exceeds 4 KiB");
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    let manifest = std::str::from_utf8(&bytes)
-        .with_context(|| format!("SHA-256 manifest for {expected_asset} is not UTF-8"))?;
-    parse_sha256_manifest(manifest, expected_asset)
-}
-
-async fn verify_sha256(path: &std::path::Path, expected: &str) -> Result<()> {
-    let actual = sha256_file(path).await?;
-    if actual != expected {
-        anyhow::bail!(
-            "SHA-256 mismatch for {}; refusing to install",
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("downloaded asset")
-        );
-    }
-    Ok(())
-}
-
-async fn publish_verified_release_asset(
-    staging: &std::path::Path,
-    dest: &std::path::Path,
-) -> Result<()> {
-    #[cfg(windows)]
-    {
-        windows_replace_exe(staging, dest).await?;
-        tokio::fs::remove_file(staging).await?;
-    }
-    #[cfg(not(windows))]
-    tokio::fs::rename(staging, dest).await?;
-    Ok(())
-}
-
-async fn download_verified_release_asset(
-    url: &str,
-    asset_name: &str,
-    dest: &std::path::Path,
-    with_progress: bool,
-) -> Result<()> {
-    let checksum_url = format!("{url}.sha256");
-    let expected = fetch_release_sha256(&checksum_url, asset_name)
-        .await
-        .with_context(|| format!("verifying release metadata at {checksum_url}"))?;
-    let staging = unique_temp_sibling(dest, "verified");
-
-    let result = async {
-        if with_progress {
-            download_with_progress(url, &staging).await?;
-        } else {
-            download_silent(url, &staging).await?;
-        }
-        verify_sha256(&staging, &expected).await?;
-        publish_verified_release_asset(&staging, dest).await
-    }
-    .await;
-
-    if result.is_err() {
-        let _ = tokio::fs::remove_file(&staging).await;
-    }
-    result
-}
-
 /// Delete `~/.grok/models_cache.json` after a successful update.
 ///
 /// The cache embeds the binary version and will be treated as a miss by the
@@ -1230,77 +1165,7 @@ async fn download_cli_artifact_from_gcs(
 }
 
 async fn install_internal(target: Option<&str>, update_config: &UpdateConfig) -> Result<()> {
-    // Production path: GitHub Releases over HTTP (no `gh` CLI, no xAI CDN).
-    install_from_github_http(target, update_config).await
-}
-
-/// Download + activate a release asset from GitHub Releases via HTTPS.
-///
-/// Used by the `internal` installer (install.sh and in-app auto-update) so
-/// users do not need the `gh` CLI. Asset layout matches the release workflow:
-/// `agent-tui-{version}-{platform}[.exe]`.
-async fn install_from_github_http(
-    target: Option<&str>,
-    update_config: &UpdateConfig,
-) -> Result<()> {
-    let (os, arch) = detect_platform()?;
-    let platform = format!("{os}-{arch}");
-
-    let version = match target {
-        Some(v) => {
-            semver::Version::parse(v)
-                .map_err(|_| anyhow::anyhow!("invalid version format: '{v}'"))?;
-            v.to_string()
-        }
-        None => crate::version::fetch_github_http_version(&update_config.channel).await?,
-    };
-
-    let grok_home = grok_home();
-    let download_dir = grok_home.join("downloads");
-    tokio::fs::create_dir_all(&download_dir).await?;
-
-    let asset_name = crate::version::release_asset_name(&version, &platform);
-    // Store under a stable versioned name (strip .exe for the on-disk key on Windows).
-    let stored_name = format!(
-        "{}-{}-{}",
-        crate::version::RELEASE_ASSET_PREFIX,
-        version,
-        platform
-    );
-    let binary_path = if cfg!(windows) {
-        download_dir.join(format!("{stored_name}.exe"))
-    } else {
-        download_dir.join(&stored_name)
-    };
-
-    let url = crate::version::github_release_asset_url(&version, &platform);
-    eprintln!(
-        "  Downloading {} v{version} ({platform}) from GitHub Releases...",
-        crate::version::MANAGED_BIN_NAME
-    );
-    download_verified_release_asset(&url, &asset_name, &binary_path, true).await?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755)).await?;
-    }
-
-    if !smoke_test_binary(&binary_path).await {
-        let _ = tokio::fs::remove_file(&binary_path).await;
-        anyhow::bail!(
-            "downloaded binary failed to run.\n\
-             Your current version is unchanged.\n\
-             To update manually: {}",
-            manual_install_cmd()
-        );
-    }
-
-    activate_verified_download(&VerifiedDownload {
-        version,
-        binary_path,
-    })
-    .await
+    install_internal_from_bases(target, update_config, crate::version::CLI_BASE_URLS).await
 }
 
 /// Try the base-dependent install phase ([`download_verified_from_base`]:
@@ -1493,31 +1358,13 @@ async fn download_verified_from_base(
     let download_dir = grok_home.join("downloads");
     tokio::fs::create_dir_all(&download_dir).await?;
 
-    let binary_name = format!(
-        "{}-{}-{}",
-        crate::version::RELEASE_ASSET_PREFIX,
-        version,
-        platform
-    );
-    let binary_path = if platform.starts_with("windows") {
-        download_dir.join(format!("{binary_name}.exe"))
-    } else {
-        download_dir.join(&binary_name)
-    };
+    let binary_name = format!("grok-{}-{}", version, platform);
+    let binary_path = download_dir.join(&binary_name);
 
-    eprintln!(
-        "  Downloading {} v{version} ({platform})...",
-        crate::version::MANAGED_BIN_NAME
-    );
+    eprintln!("  Downloading grok v{} ({})...", version, platform);
 
-    // Flat-layout mirrors publish already +x (see `publish_downloaded_artifact`).
-    // Prefer the versioned name; on Windows also try the `.exe` suffix object.
-    let object = if platform.starts_with("windows") {
-        format!("{binary_name}.exe")
-    } else {
-        binary_name.clone()
-    };
-    download_cli_artifact_from_gcs(gcs_base_url, &object, &binary_path, true).await?;
+    // Published already +x (see `publish_downloaded_artifact`).
+    download_cli_artifact_from_gcs(gcs_base_url, &binary_name, &binary_path, true).await?;
 
     // Smoke-test: run the binary before activating it. A truncated or
     // corrupt download is caught here and never becomes the active grok.
@@ -1542,7 +1389,7 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
     let bin_dir = grok_home.join("bin");
     tokio::fs::create_dir_all(&bin_dir).await?;
 
-    // Atomic swap of ~/.agent-tui/bin/{agent-tui,agent} -> downloaded binary.
+    // Atomic swap of ~/.grok/bin/{grok,agent} -> downloaded binary.
     let link_path = swap_managed_bin_links(&download.binary_path, &bin_dir).await?;
 
     remove_stale_pager(&bin_dir).await;
@@ -1550,13 +1397,6 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
     eprintln!();
 
     // Clean up old versioned binaries (keeps current + 1 previous).
-    cleanup_old_downloads(
-        &download_dir,
-        crate::version::RELEASE_ASSET_PREFIX,
-        &download.version,
-    )
-    .await;
-    // Legacy prefixes from dual-install / pre-fork downloads.
     cleanup_old_downloads(&download_dir, "grok", &download.version).await;
     cleanup_old_downloads(&download_dir, "grok-pager", &download.version).await;
 
@@ -1664,15 +1504,11 @@ async fn swap_managed_bin_links(
     binary_path: &std::path::Path,
     bin_dir: &std::path::Path,
 ) -> Result<std::path::PathBuf> {
-    let primary = if cfg!(windows) {
-        format!("{}.exe", crate::version::MANAGED_BIN_NAME)
-    } else {
-        crate::version::MANAGED_BIN_NAME.to_string()
-    };
+    let grok_name = if cfg!(windows) { "grok.exe" } else { "grok" };
     let agent_name = if cfg!(windows) { "agent.exe" } else { "agent" };
-    let primary_link = bin_dir.join(&primary);
+    let grok_link = bin_dir.join(grok_name);
     let agent_link = bin_dir.join(agent_name);
-    let link_paths: [std::path::PathBuf; 2] = [primary_link.clone(), agent_link];
+    let link_paths: [std::path::PathBuf; 2] = [grok_link.clone(), agent_link];
 
     // Capture every link up-front so a 2nd-link capture failure can't
     // strand the 1st mid-swap.
@@ -1741,7 +1577,7 @@ async fn swap_managed_bin_links(
     for cap in &captured {
         cap.cleanup().await;
     }
-    Ok(primary_link)
+    Ok(grok_link)
 }
 
 /// Snapshot of a managed-bin link's prior state for rollback in
@@ -2182,6 +2018,104 @@ async fn cleanup_old_downloads(dir: &std::path::Path, bin_prefix: &str, current_
     }
 }
 
+fn installer_manages_bin_entrypoints(installer: &str) -> bool {
+    matches!(installer, "internal" | "gh-release")
+}
+
+#[cfg_attr(not(any(unix, windows)), allow(clippy::unused_async))]
+async fn heal_managed_install(installer: &str) {
+    if !installer_manages_bin_entrypoints(installer) {
+        return;
+    }
+
+    #[cfg(any(unix, windows))]
+    {
+        let bin_dir = grok_home().join("bin");
+
+        #[cfg(unix)]
+        reconcile_agent_to_grok(&bin_dir).await;
+
+        #[cfg(windows)]
+        reconcile_agent_exe_to_grok(&bin_dir).await;
+    }
+}
+
+#[cfg(unix)]
+async fn reconcile_agent_to_grok(bin_dir: &std::path::Path) {
+    let grok_link = bin_dir.join("grok");
+    let agent_link = bin_dir.join("agent");
+
+    let Ok(grok_target) = tokio::fs::read_link(&grok_link).await else {
+        return;
+    };
+    if tokio::fs::metadata(&grok_link).await.is_err() {
+        return;
+    }
+    if let Ok(agent_target) = tokio::fs::read_link(&agent_link).await
+        && agent_target == grok_target
+    {
+        return;
+    }
+    match atomic_symlink_swap(&grok_target, &agent_link).await {
+        Ok(()) => tracing::info!(
+            grok_target = %grok_target.display(),
+            "reconciled agent bin symlink to grok target"
+        ),
+        Err(e) => tracing::warn!("failed to reconcile agent bin symlink: {e:#}"),
+    }
+}
+
+#[cfg(windows)]
+async fn reconcile_agent_exe_to_grok(bin_dir: &std::path::Path) {
+    let grok_exe = bin_dir.join("grok.exe");
+    let agent_exe = bin_dir.join("agent.exe");
+
+    if tokio::fs::metadata(&grok_exe).await.is_err() {
+        return;
+    }
+    match agent_exe_differs(&grok_exe, &agent_exe).await {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(e) => {
+            tracing::debug!("agent.exe reconcile: compare failed: {e:#}");
+            return;
+        }
+    }
+    match windows_replace_exe(&grok_exe, &agent_exe).await {
+        Ok(()) => tracing::info!("reconciled agent.exe to grok.exe"),
+        Err(e) => tracing::warn!("failed to reconcile agent.exe to grok.exe: {e:#}"),
+    }
+}
+
+#[cfg(windows)]
+async fn agent_exe_differs(
+    grok: &std::path::Path,
+    agent: &std::path::Path,
+) -> std::io::Result<bool> {
+    use tokio::io::{AsyncReadExt, BufReader};
+    let grok_len = tokio::fs::metadata(grok).await?.len();
+    match tokio::fs::metadata(agent).await {
+        Ok(m) if m.len() != grok_len => return Ok(true),
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(e) => return Err(e),
+    }
+    let mut rg = BufReader::new(tokio::fs::File::open(grok).await?);
+    let mut ra = BufReader::new(tokio::fs::File::open(agent).await?);
+    let mut bg = [0u8; 64 * 1024];
+    let mut ba = [0u8; 64 * 1024];
+    loop {
+        let n = rg.read(&mut bg).await?;
+        if n == 0 {
+            return Ok(false);
+        }
+        ra.read_exact(&mut ba[..n]).await?;
+        if bg[..n] != ba[..n] {
+            return Ok(true);
+        }
+    }
+}
+
 /// Download a single asset from a GitHub release via `gh release download`.
 async fn gh_release_download(tag: &str, pattern: &str, dest: &std::path::Path) -> Result<()> {
     let pb = ProgressBar::new_spinner();
@@ -2227,11 +2161,11 @@ async fn gh_release_download(tag: &str, pattern: &str, dest: &std::path::Path) -
     Ok(())
 }
 
-/// Download and install Agent TUI from GitHub Releases via the `gh` CLI.
+/// Download and install agent-tui from GitHub Releases (jasonkneen/agent-tui).
 ///
 /// Uses `gh release download` to fetch the binary matching the current platform.
-/// Prefer this when `gh` is available and authenticated; otherwise the
-/// `internal` installer uses plain HTTPS ([`install_from_github_http`]).
+/// This works anywhere the `gh` CLI is authenticated, without needing npm or
+/// internal network access.
 async fn install_gh_release(target: Option<&str>) -> Result<()> {
     let (os, arch) = detect_platform()?;
     let platform = format!("{}-{}", os, arch);
@@ -2247,42 +2181,16 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
     tokio::fs::create_dir_all(&download_dir).await?;
     tokio::fs::create_dir_all(&bin_dir).await?;
 
-    let asset_name = crate::version::release_asset_name(&version, &platform);
-    let stored_name = format!(
-        "{}-{}-{}",
-        crate::version::RELEASE_ASSET_PREFIX,
-        version,
-        platform
-    );
-    let binary_path = if cfg!(windows) {
-        download_dir.join(format!("{stored_name}.exe"))
-    } else {
-        download_dir.join(&stored_name)
-    };
-    let tag = format!("v{version}");
+    let binary_name = format!("grok-{}-{}", version, platform);
+    let binary_path = download_dir.join(&binary_name);
+    let tag = format!("v{}", version);
 
     eprintln!(
-        "  Downloading {} v{version} ({platform}) from GitHub Releases...",
-        crate::version::MANAGED_BIN_NAME
+        "  Downloading grok v{} ({}) from GitHub Releases...",
+        version, platform
     );
 
-    let binary_staging = unique_temp_sibling(&binary_path, "verified");
-    let checksum_staging = unique_temp_sibling(&binary_path, "sha256");
-    let checksum_asset = format!("{asset_name}.sha256");
-    let download_result: Result<()> = async {
-        gh_release_download(&tag, &checksum_asset, &checksum_staging).await?;
-        let manifest = tokio::fs::read_to_string(&checksum_staging).await?;
-        let expected = parse_sha256_manifest(&manifest, &asset_name)?;
-        gh_release_download(&tag, &asset_name, &binary_staging).await?;
-        verify_sha256(&binary_staging, &expected).await?;
-        publish_verified_release_asset(&binary_staging, &binary_path).await
-    }
-    .await;
-    let _ = tokio::fs::remove_file(&checksum_staging).await;
-    if download_result.is_err() {
-        let _ = tokio::fs::remove_file(&binary_staging).await;
-    }
-    download_result?;
+    gh_release_download(&tag, &binary_name, &binary_path).await?;
 
     // chmod +x
     #[cfg(unix)]
@@ -2291,33 +2199,31 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
         tokio::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755)).await?;
     }
 
-    // Atomic swap of ~/.agent-tui/bin/{agent-tui,agent} -> downloaded binary.
+    // Atomic swap of ~/.grok/bin/{grok,agent} -> downloaded binary.
     swap_managed_bin_links(&binary_path, &bin_dir).await?;
 
-    // Update agent-tui-latest -> versioned binary so any existing symlinks that
-    // route through it resolve to the newly installed version.
+    // Update grok-latest -> versioned binary so any existing symlinks that route
+    // through it (e.g. /usr/local/bin/grok -> ~/.grok/downloads/grok-latest)
+    // resolve to the newly installed version.
     #[cfg(unix)]
     {
-        let latest_path =
-            download_dir.join(format!("{}-latest", crate::version::RELEASE_ASSET_PREFIX));
+        let latest_path = download_dir.join("grok-latest");
         let rel_target = relative_symlink_target(&binary_path, &latest_path);
         if let Err(e) = atomic_symlink_swap(&rel_target, &latest_path).await {
-            tracing::warn!("Failed to update agent-tui-latest symlink: {e}");
+            tracing::warn!("Failed to update grok-latest symlink: {e}");
         }
     }
 
-    // Also update /usr/local/bin/{agent-tui,agent} if either points directly into
-    // the managed downloads dir. Permission errors ignored.
+    // Also update /usr/local/bin/{grok,agent} if either points directly into
+    // ~/.grok/downloads/ (legacy layout — skips the grok-latest indirection).
+    // Permission errors ignored.
     #[cfg(unix)]
-    for name in [crate::version::MANAGED_BIN_NAME, "agent"] {
+    for name in ["grok", "agent"] {
         let system_link = std::path::PathBuf::from(format!("/usr/local/bin/{name}"));
         if let Ok(existing_target) = tokio::fs::read_link(&system_link).await {
             let target_str = existing_target.to_string_lossy();
-            if (target_str.contains(".agent-tui/downloads/")
-                || target_str.contains(".grok/downloads/"))
-                && !target_str.ends_with("agent-tui-latest")
-                && !target_str.ends_with("grok-latest")
-            {
+            if target_str.contains(".grok/downloads/") && !target_str.ends_with("grok-latest") {
+                // Try to update; ignore permission errors
                 let _ = atomic_symlink_swap(&binary_path, &system_link).await;
             }
         }
@@ -2328,12 +2234,6 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
     eprintln!();
 
     // Clean up old versioned binaries (keeps current + 1 previous).
-    cleanup_old_downloads(
-        &download_dir,
-        crate::version::RELEASE_ASSET_PREFIX,
-        &version,
-    )
-    .await;
     cleanup_old_downloads(&download_dir, "grok", &version).await;
     cleanup_old_downloads(&download_dir, "grok-pager", &version).await;
 
@@ -2346,41 +2246,14 @@ async fn install_gh_release(target: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Owns a private temporary `.npmrc` and reports cleanup failures on drop.
-///
-/// The handle removes the file on drop, including when
-/// spawning npm fails or the install returns early. `tempfile` creates the path
-/// atomically with a randomized name, avoiding predictable-path and symlink
-/// attacks in the shared system temporary directory.
-struct TempNpmrc {
-    file: Option<tempfile::NamedTempFile>,
-}
-
-impl TempNpmrc {
-    fn new(file: tempfile::NamedTempFile) -> Self {
-        Self { file: Some(file) }
-    }
-
-    fn path(&self) -> &std::path::Path {
-        self.file.as_ref().expect("temporary npmrc is open").path()
-    }
-}
-
-impl Drop for TempNpmrc {
-    fn drop(&mut self) {
-        if let Some(file) = self.file.take()
-            && let Err(error) = file.close()
-        {
-            tracing::warn!(%error, "failed to remove temporary npm credential file");
-        }
-    }
-}
-
-/// Creates a temporary `.npmrc` containing `NPM_TOKEN`, when configured.
-fn create_temp_npmrc(npm_registry: Option<&str>) -> Result<Option<TempNpmrc>> {
+/// Creates a temporary .npmrc file with the NPM token if present.
+/// Returns the path to the created file, or None if no token was set.
+fn create_temp_npmrc(npm_registry: Option<&str>) -> Result<Option<std::path::PathBuf>> {
     if let Ok(token) = std::env::var("NPM_TOKEN") {
         let token = token.trim();
         if !token.is_empty() {
+            let dir = std::env::temp_dir();
+            let npmrc_path = dir.join(format!(".npmrc-{}-install", std::process::id()));
             let registry_host = npm_registry
                 .and_then(|r| reqwest::Url::parse(r).ok())
                 .map(|u| {
@@ -2390,21 +2263,13 @@ fn create_temp_npmrc(npm_registry: Option<&str>) -> Result<Option<TempNpmrc>> {
                 })
                 .unwrap_or_else(|| "registry.npmjs.org".to_string());
             let npmrc_content = format!("//{}/:_authToken={}\n", registry_host, token);
-            let mut npmrc = tempfile::Builder::new()
-                .prefix(".npmrc-")
-                .suffix("-install")
-                .tempfile()?;
+            std::fs::write(&npmrc_path, npmrc_content)?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                npmrc
-                    .as_file()
-                    .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+                std::fs::set_permissions(&npmrc_path, std::fs::Permissions::from_mode(0o600))?;
             }
-            use std::io::Write;
-            npmrc.write_all(npmrc_content.as_bytes())?;
-            npmrc.as_file_mut().sync_all()?;
-            return Ok(Some(TempNpmrc::new(npmrc)));
+            return Ok(Some(npmrc_path));
         }
     }
     Ok(None)
@@ -2467,7 +2332,7 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
     warn_if_other_grok_processes_running();
 
     let version_arg = match target {
-        Some(ver) => format!("{}@{ver}", crate::version::NPM_PACKAGE),
+        Some(ver) => format!("@agent-tui/agent-tui@{ver}"),
         None => {
             // All current callers resolve the version via get_latest_version
             // (which applies max(stable, alpha) for the alpha channel) before
@@ -2478,8 +2343,7 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
                 "install_npm called without a resolved version, falling back to dist-tag"
             );
             format!(
-                "{}@{}",
-                crate::version::NPM_PACKAGE,
+                "@agent-tui/agent-tui@{}",
                 if channel == "alpha" {
                     "alpha"
                 } else {
@@ -2505,8 +2369,8 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
 
     // Use a temporary .npmrc to avoid exposing the token in process lists or shell history.
     let temp_npmrc = create_temp_npmrc(npm_registry)?;
-    if let Some(ref npmrc) = temp_npmrc {
-        cmd.arg(format!("--userconfig={}", npmrc.path().display()));
+    if let Some(ref npmrc_path) = temp_npmrc {
+        cmd.arg(format!("--userconfig={}", npmrc_path.display()));
     }
 
     cmd.stdin(Stdio::null())
@@ -2515,7 +2379,12 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
         .stderr(Stdio::inherit());
     agent_tui_tools::util::detach_std_command(&mut cmd);
     let status = cmd.status()?;
-    drop(temp_npmrc);
+
+    if let Some(path) = temp_npmrc
+        && let Err(e) = std::fs::remove_file(&path)
+    {
+        tracing::warn!("Failed to remove temp .npmrc file: {}", e);
+    }
 
     pb.finish_and_clear();
 
@@ -2571,11 +2440,14 @@ pub async fn run_update(
         .await;
     }
 
+    heal_managed_install(installer).await;
+
     let current_version = get_installed_grok_version();
+    let policy = config::VersionPolicy::resolve();
 
     // When --version is given, skip the latest-version check and install directly
     if let Some(version) = pinned_version {
-        if let Err(e) = crate::minimum_version::check_install_target(version) {
+        if let Err(e) = crate::version_policy::check_install_target(&policy, version) {
             anyhow::bail!("{e}");
         }
         eprintln!(
@@ -2604,18 +2476,33 @@ pub async fn run_update(
             .unwrap(),
     );
     pb.enable_steady_tick(Duration::from_millis(100));
-    let latest_version = fetch_latest_version(installer, update_config).await?;
+    let plan = fetch_update_plan(installer, update_config, &policy).await?;
     pb.finish_and_clear();
 
-    let install_target = match crate::minimum_version::apply_floor(&latest_version) {
-        Ok(t) => t,
-        Err(e) => anyhow::bail!("{e}"),
+    let (latest_version, install_target) = match plan {
+        UpdatePlan::Skip { latest } => {
+            // Cache so an explicit `grok update` doesn't re-prompt every run.
+            let stable_ptr = try_fetch_stable_pointer().await;
+            write_version_cache(&latest, stable_ptr.as_deref()).await;
+            eprintln!(
+                "The latest release ({latest}) is not an allowed update; \
+                 keeping the current version ({current_version})."
+            );
+            refresh_deployment_config().await;
+            return Ok(None);
+        }
+        UpdatePlan::Unavailable { latest, target } => {
+            anyhow::bail!(
+                "The required minimum version ({target}) is newer than the latest \
+                 available release ({latest}). Contact your administrator."
+            );
+        }
+        UpdatePlan::Install { latest, target } => (latest, target),
     };
     if install_target != latest_version {
         eprintln!(
-            "Latest available is {} but the configured minimum is higher; \
-             installing {} instead.",
-            latest_version, install_target
+            "Latest available is {latest_version}, but your configured version range \
+             allows {install_target}; installing that instead."
         );
     }
 
@@ -2747,33 +2634,6 @@ async fn refresh_deployment_config() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn sha256_manifest_requires_valid_hash_and_matching_asset() {
-        let hash = "a".repeat(64);
-        assert_eq!(
-            parse_sha256_manifest(
-                &format!("{hash}  agent-tui-1.2.3-linux-x86_64\n"),
-                "agent-tui-1.2.3-linux-x86_64"
-            )
-            .unwrap(),
-            hash
-        );
-        assert!(parse_sha256_manifest("not-a-hash  asset", "asset").is_err());
-        assert!(
-            parse_sha256_manifest(&format!("{}  wrong-asset", "b".repeat(64)), "asset").is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn sha256_verification_detects_mismatch() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("asset");
-        tokio::fs::write(&path, b"abc").await.unwrap();
-        let expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
-        verify_sha256(&path, expected).await.unwrap();
-        assert!(verify_sha256(&path, &"0".repeat(64)).await.is_err());
-    }
 
     #[test]
     fn test_tmp_download_path_is_unique_per_version_and_per_attempt() {
@@ -2988,6 +2848,138 @@ mod tests {
         atomic_symlink_swap(&target_v2, &link).await.unwrap();
 
         assert_eq!(std::fs::read_to_string(&link).unwrap(), "v2");
+    }
+
+    #[cfg(unix)]
+    fn managed_layout() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        let downloads = dir.path().join("downloads");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&downloads).unwrap();
+        (dir, bin, downloads)
+    }
+
+    #[test]
+    fn test_installer_manages_bin_entrypoints_gate() {
+        assert!(installer_manages_bin_entrypoints("internal"));
+        assert!(installer_manages_bin_entrypoints("gh-release"));
+        assert!(!installer_manages_bin_entrypoints("npm"));
+        assert!(!installer_manages_bin_entrypoints("unknown"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_reconcile_agent_repoints_diverged_agent() {
+        let (_dir, bin, downloads) = managed_layout();
+        std::fs::write(downloads.join("grok-0.2.101-macos-aarch64"), "new").unwrap();
+        std::fs::write(downloads.join("grok-0.1.199-macos-aarch64"), "old").unwrap();
+
+        std::os::unix::fs::symlink("../downloads/grok-0.2.101-macos-aarch64", bin.join("grok"))
+            .unwrap();
+        std::os::unix::fs::symlink("../downloads/grok-0.1.199-macos-aarch64", bin.join("agent"))
+            .unwrap();
+
+        reconcile_agent_to_grok(&bin).await;
+
+        assert_eq!(
+            std::fs::read_link(bin.join("agent")).unwrap(),
+            std::path::PathBuf::from("../downloads/grok-0.2.101-macos-aarch64"),
+        );
+        assert_eq!(std::fs::read_to_string(bin.join("agent")).unwrap(), "new");
+        assert!(downloads.join("grok-0.1.199-macos-aarch64").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_reconcile_agent_heals_legacy_unversioned_agent() {
+        let (_dir, bin, downloads) = managed_layout();
+        std::fs::write(downloads.join("grok-0.2.101-macos-aarch64"), "new").unwrap();
+        std::fs::write(downloads.join("grok-macos-aarch64"), "legacy").unwrap();
+
+        std::os::unix::fs::symlink("../downloads/grok-0.2.101-macos-aarch64", bin.join("grok"))
+            .unwrap();
+        std::os::unix::fs::symlink("../downloads/grok-macos-aarch64", bin.join("agent")).unwrap();
+
+        reconcile_agent_to_grok(&bin).await;
+
+        assert_eq!(
+            std::fs::read_link(bin.join("agent")).unwrap(),
+            std::path::PathBuf::from("../downloads/grok-0.2.101-macos-aarch64"),
+        );
+        assert_eq!(std::fs::read_to_string(bin.join("agent")).unwrap(), "new");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_reconcile_agent_creates_missing_agent() {
+        let (_dir, bin, downloads) = managed_layout();
+        std::fs::write(downloads.join("grok-0.2.101-macos-aarch64"), "new").unwrap();
+        std::os::unix::fs::symlink("../downloads/grok-0.2.101-macos-aarch64", bin.join("grok"))
+            .unwrap();
+
+        reconcile_agent_to_grok(&bin).await;
+
+        assert!(bin.join("agent").is_symlink());
+        assert_eq!(std::fs::read_to_string(bin.join("agent")).unwrap(), "new");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_reconcile_agent_noop_when_consistent() {
+        let (_dir, bin, downloads) = managed_layout();
+        std::fs::write(downloads.join("grok-0.2.101-macos-aarch64"), "new").unwrap();
+        let target = "../downloads/grok-0.2.101-macos-aarch64";
+        std::os::unix::fs::symlink(target, bin.join("grok")).unwrap();
+        std::os::unix::fs::symlink(target, bin.join("agent")).unwrap();
+
+        reconcile_agent_to_grok(&bin).await;
+
+        assert_eq!(
+            std::fs::read_link(bin.join("agent")).unwrap(),
+            std::path::PathBuf::from(target),
+        );
+        let leftovers = std::fs::read_dir(&bin)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp-link"))
+            .count();
+        assert_eq!(leftovers, 0, "no temp links from a no-op reconcile");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_reconcile_agent_skips_when_grok_dangling() {
+        let (_dir, bin, downloads) = managed_layout();
+        std::os::unix::fs::symlink("../downloads/grok-0.2.101-macos-aarch64", bin.join("grok"))
+            .unwrap();
+        std::fs::write(downloads.join("grok-0.1.199-macos-aarch64"), "old").unwrap();
+        std::os::unix::fs::symlink("../downloads/grok-0.1.199-macos-aarch64", bin.join("agent"))
+            .unwrap();
+
+        reconcile_agent_to_grok(&bin).await;
+
+        assert_eq!(
+            std::fs::read_link(bin.join("agent")).unwrap(),
+            std::path::PathBuf::from("../downloads/grok-0.1.199-macos-aarch64"),
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_reconcile_agent_skips_when_grok_not_symlink() {
+        let (_dir, bin, downloads) = managed_layout();
+        std::fs::write(bin.join("grok"), "copy-binary").unwrap();
+        std::fs::write(downloads.join("grok-0.1.199-macos-aarch64"), "old").unwrap();
+        std::os::unix::fs::symlink("../downloads/grok-0.1.199-macos-aarch64", bin.join("agent"))
+            .unwrap();
+
+        reconcile_agent_to_grok(&bin).await;
+
+        assert_eq!(
+            std::fs::read_link(bin.join("agent")).unwrap(),
+            std::path::PathBuf::from("../downloads/grok-0.1.199-macos-aarch64"),
+        );
     }
 
     #[cfg(unix)]
@@ -3632,7 +3624,7 @@ mod tests {
         let hint = reinstall_hint("npm");
         assert!(hint.contains("npm i -g"), "should suggest npm i -g: {hint}");
         assert!(
-            hint.contains(crate::version::NPM_PACKAGE),
+            hint.contains("@agent-tui/agent-tui"),
             "should name the package: {hint}"
         );
     }
@@ -3645,7 +3637,7 @@ mod tests {
             "should suggest gh release download: {hint}"
         );
         assert!(
-            hint.contains(crate::version::GH_RELEASE_REPO),
+            hint.contains("jasonkneen/agent-tui"),
             "should name the repo: {hint}"
         );
     }
@@ -4647,8 +4639,8 @@ mod tests {
     fn test_create_temp_npmrc_default_registry() {
         let _g = InstallerEnvGuard::isolate();
         unsafe { std::env::set_var("NPM_TOKEN", "secret123") };
-        let file = create_temp_npmrc(None).unwrap().expect("file written");
-        let body = std::fs::read_to_string(file.path()).unwrap();
+        let path = create_temp_npmrc(None).unwrap().expect("file written");
+        let body = std::fs::read_to_string(&path).unwrap();
 
         assert!(
             body.contains("registry.npmjs.org"),
@@ -4657,6 +4649,8 @@ mod tests {
         assert!(body.contains("_authToken=secret123"), "token: {body}");
         assert!(body.starts_with("//"), "must be // prefix: {body}");
         assert!(body.ends_with('\n'), "must end with newline: {body}");
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -4664,8 +4658,8 @@ mod tests {
     fn test_create_temp_npmrc_token_trimmed() {
         let _g = InstallerEnvGuard::isolate();
         unsafe { std::env::set_var("NPM_TOKEN", "  padded-token  ") };
-        let file = create_temp_npmrc(None).unwrap().expect("file written");
-        let body = std::fs::read_to_string(file.path()).unwrap();
+        let path = create_temp_npmrc(None).unwrap().expect("file written");
+        let body = std::fs::read_to_string(&path).unwrap();
         assert!(
             body.contains("_authToken=padded-token"),
             "token must be trimmed: {body}"
@@ -4674,6 +4668,7 @@ mod tests {
             !body.contains("padded-token  "),
             "trailing whitespace must be stripped: {body}"
         );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -4681,10 +4676,10 @@ mod tests {
     fn test_create_temp_npmrc_custom_registry_extracts_host_and_path() {
         let _g = InstallerEnvGuard::isolate();
         unsafe { std::env::set_var("NPM_TOKEN", "tok") };
-        let file = create_temp_npmrc(Some("https://npm.example.com/repository/npm/"))
+        let path = create_temp_npmrc(Some("https://npm.example.com/repository/npm/"))
             .unwrap()
             .expect("file written");
-        let body = std::fs::read_to_string(file.path()).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
 
         // Host + path must be preserved (trailing slash stripped per impl).
         assert!(
@@ -4692,6 +4687,8 @@ mod tests {
             "registry host+path: {body}"
         );
         assert!(body.contains("_authToken=tok"));
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -4699,14 +4696,15 @@ mod tests {
     fn test_create_temp_npmrc_custom_registry_with_port() {
         let _g = InstallerEnvGuard::isolate();
         unsafe { std::env::set_var("NPM_TOKEN", "tok") };
-        let file = create_temp_npmrc(Some("https://npm.example.com:8443/"))
+        let path = create_temp_npmrc(Some("https://npm.example.com:8443/"))
             .unwrap()
             .expect("file written");
-        let body = std::fs::read_to_string(file.path()).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
         assert!(
             body.contains("npm.example.com:8443"),
             "port must be preserved: {body}"
         );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -4716,14 +4714,15 @@ mod tests {
         // public npm host so the auth token isn't silently lost.
         let _g = InstallerEnvGuard::isolate();
         unsafe { std::env::set_var("NPM_TOKEN", "tok") };
-        let file = create_temp_npmrc(Some("not a url"))
+        let path = create_temp_npmrc(Some("not a url"))
             .unwrap()
             .expect("file written");
-        let body = std::fs::read_to_string(file.path()).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
         assert!(
             body.contains("registry.npmjs.org"),
             "invalid URL falls back: {body}"
         );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[cfg(unix)]
@@ -4734,37 +4733,33 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let _g = InstallerEnvGuard::isolate();
         unsafe { std::env::set_var("NPM_TOKEN", "secret") };
-        let file = create_temp_npmrc(None).unwrap().expect("file written");
+        let path = create_temp_npmrc(None).unwrap().expect("file written");
 
-        let perms = std::fs::metadata(file.path()).unwrap().permissions();
+        let perms = std::fs::metadata(&path).unwrap().permissions();
         let mode = perms.mode() & 0o777;
         assert_eq!(
             mode, 0o600,
             "npmrc must be 0600 to protect the auth token, got {mode:o}"
         );
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     #[serial_test::serial]
-    fn test_create_temp_npmrc_uses_unique_random_paths() {
-        // Multiple installs in the same process must never clobber one another.
+    fn test_create_temp_npmrc_unique_path_per_pid() {
+        // Two parallel installs would clobber each other if the path didn't
+        // include the PID. Verify the filename includes the current PID.
         let _g = InstallerEnvGuard::isolate();
         unsafe { std::env::set_var("NPM_TOKEN", "tok") };
-        let first = create_temp_npmrc(None).unwrap().expect("first file");
-        let second = create_temp_npmrc(None).unwrap().expect("second file");
-        assert_ne!(first.path(), second.path());
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn test_create_temp_npmrc_is_removed_on_drop() {
-        let _g = InstallerEnvGuard::isolate();
-        unsafe { std::env::set_var("NPM_TOKEN", "tok") };
-        let file = create_temp_npmrc(None).unwrap().expect("file written");
-        let path = file.path().to_path_buf();
-        assert!(path.exists());
-        drop(file);
-        assert!(!path.exists(), "temporary npmrc must be removed on drop");
+        let path = create_temp_npmrc(None).unwrap().expect("file written");
+        let pid = std::process::id().to_string();
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        assert!(
+            name.contains(&pid),
+            "filename should include PID: {name} (pid={pid})"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     // ──────────────────────────────────────────────────────────────────────

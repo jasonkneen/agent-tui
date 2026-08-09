@@ -1,22 +1,9 @@
-//! Filesystem locations for Agent TUI config files and binaries.
-//!
-//! Historical function names still say `grok_home` so the rest of the crate
-//! graph does not need a mass rename of call sites. Semantics are Agent TUI:
-//! `$AGENT_TUI_HOME` → `$GROK_HOME` (legacy) → `~/.agent-tui`.
+//! Filesystem locations for grok config files and binaries.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
 static GROK_HOME: OnceLock<PathBuf> = OnceLock::new();
-
-/// Preferred env override for the per-user config directory.
-pub const HOME_ENV: &str = "AGENT_TUI_HOME";
-/// Legacy env override (accepted for dual-install / migration).
-pub const LEGACY_HOME_ENV: &str = "GROK_HOME";
-/// Default directory name under the user home when no env override is set.
-pub const DEFAULT_HOME_DIRNAME: &str = ".agent-tui";
-/// CLI binary name installed under `$HOME/bin/`.
-pub const BINARY_NAME: &str = "agent-tui";
 
 #[cfg(target_os = "macos")]
 const CLAUDE_MANAGED_SETTINGS_PATH: &str =
@@ -24,23 +11,15 @@ const CLAUDE_MANAGED_SETTINGS_PATH: &str =
 #[cfg(target_os = "linux")]
 const CLAUDE_MANAGED_SETTINGS_PATH: &str = "/etc/claude-code/managed-settings.json";
 
-/// Resolve the home env override: `AGENT_TUI_HOME` first, then legacy `GROK_HOME`.
-fn home_env_override() -> Option<PathBuf> {
-    std::env::var_os(HOME_ENV)
-        .or_else(|| std::env::var_os(LEGACY_HOME_ENV))
-        .map(PathBuf::from)
-}
-
-/// The default user config directory (`~/.agent-tui`, canonicalized) used when
-/// no home env override is set. Exposed so callers (e.g. display helpers) can
-/// detect whether [`grok_home()`] is the default without duplicating the
-/// computation.
+/// The default user grok directory (`~/.grok`, canonicalized) used when
+/// `GROK_HOME` is unset. Exposed so callers (e.g. display helpers) can detect
+/// whether [`grok_home()`] is the default without duplicating the computation.
 ///
 /// Uses [`dunce::canonicalize`] instead of [`std::fs::canonicalize`]: on
 /// Windows, std returns a verbatim path (`\\?\C:\Users\...`) which external
 /// tools choke on — e.g. `git clone` rejects `\\?\` destinations with
 /// "Invalid argument", breaking marketplace cache clones under
-/// `~/.agent-tui/marketplace-cache`. `dunce` strips the prefix whenever the path
+/// `~/.grok/marketplace-cache`. `dunce` strips the prefix whenever the path
 /// is safely representable in legacy form; on non-Windows it is identical to
 /// `std::fs::canonicalize`.
 ///
@@ -49,49 +28,50 @@ fn home_env_override() -> Option<PathBuf> {
 pub fn default_grok_home() -> PathBuf {
     #[allow(deprecated)]
     let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    dunce::canonicalize(&home)
-        .unwrap_or(home)
-        .join(DEFAULT_HOME_DIRNAME)
+    dunce::canonicalize(&home).unwrap_or(home).join(".grok")
 }
 
-/// Per-user config directory: `$AGENT_TUI_HOME` or `$GROK_HOME` or `~/.agent-tui`.
-/// Created if needed.
+/// Per-user config directory: `$GROK_HOME` or `~/.grok`. Created if needed.
 pub fn grok_home() -> PathBuf {
     GROK_HOME
         .get_or_init(|| {
-            let grok_home = home_env_override().unwrap_or_else(default_grok_home);
+            let grok_home = if let Ok(v) = std::env::var("GROK_HOME") {
+                PathBuf::from(v)
+            } else {
+                default_grok_home()
+            };
             let _ = std::fs::create_dir_all(&grok_home);
             grok_home
         })
         .clone()
 }
 
-/// The user-global home, but only when one genuinely resolves: `Some` when a
-/// home env override is set or a home directory is found, `None` otherwise.
-/// Unlike [`grok_home()`], this never falls back to a cwd-relative config dir,
-/// so callers that *scan* user-global resources (hooks, marketplace sources,
-/// ...) don't mistake a project's tree for the user-global one when no home
-/// resolves.
+/// The user-global grok home, but only when one genuinely resolves: `Some` when
+/// `$GROK_HOME` is set or a home directory is found, `None` otherwise. Unlike
+/// [`grok_home()`], this never falls back to a cwd-relative `.grok`, so callers
+/// that *scan* user-global grok resources (hooks, marketplace sources, ...) don't
+/// mistake a project's `.grok` tree for the user-global one when no home resolves.
 pub fn user_grok_home() -> Option<PathBuf> {
     #[allow(deprecated)]
-    let resolvable = home_env_override().is_some() || std::env::home_dir().is_some();
+    let resolvable = std::env::var_os("GROK_HOME").is_some() || std::env::home_dir().is_some();
     resolvable.then(grok_home)
 }
 
-/// Canonical application path: `$HOME/bin/agent-tui` (Unix) or `agent-tui.exe` (Windows).
+/// Canonical grok application path: `$GROK_HOME/bin/grok` (Unix) or `grok.exe` (Windows).
 pub fn grok_application() -> PathBuf {
-    let name = if cfg!(windows) {
-        format!("{BINARY_NAME}.exe")
-    } else {
-        BINARY_NAME.to_string()
-    };
-    grok_home().join("bin").join(name)
+    grok_application_in(&grok_home())
 }
 
-/// System-wide config directory: `/etc/agent-tui/` on Unix, `None` on Windows.
+/// [`grok_application`] under an explicit home instead of `$GROK_HOME`.
+pub fn grok_application_in(home: &std::path::Path) -> PathBuf {
+    let name = if cfg!(windows) { "grok.exe" } else { "grok" };
+    home.join("bin").join(name)
+}
+
+/// System-wide config directory: `/etc/grok/` on Unix, `None` on Windows.
 pub fn system_config_dir() -> Option<PathBuf> {
     if cfg!(unix) {
-        Some(PathBuf::from("/etc/agent-tui"))
+        Some(PathBuf::from("/etc/grok"))
     } else {
         None
     }
@@ -332,7 +312,7 @@ mod tests {
         // canonicalization must yield a plain path. No-op assertion on Unix.
         let home = default_grok_home();
         assert!(!home.to_string_lossy().starts_with(r"\\?\"));
-        assert!(home.ends_with(DEFAULT_HOME_DIRNAME));
+        assert!(home.ends_with(".grok"));
     }
 
     #[test]

@@ -407,8 +407,8 @@ impl SessionActor {
                 ConversationItem::user(user_message),
             ],
             model: Some(model),
-            x_grok_conv_id: Some(session_id.clone()),
-            x_grok_req_id: Some(format!("xai-dream-{}", uuid::Uuid::new_v4())),
+            x_grok_conv_id: Some(format!("dream-{}", uuid::Uuid::new_v4())),
+            x_grok_req_id: Some(format!("agent-tui-dream-{}", uuid::Uuid::new_v4())),
             x_grok_session_id: Some(session_id),
             x_grok_agent_id: Some(agent_tui_telemetry::id::agent_id()),
             ..Default::default()
@@ -514,8 +514,8 @@ impl SessionActor {
             let request = ConversationRequest {
                 items,
                 model: Some(model),
-                x_grok_conv_id: Some(session_id.clone()),
-                x_grok_req_id: Some(format!("xai-flush-{}", uuid::Uuid::new_v4())),
+                x_grok_conv_id: Some(format!("flush-{}", uuid::Uuid::new_v4())),
+                x_grok_req_id: Some(format!("agent-tui-flush-{}", uuid::Uuid::new_v4())),
                 x_grok_session_id: Some(session_id.clone()),
                 x_grok_agent_id: Some(agent_tui_telemetry::id::agent_id()),
                 ..Default::default()

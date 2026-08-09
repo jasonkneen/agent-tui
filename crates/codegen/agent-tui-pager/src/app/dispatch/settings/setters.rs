@@ -94,6 +94,46 @@ pub(super) fn set_hunk_tracker_mode_inner(app: &mut AppView, canonical: &str) {
     app.current_ui.hunk_tracker_mode = Some(canonical.to_string());
 }
 
+pub(super) fn set_screen_mode_inner(app: &mut AppView, canonical: &str) {
+    app.current_ui.screen_mode = Some(canonical.to_string());
+}
+
+/// Persist `[ui].screen_mode` (`fullscreen` | `minimal`). Restart-required.
+///
+/// Unset is *displayed* as Fullscreen but is not an explicit on-disk value —
+/// choosing Fullscreen when missing must still write, or legacy pager.toml /
+/// leaky-terminal paths can keep applying after the user confirmed Fullscreen.
+pub(in crate::app::dispatch) fn set_screen_mode(app: &mut AppView, value: String) -> Vec<Effect> {
+    let canonical = crate::settings::canonical_screen_mode(Some(&value));
+    let prev_raw = app.current_ui.screen_mode.as_deref();
+    let prev = crate::settings::canonical_screen_mode(prev_raw);
+    if screen_mode_raw_matches_canonical(prev_raw, canonical) {
+        return vec![];
+    }
+    set_screen_mode_inner(app, canonical);
+    refresh_open_settings_modals(app);
+    tracing::info!(target: "settings", key = "screen_mode", value = canonical, "setting changed");
+    app.show_toast(&format!(
+        "\u{2713} Screen mode: {canonical} (restart to apply)"
+    ));
+    vec![Effect::PersistSetting {
+        key: "screen_mode",
+        value: crate::settings::SettingValue::Enum(canonical),
+        rollback_value: crate::settings::SettingValue::Enum(prev),
+    }]
+}
+
+fn screen_mode_raw_matches_canonical(raw: Option<&str>, canonical: &str) -> bool {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    match canonical {
+        "minimal" => raw.eq_ignore_ascii_case("minimal"),
+        "fullscreen" => raw.eq_ignore_ascii_case("fullscreen") || raw.eq_ignore_ascii_case("full"),
+        _ => false,
+    }
+}
+
 /// Set the hunk-tracker mode (registry-driven path).
 ///
 /// SHELL-owned, restart-required: persists to `[ui].hunk_tracker_mode` via
@@ -150,6 +190,39 @@ pub(in crate::app::dispatch) fn set_voice_capture_mode(
         key: "voice_capture_mode",
         value: crate::settings::SettingValue::Enum(canonical),
         rollback_value: crate::settings::SettingValue::Enum(prev),
+    }]
+}
+
+/// Mirror the voice-shortcut gate into `app.current_ui` (read live by the
+/// event-loop chord intercept) and the process-global mirror (read by key
+/// routing / view code without an `AppView`). Called by the commit path AND by
+/// [`apply_setting_rollback`](super::ui::apply_setting_rollback).
+pub(super) fn set_voice_keybind_enabled_inner(app: &mut AppView, new: bool) {
+    app.current_ui.voice_keybind_enabled = Some(new);
+    crate::app::VOICE_KEYBIND_ENABLED.store(new, std::sync::atomic::Ordering::Release);
+}
+
+/// Enable/disable the Ctrl+Space / F8 voice shortcut. SHELL-owned; persists to
+/// `[ui].voice_keybind_enabled` via `Effect::PersistSetting`. Applies on the
+/// next keypress (no restart). Only the chord is gated — `/voice`, Esc while
+/// listening, and the recording-row `[stop]` keep working.
+pub(in crate::app::dispatch) fn set_voice_keybind_enabled(
+    app: &mut AppView,
+    new: bool,
+) -> Vec<Effect> {
+    let prev_state = app.current_ui.voice_keybind_enabled;
+    let prev_effective = prev_state.unwrap_or(true);
+    if prev_effective == new && prev_state.is_some() {
+        return vec![];
+    }
+    set_voice_keybind_enabled_inner(app, new);
+    refresh_open_settings_modals(app);
+    tracing::info!(target: "settings", key = "voice_keybind_enabled", value = new, "setting changed");
+    app.show_toast(&save_success_toast("Voice shortcut", new));
+    vec![Effect::PersistSetting {
+        key: "voice_keybind_enabled",
+        value: crate::settings::SettingValue::Bool(new),
+        rollback_value: crate::settings::SettingValue::Bool(prev_effective),
     }]
 }
 
@@ -1135,6 +1208,21 @@ pub(in crate::app::dispatch) fn set_contextual_hint_word_select(
     )
 }
 
+pub(in crate::app::dispatch) fn set_contextual_hint_ssh_wrap(
+    app: &mut AppView,
+    new: bool,
+) -> Vec<Effect> {
+    let prev = app.current_ui.contextual_hints.ssh_wrap;
+    set_contextual_hint(
+        app,
+        "contextual_hints.ssh_wrap",
+        "SSH wrap hint",
+        prev,
+        |h, v| h.ssh_wrap = v,
+        new,
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Theme settings: `theme`, `auto_dark_theme`, `auto_light_theme`.
 //
@@ -1577,67 +1665,6 @@ pub(in crate::app::dispatch) fn set_default_model(
     app: &mut AppView,
     new_id: acp::ModelId,
 ) -> Vec<Effect> {
-    // External runtimes: selection is local (runtime.toml), not Grok ACP.
-    let external = crate::runtime_backend::active();
-    if matches!(
-        external,
-        crate::runtime_backend::RuntimeBackend::Codex
-            | crate::runtime_backend::RuntimeBackend::Claude
-            | crate::runtime_backend::RuntimeBackend::Lazar
-            | crate::runtime_backend::RuntimeBackend::Hermes
-    ) {
-        let label = external.as_str();
-        let ActiveView::Agent(aid) = app.active_view else {
-            return vec![];
-        };
-        let display = {
-            let Some(agent) = app.agents.get_mut(&aid) else {
-                return vec![];
-            };
-            if !agent.session.models.available.contains_key(&new_id) {
-                app.show_toast(&format!(
-                    "Unknown {label} model (try /runtime {label} to refresh)"
-                ));
-                return vec![];
-            }
-            if agent.session.models.current.as_ref() == Some(&new_id) {
-                return vec![];
-            }
-            let display = agent.session.models.display_name_for(&new_id);
-            agent.session.models.set_current(new_id.clone(), None);
-            agent.scrollback.push_block(
-                crate::scrollback::block::RenderBlock::system(format!(
-                    "{label} model → {display}"
-                )),
-            );
-            display
-        };
-        if app.models.available.contains_key(&new_id) {
-            app.models.set_current(new_id.clone(), None);
-        }
-        let save = match external {
-            crate::runtime_backend::RuntimeBackend::Codex => {
-                crate::runtime_backend::set_codex_model(new_id.0.as_ref())
-            }
-            crate::runtime_backend::RuntimeBackend::Claude => {
-                crate::runtime_backend::set_claude_model(new_id.0.as_ref())
-            }
-            crate::runtime_backend::RuntimeBackend::Lazar => {
-                crate::runtime_backend::set_lazar_model(new_id.0.as_ref())
-            }
-            crate::runtime_backend::RuntimeBackend::Hermes => {
-                crate::runtime_backend::set_hermes_model(new_id.0.as_ref())
-            }
-            crate::runtime_backend::RuntimeBackend::Grok => Ok(()),
-        };
-        if let Err(e) = save {
-            app.show_toast(&format!("Couldn't save {label} model: {e}"));
-            return vec![];
-        }
-        app.show_toast(&format!("{label} model: {display}"));
-        return vec![];
-    }
-
     let ActiveView::Agent(aid) = app.active_view else {
         tracing::error!(
             target: "settings",

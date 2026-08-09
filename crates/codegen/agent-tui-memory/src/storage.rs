@@ -22,7 +22,7 @@ pub enum MemoryScope {
 ///
 /// Memory files are human-readable/editable Markdown stored under
 /// `~/.grok/memory/`. Workspace-scoped files live under a directory
-/// named `{project-slug}-{hash8}`, e.g. `~/.grok/memory/xai-a3f7b2c9/`.
+/// named `{project-slug}-{hash8}`, e.g. `~/.grok/memory/agent-tui-a3f7b2c9/`.
 #[derive(Debug, Clone)]
 pub struct MemoryStorage {
     /// `~/.grok/memory/`

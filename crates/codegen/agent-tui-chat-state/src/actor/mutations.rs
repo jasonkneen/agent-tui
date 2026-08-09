@@ -109,6 +109,37 @@ impl ChatStateActor {
         report
     }
 
+    /// Make memory match the disk-authoritative switch for one generation.
+    pub(super) fn converge_working_directory_switch(
+        &mut self,
+        generation: u64,
+        authoritative: ConversationItem,
+    ) {
+        let existing = self
+            .state
+            .conversation
+            .iter_mut()
+            .find(|item| item.working_directory_switch_generation() == Some(generation));
+        if let Some(existing) = existing {
+            let old_tokens = super::state::estimate_item_tokens(existing);
+            let new_tokens = super::state::estimate_item_tokens(&authoritative);
+            self.state.estimated_tokens_since_model = if new_tokens >= old_tokens {
+                self.state
+                    .estimated_tokens_since_model
+                    .saturating_add(new_tokens - old_tokens)
+            } else {
+                self.state
+                    .estimated_tokens_since_model
+                    .saturating_sub(old_tokens - new_tokens)
+            };
+            *existing = authoritative;
+        } else {
+            self.state.estimated_tokens_since_model +=
+                super::state::estimate_item_tokens(&authoritative);
+            self.state.conversation.push(authoritative);
+        }
+    }
+
     /// Push any conversation item (user, assistant, or tool result) and persist it.
     pub(super) fn push_message(&mut self, item: ConversationItem) {
         let count_in_delta = !matches!(item, ConversationItem::Assistant(_));
@@ -459,16 +490,6 @@ impl ChatStateActor {
         debug_assert!(changed, "head mismatch must produce a change");
         self.replace_conversation(conversation, false);
         changed
-    }
-
-    /// Atomically replace the system head only while no inference output exists.
-    /// Returns `None` when existing model-produced history makes the mutation
-    /// unsafe, otherwise `Some(changed)`.
-    pub(super) fn replace_system_head_before_inference(&mut self, prompt: &str) -> Option<bool> {
-        if crate::conversation_util::has_inference_history(&self.state.conversation) {
-            return None;
-        }
-        Some(self.replace_system_head(prompt))
     }
 
     /// Restore all state fields from a snapshot.

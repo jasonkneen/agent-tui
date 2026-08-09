@@ -262,7 +262,7 @@ impl SessionActor {
         let model = setup.model.clone();
         let started_at = chrono::Utc::now().to_rfc3339();
         let x_grok_conv_id = format!("recap-{}", uuid::Uuid::new_v4());
-        let x_grok_req_id = format!("xai-recap-{}", uuid::Uuid::new_v4());
+        let x_grok_req_id = format!("agent-tui-recap-{}", uuid::Uuid::new_v4());
         // Clone the exact request items for the on-disk artifact (recap never
         // mutates conversation state, so this file is the only durable record).
         let chat_history_for_artifact = items.clone();
@@ -663,7 +663,7 @@ impl SessionActor {
             model: Some(model),
             temperature: None,
             x_grok_conv_id: Some(format!("promptsuggest-{}", uuid::Uuid::new_v4())),
-            x_grok_req_id: Some(format!("xai-promptsuggest-{}", uuid::Uuid::new_v4())),
+            x_grok_req_id: Some(format!("agent-tui-promptsuggest-{}", uuid::Uuid::new_v4())),
             x_grok_session_id: Some(self.session_info.id.to_string()),
             x_grok_agent_id: Some(agent_tui_telemetry::id::agent_id()),
             ..Default::default()

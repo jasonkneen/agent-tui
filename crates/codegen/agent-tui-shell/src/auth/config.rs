@@ -22,6 +22,8 @@ fn default_oauth2_scopes() -> Vec<String> {
         "api:access".into(),
         "conversations:read".into(),
         "conversations:write".into(),
+        "workspaces:read".into(),
+        "workspaces:write".into(),
     ]
 }
 fn default_team_oauth2_scopes() -> Vec<String> {
@@ -33,6 +35,8 @@ fn default_team_oauth2_scopes() -> Vec<String> {
         "team:read".into(),
         "conversations:read".into(),
         "conversations:write".into(),
+        "workspaces:read".into(),
+        "workspaces:write".into(),
     ]
 }
 /// Pin automatic auth to one method (`[auth] preferred_method` in config.toml).
@@ -171,7 +175,7 @@ pub(crate) fn use_local_auth() -> bool {
 }
 /// Returns the active xAI OAuth2 issuer — the local-dev issuer when
 /// `GROK_LOCAL_AUTH=1` is set, otherwise the production issuer.
-pub fn xai_oauth2_issuer() -> &'static str {
+pub fn agent_tui_oauth2_issuer() -> &'static str {
     if use_local_auth() {
         XAI_OAUTH2_LOCAL_ISSUER
     } else {
@@ -271,7 +275,7 @@ impl Default for GrokComConfig {
         } else {
             Some(
                 OAuth2ProviderConfig::from_env().unwrap_or_else(|| OAuth2ProviderConfig {
-                    issuer: xai_oauth2_issuer().to_owned(),
+                    issuer: agent_tui_oauth2_issuer().to_owned(),
                     client_id: obfstr::obfstr!("b1a00492-073a-47ea-816f-4c329264a828").to_owned(),
                     scopes: default_oauth2_scopes(),
                     principal_type: None,
@@ -381,7 +385,7 @@ mod tests {
         assert_eq!(PROD_ACCOUNTS_APP_ORIGINS, &["https://accounts.x.ai"]);
         assert_eq!(allowed_accounts_app_origins(), PROD_ACCOUNTS_APP_ORIGINS);
     }
-    /// FROZEN client contract: the 8 scopes the xAI OAuth2 client requests.
+    /// FROZEN client contract: the 10 scopes the xAI OAuth2 client requests.
     /// The server must keep accepting all of them; existing tokens carry
     /// exactly this set. Frozen OAuth client scope contract.
     #[test]
@@ -399,6 +403,8 @@ mod tests {
                 "api:access",
                 "conversations:read",
                 "conversations:write",
+                "workspaces:read",
+                "workspaces:write",
             ]
         );
     }

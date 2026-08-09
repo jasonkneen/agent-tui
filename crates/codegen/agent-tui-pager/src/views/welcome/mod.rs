@@ -11,6 +11,8 @@ use ratatui::layout::{Alignment, Constraint, Flex, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::app_view::{AuthMode, AuthState, SessionPickerEntry, TrustState};
 use crate::startup::StartupWarning;
@@ -453,7 +455,7 @@ pub(super) fn render_version_badge(
     match &mode {
         VersionBadgeMode::Full { .. } => {
             spans.push(Span::styled(
-                format!("{}  ", crate::product_profile::display_name()),
+                "Grok Build  ",
                 Style::default()
                     .fg(theme.text_primary)
                     .add_modifier(Modifier::BOLD),
@@ -473,7 +475,7 @@ pub(super) fn render_version_badge(
         }
         VersionBadgeMode::HeroInline => {
             spans.push(Span::styled(
-                format!("{} Beta  ", crate::product_profile::display_name()),
+                "Grok Build  ",
                 Style::default()
                     .fg(theme.text_primary)
                     .add_modifier(Modifier::BOLD),
@@ -602,7 +604,8 @@ pub struct WelcomeRenderParams<'a> {
     pub trust_state: &'a TrustState,
     pub login_label: Option<&'a str>,
     pub auth_code_input: &'a str,
-    pub clipboard_copied: bool,
+    pub auth_code_cursor_byte: usize,
+    pub clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
     pub show_raw_url: bool,
     pub announcement: Option<&'a agent_tui_announcements::RemoteAnnouncement>,
     pub tip: Option<&'a str>,
@@ -633,11 +636,11 @@ pub struct WelcomeRenderParams<'a> {
     pub gate: Option<&'a agent_tui_shell::auth::GateInfo>,
     pub subscription_tier: Option<&'a str>,
     pub session_picker_grouped: bool,
-    /// Source filter (local/remote/all) for the session picker.
+    /// Source filter for the session picker.
     pub session_picker_source_filter: crate::views::session_picker::SourceFilter,
     pub session_picker_pending_delete: bool,
     /// Process-wide `--chat`: the picker lists backend conversations only, so
-    /// the Local/Remote source filter and local deep search are hidden.
+    /// the source filter and local deep search are hidden.
     pub chat_mode: bool,
     /// Live working directory (tracks `Effect::SetWorkingDir`), used to pin
     /// the current repo's session group to the top of the picker.
@@ -646,7 +649,7 @@ pub struct WelcomeRenderParams<'a> {
     pub credit_balance: Option<&'a crate::views::credit_bar::CreditBalance>,
     /// Auto top-up rule paired with `credit_balance` for the welcome warning.
     pub auto_topup: Option<&'a crate::views::credit_bar::AutoTopupInfo>,
-    /// Whether /usage is visible (false for team users — suppresses the warning).
+    /// Consumer billing surface (false for team / API-key — no credit warning).
     pub usage_visible: bool,
     /// Cached changelog bullets for the welcome screen (up to 3).
     pub changelog_bullets: &'a [String],
@@ -747,7 +750,8 @@ pub fn render_welcome(
                 auth_url.as_deref(),
                 *mode,
                 params.auth_code_input,
-                params.clipboard_copied,
+                params.auth_code_cursor_byte,
+                params.clipboard_delivery,
                 params.show_raw_url,
             );
             WelcomeRenderResult {
@@ -762,7 +766,7 @@ pub fn render_welcome(
                 content_area,
                 buf,
                 Some((
-                    "Agent TUI is not yet available for this account.",
+                    "Grok Build is not yet available for this account.",
                     theme.gray_bright,
                 )),
                 &menu,
@@ -908,7 +912,7 @@ fn render_welcome_blocked(
 
 /// Render the folder-trust question. Mirrors [`render_welcome_blocked`]'s
 /// stacked layout (logo + message + menu + version badge), but the message is a
-/// multi-line block showing the workspace path and the warning that Agent TUI
+/// multi-line block showing the workspace path and the warning that Grok Build
 /// may run or modify contents in this directory (a security risk). The y/N
 /// answer is handled by the welcome input interceptor, so this only paints;
 /// `menu_rects` are returned for parity with the other welcome arms.
@@ -937,7 +941,7 @@ fn render_welcome_trust(
         // Two lines so the warning never clips at narrow / compact widths
         // (a single ~78-char line would truncate "...posing security risks").
         Line::from(Span::styled(
-            "Agent TUI may run or modify contents in this directory,",
+            "Grok Build may run or modify contents in this directory,",
             Style::default().fg(theme.gray),
         ))
         .alignment(Alignment::Center),
@@ -1052,18 +1056,30 @@ fn auth_fallback_line(theme: &Theme) -> Line<'static> {
     .alignment(Alignment::Center)
 }
 
-/// Push the shared copy-prompt block: the "click here to copy" line, a "copied!"
-/// slot (kept blank when not copied so the height is stable), and the
-/// show-full-URL fallback link.
-fn push_auth_copy_block(lines: &mut Vec<Line<'static>>, theme: &Theme, clipboard_copied: bool) {
+/// Push the shared copy-prompt block, stable feedback slot, and raw-URL fallback.
+fn push_auth_copy_block(
+    lines: &mut Vec<Line<'static>>,
+    theme: &Theme,
+    clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
+) {
     lines.push(Line::default());
     lines.push(auth_copy_line(theme));
     lines.push(Line::default());
-    lines.push(if clipboard_copied {
-        Line::from(Span::styled("copied!", Style::default().fg(theme.gray)))
-            .alignment(Alignment::Center)
-    } else {
-        Line::default()
+    lines.push(match clipboard_delivery {
+        Some(crate::clipboard::ClipboardDelivery::Confirmed) => {
+            Line::from(Span::styled("copied!", Style::default().fg(theme.gray)))
+                .alignment(Alignment::Center)
+        }
+        Some(crate::clipboard::ClipboardDelivery::Unverified) => Line::from(Span::styled(
+            "copy sent—verify paste",
+            Style::default().fg(theme.gray),
+        ))
+        .alignment(Alignment::Center),
+        Some(crate::clipboard::ClipboardDelivery::Failed) => {
+            Line::from(Span::styled("copy failed", Style::default().fg(theme.gray)))
+                .alignment(Alignment::Center)
+        }
+        None => Line::default(),
     });
     lines.push(Line::default());
     lines.push(auth_fallback_line(theme));
@@ -1221,7 +1237,7 @@ fn render_browser_status_arm(
     logo_line_count: u16,
     auth_url: Option<&str>,
     show_raw_url: bool,
-    clipboard_copied: bool,
+    clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
     kind: BrowserStatusKind,
 ) -> (Option<Rect>, Option<Rect>) {
     let h_pad: u16 = content_area.width / 6;
@@ -1293,7 +1309,7 @@ fn render_browser_status_arm(
         );
     }
     if auth_url.is_some() {
-        push_auth_copy_block(&mut lines, theme, clipboard_copied);
+        push_auth_copy_block(&mut lines, theme, clipboard_delivery);
     }
     lines.push(Line::default());
     lines.push(
@@ -1327,7 +1343,8 @@ fn render_welcome_authenticating(
     auth_url: Option<&str>,
     mode: AuthMode,
     auth_code_input: &str,
-    clipboard_copied: bool,
+    auth_code_cursor_byte: usize,
+    clipboard_delivery: Option<crate::clipboard::ClipboardDelivery>,
     show_raw_url: bool,
 ) -> (Option<Rect>, Option<Rect>) {
     let top_pad = content_area.height.saturating_sub(logo_line_count) / 10;
@@ -1380,7 +1397,7 @@ fn render_welcome_authenticating(
                     ))
                     .alignment(Alignment::Center),
                 );
-                push_auth_copy_block(&mut lines, theme, clipboard_copied);
+                push_auth_copy_block(&mut lines, theme, clipboard_delivery);
             } else {
                 lines.push(
                     Line::from(Span::styled(
@@ -1410,7 +1427,13 @@ fn render_welcome_authenticating(
             ])
             .flex(Flex::Center)
             .areas(prompt_area);
-            render_auth_input_box(prompt_centered, buf, theme, auth_code_input);
+            render_auth_input_box(
+                prompt_centered,
+                buf,
+                theme,
+                auth_code_input,
+                auth_code_cursor_byte,
+            );
 
             // Hints
             let mut hint_spans = vec![
@@ -1437,7 +1460,7 @@ fn render_welcome_authenticating(
             logo_line_count,
             auth_url,
             show_raw_url,
-            clipboard_copied,
+            clipboard_delivery,
             BrowserStatusKind::Command,
         ),
 
@@ -1449,7 +1472,7 @@ fn render_welcome_authenticating(
             logo_line_count,
             auth_url,
             show_raw_url,
-            clipboard_copied,
+            clipboard_delivery,
             BrowserStatusKind::Device,
         ),
 
@@ -1663,8 +1686,9 @@ fn render_welcome_done(
 
     // Heights that don't depend on the menu — computed first so the menu
     // builder can probe the layout to decide whether to add a Changelog row.
-    // Startup-warning hint height (multi-line aware).
-    let hint_height = p.startup_warnings.first().map_or(0u16, |w| {
+    // Startup-warning hint height (multi-line aware). Must pick the same
+    // entry `render_startup_warnings` draws — see `startup::banner_warning`.
+    let hint_height = crate::startup::banner_warning(p.startup_warnings).map_or(0u16, |w| {
         let msg_lines = w.message.lines().count() as u16;
         let action_line = if w.action.is_some() { 1 } else { 0 };
         msg_lines + action_line + 1 // +1 for buffer spacing
@@ -1765,7 +1789,16 @@ fn render_welcome_done(
         if p.session_picker_loading {
             1
         } else {
-            (picker_count as u16).min(15) + 3 // +3 for title + search + gap
+            // Reserve a row for the pinned hidden-external hint when shown.
+            let hint_row = u16::from(
+                !p.chat_mode
+                    && crate::views::session_picker::hidden_external_hint(
+                        p.session_picker,
+                        p.session_picker_source_filter,
+                    )
+                    .is_some(),
+            );
+            (picker_count as u16).min(15) + 3 + hint_row // +3 for title + search + gap
         }
     } else {
         0
@@ -2076,6 +2109,7 @@ fn render_welcome_done(
         } else if let Some(ver) = p.pending_update_version
             && layout.tip.height > 0
         {
+            // Background update notification in the tip area.
             let [_, tip_centered, _] = Layout::horizontal([
                 Constraint::Min(0),
                 Constraint::Length(content_area.width),
@@ -2110,7 +2144,8 @@ fn render_welcome_done(
 
         // Recent foreign session: offer a one-click resume in the tip area
         // (only when no update is pending — the update shares ctrl+u and wins).
-        if p.pending_update_version.is_none()
+        if !p.privacy_banner
+            && p.pending_update_version.is_none()
             && let Some(hint) = p.foreign_resume_hint
             && layout.tip.height > 0
         {
@@ -2171,8 +2206,11 @@ fn render_welcome_done(
             p.prompt_focus,
             prompt,
             &usage_info,
-            if p.pending_update_version.is_some() || p.foreign_resume_hint.is_some() {
-                // Update/resume tip already rendered above with custom styling.
+            if p.privacy_banner
+                || p.pending_update_version.is_some()
+                || p.foreign_resume_hint.is_some()
+            {
+                // Banner/update/resume tip already rendered above with custom styling.
                 None
             } else {
                 p.tip
@@ -2234,7 +2272,7 @@ pub(crate) struct SessionPickerRenderCtx<'a> {
     pub(crate) tick: u64,
     /// When true, entries are grouped by `repo_name` with non-selectable headers.
     pub(crate) grouped: bool,
-    /// Source filter (local/remote/all) for filtering session entries.
+    /// Source filter for filtering session entries.
     pub(crate) source_filter: crate::views::session_picker::SourceFilter,
     pub(crate) pending_delete: bool,
     /// Process-wide `--chat`: hides the source-filter chip and the
@@ -2267,7 +2305,7 @@ pub(crate) fn render_session_picker(
     // this render disagrees with `handle_welcome_input`'s `build_entry_map`
     // (which receives the effective query) on row indices.
     let filter_query =
-        crate::views::session_picker::effective_filter_query(&ctx.state.query, ctx.entries_query);
+        crate::views::session_picker::effective_filter_query(ctx.state.query(), ctx.entries_query);
     let filtered_indices =
         crate::app::app_view::filter_session_entries(ctx.sessions, filter_query, ctx.source_filter);
 
@@ -2403,6 +2441,12 @@ pub(crate) fn render_session_picker(
         }));
     }
 
+    let hidden_hint = if ctx.chat_mode {
+        None
+    } else {
+        crate::views::session_picker::hidden_external_hint(ctx.sessions, ctx.source_filter)
+    };
+
     // Build shortcuts for fullscreen mode. Chat mode drops the worktree /
     // deep-search / filter hints (local-Build-row actions).
     let worktree_shortcut: &'static str = "ctrl+w";
@@ -2495,11 +2539,18 @@ pub(crate) fn render_session_picker(
         &picker_entries,
         &config,
         ctx.loading,
+        ctx.tick,
     )
 }
 
 /// Render the auth token input box (loopback mode).
-fn render_auth_input_box(area: Rect, buf: &mut Buffer, theme: &Theme, input: &str) {
+fn render_auth_input_box(
+    area: Rect,
+    buf: &mut Buffer,
+    theme: &Theme,
+    input: &str,
+    cursor_byte: usize,
+) {
     let prompt_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.accent_user))
@@ -2513,7 +2564,11 @@ fn render_auth_input_box(area: Rect, buf: &mut Buffer, theme: &Theme, input: &st
     prompt_block.render(area, buf);
 
     if inner.height > 0 && inner.width > 2 {
-        let display = mask_auth_token_for_display(input);
+        let prompt = crate::glyphs::prompt_arrow();
+        let prompt_width = prompt.width() as u16;
+        let input_width = inner.width.saturating_sub(prompt_width);
+        let (display, cursor_column) =
+            masked_auth_token_view(input, cursor_byte, input_width as usize);
 
         let style = if input.is_empty() {
             Style::default().fg(theme.gray_dim)
@@ -2522,32 +2577,35 @@ fn render_auth_input_box(area: Rect, buf: &mut Buffer, theme: &Theme, input: &st
         };
 
         let line = Line::from(vec![
-            Span::styled(
-                crate::glyphs::prompt_arrow(),
-                Style::default().fg(theme.accent_user),
-            ),
+            Span::styled(prompt, Style::default().fg(theme.accent_user)),
             Span::styled(display, style),
         ]);
         buf.set_line(inner.x, inner.y, &line, inner.width);
+        if input_width > 0 {
+            let cursor_x = inner.x + prompt_width + cursor_column as u16;
+            if let Some(cell) = buf.cell_mut((cursor_x, inner.y)) {
+                cell.set_style(Style::default().fg(theme.bg_base).bg(theme.text_primary));
+            }
+        }
     }
 }
 
-/// Render the first startup warning centered in the given area.
+/// Render one startup warning centered in the given area.
 ///
 /// `startup_warnings` can hold more than one entry (the WezTerm
 /// kitty-keyboard banner is prepended ahead of `summarize_warnings()`
-/// output — see `diagnostics::assemble_startup_warnings`), but only the
-/// first is rendered; all of them point at `/terminal-setup`, which lists
-/// every issue. One message line, one optional action line, plus a buffer
-/// row for spacing. Severity controls color (yellow for `Warning`, dim
-/// for `Info`).
+/// output — see `diagnostics::assemble_startup_warnings`), but only one is
+/// rendered — the severity-aware pick from `startup::banner_warning`, so a
+/// runtime-pushed Warning displaces an earlier Info entry. One message line,
+/// one optional action line, plus a buffer row for spacing.
+/// Severity controls color (yellow for `Warning`, dim for `Info`).
 fn render_startup_warnings(
     area: Rect,
     buf: &mut Buffer,
     theme: &Theme,
     warnings: &[StartupWarning],
 ) -> Option<Rect> {
-    let w = warnings.first()?;
+    let w = crate::startup::banner_warning(warnings)?;
 
     // Skip the import-claude startup warning entirely — the import row in the
     // menu now carries the call-to-action with the same visual weight as
@@ -2577,20 +2635,48 @@ fn render_startup_warnings(
     None
 }
 
-fn mask_auth_token_for_display(input: &str) -> String {
-    use crate::render::line_utils::floor_char_boundary;
+fn auth_token_grapheme_visible(index: usize, total: usize) -> bool {
+    total <= 8 || index + 4 >= total
+}
 
+struct MaskedAuthToken {
+    display: String,
+    cursor_byte: usize,
+}
+
+fn build_masked_auth_token(input: &str, cursor_byte: usize) -> MaskedAuthToken {
+    let graphemes: Vec<(usize, &str)> = input.grapheme_indices(true).collect();
+    let total = graphemes.len();
+    let mut display = String::new();
+    let mut mapped_cursor = None;
+    for (index, (byte, grapheme)) in graphemes.into_iter().enumerate() {
+        if byte == cursor_byte {
+            mapped_cursor = Some(display.len());
+        }
+        if auth_token_grapheme_visible(index, total) {
+            display.push_str(grapheme);
+        } else {
+            display.push('\u{2022}');
+        }
+    }
+    MaskedAuthToken {
+        cursor_byte: mapped_cursor.unwrap_or(display.len()),
+        display,
+    }
+}
+
+fn masked_auth_token_view(input: &str, cursor_byte: usize, width: usize) -> (String, usize) {
     if input.is_empty() {
-        return "Paste your token here...".to_string();
+        return ("Paste your token here...".to_string(), 0);
     }
-    let len = input.len();
-    if len <= 8 {
-        return input.to_string();
-    }
-    let boundary = floor_char_boundary(input, len - 4);
-    let visible = &input[boundary..];
-    let masked_count = input[..boundary].chars().count();
-    format!("{}{}", "\u{2022}".repeat(masked_count), visible)
+    let masked = build_masked_auth_token(input, cursor_byte);
+    let buffer =
+        agent_tui_ratatui_textarea::EditBuffer::from_parts(masked.display.as_str(), masked.cursor_byte);
+    let viewport = buffer.single_line_viewport(width);
+    (
+        masked.display[viewport.visible_byte_range].to_owned(),
+        viewport.cursor_display_column,
+    )
 }
 
 #[cfg(test)]
@@ -2640,17 +2726,97 @@ mod tests {
     }
 
     #[test]
-    fn mask_auth_token_cases() {
-        assert_eq!(mask_auth_token_for_display(""), "Paste your token here...");
-        assert_eq!(mask_auth_token_for_display("12345678"), "12345678");
+    fn auth_copy_feedback_covers_delivery_states() {
+        let theme = Theme::current();
+        for (delivery, expected) in [
+            (crate::clipboard::ClipboardDelivery::Confirmed, "copied!"),
+            (
+                crate::clipboard::ClipboardDelivery::Unverified,
+                "copy sent—verify paste",
+            ),
+            (crate::clipboard::ClipboardDelivery::Failed, "copy failed"),
+        ] {
+            let mut lines = Vec::new();
+            push_auth_copy_block(&mut lines, &theme, Some(delivery));
+            let feedback = lines[3]
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            assert_eq!(feedback, expected);
+        }
+    }
 
-        let masked = mask_auth_token_for_display("abcdefghij");
-        assert!(masked.ends_with("ghij"));
-        assert!(masked.starts_with("\u{2022}"));
+    #[test]
+    fn masked_auth_token_preserves_reveal_policy() {
+        assert_eq!(
+            masked_auth_token_view("", 0, 24),
+            ("Paste your token here...".to_string(), 0)
+        );
+        assert_eq!(build_masked_auth_token("12345678", 8).display, "12345678");
+        assert_eq!(build_masked_auth_token("123456789", 9).display, "•••••6789");
 
-        // Regression: multi-byte input panicked on byte-index slicing
-        let masked = mask_auth_token_for_display("测试令牌一二三四五六");
-        assert!(masked.starts_with("\u{2022}"));
+        let input = "abcdefghMIDDLEwxyz";
+        let masked = build_masked_auth_token(input, input.len()).display;
+        assert!(masked.starts_with("••••"));
+        assert!(masked.ends_with("wxyz"));
+        assert!(!masked.contains("MIDDLE"));
+        assert!(masked.contains("\u{2022}"));
+
+        let input = "测试令牌一二三四五六七八九十";
+        let masked = build_masked_auth_token(input, input.len()).display;
+        assert!(masked.starts_with("••••"));
+        assert!(masked.contains("\u{2022}"));
+    }
+
+    #[test]
+    fn masked_auth_mapping_handles_zero_width_combining_and_zwj_middle() {
+        let prefix = "abcdefgh";
+        let hidden = "\u{200b}e\u{301}👩🏽\u{200d}💻MID";
+        let suffix = "wxyz";
+        let token = format!("{prefix}{hidden}{suffix}");
+        let before = prefix.len();
+        let inside = prefix.len() + "\u{200b}e\u{301}".len();
+        let after = prefix.len() + hidden.len();
+        let expected = format!("{}{}", "\u{2022}".repeat(14), suffix);
+
+        let before_masked = build_masked_auth_token(&token, before);
+        let inside_masked = build_masked_auth_token(&token, inside);
+        let after_masked = build_masked_auth_token(&token, after);
+        assert_eq!(before_masked.display, expected);
+        assert_eq!(inside_masked.display, expected);
+        assert_eq!(after_masked.display, expected);
+        assert_eq!(before_masked.cursor_byte, "\u{2022}".len() * 8);
+        assert_eq!(inside_masked.cursor_byte, "\u{2022}".len() * 10);
+        assert_eq!(after_masked.cursor_byte, "\u{2022}".len() * 14);
+
+        for width in [1, 2, 5] {
+            for cursor in [before, inside, after] {
+                let (view, cursor_column) = masked_auth_token_view(&token, cursor, width);
+                assert!(view.width() <= width);
+                assert!(cursor_column < width);
+                assert!(!view.contains('\u{200b}'));
+                assert!(!view.contains("e\u{301}"));
+                assert!(!view.contains("👩🏽\u{200d}💻"));
+                assert!(!view.contains("MID"));
+            }
+        }
+
+        let wide_prefix = "中bcdefgh";
+        let wide_token = format!("{wide_prefix}HIDDEN{suffix}");
+        let (_, cursor_column) = masked_auth_token_view(&wide_token, wide_prefix.len(), 40);
+        assert_eq!(cursor_column, wide_prefix.graphemes(true).count());
+    }
+
+    #[test]
+    fn masked_auth_render_keeps_narrow_caret_visible() {
+        let token = "abcdefghSECRET-MIDDLEwxyz";
+        let cursor = "abcdefghSECRET".len();
+        let area = Rect::new(0, 0, 9, 3);
+        let theme = Theme::current();
+        let mut buffer = Buffer::empty(area);
+        render_auth_input_box(area, &mut buffer, &theme, token, cursor);
+        assert!((0..area.width).any(|x| buffer[(x, 1)].bg == theme.text_primary));
     }
 
     fn make_entry(id: &str, summary: &str, repo_name: &str) -> SessionPickerEntry {
@@ -2684,7 +2850,8 @@ mod tests {
             trust_state,
             login_label: None,
             auth_code_input: "",
-            clipboard_copied: false,
+            auth_code_cursor_byte: 0,
+            clipboard_delivery: None,
             show_raw_url: false,
             announcement: None,
             tip: None,
@@ -2875,10 +3042,8 @@ mod tests {
 
         let render = |entries_query: Option<&str>| -> String {
             let mut buf = Buffer::empty(area);
-            let mut state = PickerState {
-                query: "hit".into(),
-                ..PickerState::default()
-            };
+            let mut state = PickerState::default();
+            state.set_query("hit");
             render_session_picker(
                 area,
                 &mut buf,
@@ -3152,6 +3317,7 @@ mod tests {
             filter_label: None,
             filter_key_hint: None,
             filter_active: false,
+            header_note: None,
             action_keys: &[],
             disable_search: false,
             compact_bottom_bar: false,
@@ -3177,15 +3343,12 @@ mod tests {
         use crate::views::picker::{PickerOutcome, handle_picker_input};
         use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
-        let mut state = PickerState {
-            search_active: true,
-            ..PickerState::default()
-        };
+        let mut state = PickerState::input_active();
         let config = resume_picker_config();
         let ev = Event::Key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
         let outcome = handle_picker_input(&ev, &mut state, 3, &config);
-        assert!(matches!(outcome, PickerOutcome::Changed));
-        assert_eq!(state.query, "e");
+        assert!(matches!(outcome, PickerOutcome::QueryChanged));
+        assert_eq!(state.query(), "e");
     }
 
     #[test]
@@ -3699,8 +3862,9 @@ mod tests {
             logo_line_count(area.height),
             Some(url),
             AuthMode::Device,
-            "",    // auth_code_input — unused in device mode
-            false, // clipboard_copied
+            "", // auth_code_input — unused in device mode
+            0,
+            None,  // clipboard_delivery
             false, // show_raw_url
         );
 
@@ -3754,7 +3918,8 @@ mod tests {
             Some(url),
             AuthMode::Device,
             "",
-            false,
+            0,
+            None,
             true, // show_raw_url
         );
 
@@ -3780,7 +3945,8 @@ mod tests {
             Some(url),
             AuthMode::Device,
             "",
-            false,
+            0,
+            None,
             true, // show_raw_url
         );
 
@@ -3817,7 +3983,8 @@ mod tests {
             Some(url),
             AuthMode::Device,
             "",
-            false,
+            0,
+            None,
             true, // show_raw_url
         );
 
@@ -3855,8 +4022,9 @@ mod tests {
             logo_line_count(area.height),
             Some(url),
             AuthMode::Command,
-            "",    // auth_code_input — unused
-            false, // clipboard_copied
+            "", // auth_code_input — unused
+            0,
+            None,  // clipboard_delivery
             false, // show_raw_url
         );
 

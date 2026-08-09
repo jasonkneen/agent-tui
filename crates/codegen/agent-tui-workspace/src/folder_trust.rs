@@ -115,18 +115,57 @@ pub fn decide_inputs_with_interactive(
     }
 }
 
+/// Whether the whole folder-trust system is inert (auto-trusts everything) for
+/// this binary — true on a local/dev build (no `GROK_VERSION` release stamp).
+///
+/// THE single security short-circuit: every explicit trust auto-grant site calls
+/// this (greppable via `folder_trust_inert`). When true a self-built grok never
+/// prompts, never gates repo-local `.envrc`/`.claude`/hooks/plugins/MCP/LSP, and
+/// does NO `trusted_folders.toml` I/O. Release-stamped builds are unaffected.
+pub fn folder_trust_inert() -> bool {
+    is_local_build()
+}
+
+/// Whether this binary was built without a release version stamp
+/// (`GROK_VERSION` unset at compile time) — i.e. a local/dev build.
+///
+/// Kept local (not in `agent-tui-version`) on purpose: adding a symbol to that
+/// near-universal crate widens the rebuild/test fan-out for unrelated targets.
+/// `option_env!` resolves the same in any crate, so the
+/// location is behavior-neutral. Cross-crate callers use [`folder_trust_inert`].
+fn is_local_build() -> bool {
+    // Runtime escape hatch: a pinned GROK_TEST_VERSION simulates a release build,
+    // so tests/CI (which run unstamped, i.e. local-looking) can exercise the gate.
+    if std::env::var(agent_tui_version::TEST_VERSION_ENV).is_ok() {
+        return false;
+    }
+    option_env!("GROK_VERSION").is_none()
+}
+
 /// Resolve whether the folder-trust gate is enabled.
 ///
-/// The gate uses the same precedence in source-built and release-stamped
-/// binaries. A missing release stamp must never weaken the trust boundary: the
-/// README-supported `cargo run` path can open arbitrary third-party workspaces.
+/// On a local/dev build (no `GROK_VERSION` release stamp) the feature is OFF
+/// regardless of env/config/remote — a self-built grok auto-trusts (never
+/// prompts, never gates repo-local MCP/LSP). Folder-trust applies only to
+/// shipped, release-stamped binaries.
 ///
-/// Normal precedence (via `BoolFlag`):
+/// On a release-stamped build, normal precedence (via `BoolFlag`):
 /// env `GROK_FOLDER_TRUST` > `[folder_trust] enabled` (user) > managed >
 /// remote `folder_trust_enabled` > default **true** (on by default; the remote
 /// `folder_trust_enabled` kill-switch or a `[folder_trust] enabled = false`
 /// opt-out turns it back off).
 pub fn feature_enabled(remote: Option<&RemoteSettings>) -> bool {
+    feature_enabled_for_build(remote, is_local_build())
+}
+
+/// `feature_enabled` with the local-build flag fed in so both arms are unit-testable.
+fn feature_enabled_for_build(remote: Option<&RemoteSettings>, is_local_build: bool) -> bool {
+    // Local/dev builds never gate (auto-trust): folder-trust applies only to
+    // shipped, release-stamped binaries. Even an explicit GROK_FOLDER_TRUST/config
+    // opt-in is ignored here so a self-built grok never prompts.
+    if is_local_build {
+        return false;
+    }
     fn from_toml(v: Option<&TomlValue>) -> Option<bool> {
         v?.get("folder_trust")?.get("enabled")?.as_bool()
     }
@@ -147,6 +186,11 @@ pub fn feature_enabled(remote: Option<&RemoteSettings>) -> bool {
 /// same `~/.grok/trusted_folders.toml`. Best-effort; a write failure is logged,
 /// not fatal.
 pub fn grant_folder_trust(cwd: &Path) {
+    // Local/dev builds never gate, so there is nothing to grant: `--trust` is a
+    // no-op and the store is left untouched (the whole feature is inert).
+    if folder_trust_inert() {
+        return;
+    }
     persist_trust(&mut TrustStore::load(), &workspace_key(cwd));
 }
 
@@ -159,6 +203,10 @@ pub fn grant_folder_trust(cwd: &Path) {
 /// child DENY that poisons a future ancestor `set_trusted` cascade — so that
 /// write stays gated. Symmetric with [`grant_folder_trust`].
 pub fn revoke_folder_trust_store(cwd: &Path) -> bool {
+    // Local/dev builds never wrote the store, so there is nothing to revoke.
+    if folder_trust_inert() {
+        return false;
+    }
     let key = workspace_key(cwd);
     let mut store = TrustStore::load();
     let was_trusted = store.is_trusted(&key);
@@ -185,8 +233,8 @@ pub fn persist_trust(store: &mut TrustStore, key: &Path) {
     }
 }
 
-/// Whether any repo-local code-exec config is present for `cwd`. When none are
-/// present there is nothing to gate, so we skip the prompt entirely.
+/// Whether any repo-local trust-sensitive config is present for `cwd`. When none
+/// are present there is nothing to gate, so we skip the prompt entirely.
 ///
 /// Thin wrapper over [`collect_repo_config_kinds`] with `first_only = true`, so
 /// the gate and the display-only [`repo_config_kinds`] enumerate the EXACT same
@@ -196,14 +244,59 @@ pub fn repo_configs_present(cwd: &Path) -> bool {
     !collect_repo_config_kinds(cwd, true).is_empty()
 }
 
-/// Display-only: which repo-local code-exec config KINDS are present for `cwd`
-/// (`mcp`, `plugins`, `lsp`, `envrc`, `claude`, `hooks`, `agents`), deduped in
-/// cheap→expensive marker order. Single source with [`repo_configs_present`]
-/// (which is `!repo_config_kinds(cwd).is_empty()`), so a folder that the gate
-/// fired on always has a non-empty, accurate kind list — no `[plugins].paths` /
-/// `.claude` / `.grok/agents` / subdir-launch gaps. NOT itself the trust gate.
+/// Display-only: which repo-local trust-sensitive config KINDS are present for
+/// `cwd` (`mcp`, `plugins`, `permission`, `lsp`, `envrc`, `claude`, `hooks`,
+/// `agents`, `roles`, `personas`, `workflows`), deduped in cheap→expensive
+/// marker order. Single source with [`repo_configs_present`] (which is
+/// `!repo_config_kinds(cwd).is_empty()`), so a folder that the gate fired on
+/// always has a non-empty, accurate kind list — no `[plugins].paths` /
+/// `[permission]` / `.claude` / `.grok/agents` / subdir-launch gaps. NOT itself
+/// the trust gate.
 pub fn repo_config_kinds(cwd: &Path) -> Vec<&'static str> {
     collect_repo_config_kinds(cwd, false)
+}
+
+/// Whether a project `.grok/config.toml` `[permission]` value would contribute
+/// rules to the permission resolver. Mirrors the compact/verbose shapes that
+/// `permission::resolution` loads: non-empty `allow`/`deny`/`ask` string arrays,
+/// or a non-empty verbose `rules` array. Empty arrays / empty tables do not gate
+/// (same as empty `[mcp_servers]` / empty `[plugins].paths`).
+fn config_toml_permission_contributes(permission_value: &TomlValue) -> bool {
+    let Some(table) = permission_value.as_table() else {
+        // Non-table `[permission]` fails config load elsewhere; treat as a
+        // marker so a malicious non-table still trips the gate rather than
+        // resolving trusted.
+        return true;
+    };
+    for key in ["deny", "allow", "ask"] {
+        if table
+            .get(key)
+            .and_then(|v| v.as_array())
+            .is_some_and(|a| !a.is_empty())
+        {
+            return true;
+        }
+    }
+    table
+        .get("rules")
+        .and_then(|v| v.as_array())
+        .is_some_and(|a| !a.is_empty())
+}
+
+fn path_present_or_uncertain(path: &Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => true,
+    }
+}
+
+fn directory_present_or_uncertain(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(metadata) => metadata.is_dir(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => true,
+    }
 }
 
 /// Shared scanner behind [`repo_configs_present`] and [`repo_config_kinds`]. With
@@ -237,11 +330,13 @@ fn collect_repo_config_kinds(cwd: &Path, first_only: bool) -> Vec<&'static str> 
     if !crate::project_config::find_mcp_json_files_in(&chain.dirs).is_empty() {
         hit!("mcp");
     }
-    // Project `.grok/config.toml` declaring repo-controlled code-exec: a
-    // non-empty `[mcp_servers]` table OR a non-empty `[plugins].paths` array.
-    // `[plugins].paths` loads as auto-trusted ConfigPath plugins, so a clone
-    // whose ONLY repo-local config is `[plugins].paths` must still be gated
-    // (else it resolves Trusted and the paths merge runs ungated => RCE).
+    // Project `.grok/config.toml` declaring repo-controlled code-exec or
+    // permission policy: a non-empty `[mcp_servers]` table, a non-empty
+    // `[plugins].paths` array, OR a contributing `[permission]` section.
+    // `[plugins].paths` loads as auto-trusted ConfigPath plugins; `[permission]`
+    // allow/deny/ask rules auto-approve or block tools — a clone whose ONLY
+    // repo-local config is either must still be gated (else it resolves Trusted
+    // and the loader runs ungated).
     for path in crate::project_config::find_project_configs_in(&chain.dirs) {
         let Ok(root) = agent_tui_config::load_config_file(&path) else {
             continue;
@@ -255,11 +350,17 @@ fn collect_repo_config_kinds(cwd: &Path, first_only: bool) -> Vec<&'static str> 
             .and_then(|v| v.get("paths"))
             .and_then(|v| v.as_array())
             .is_some_and(|a| !a.is_empty());
+        let has_permission = root
+            .get("permission")
+            .is_some_and(config_toml_permission_contributes);
         if has_mcp_servers {
             hit!("mcp");
         }
         if has_plugin_paths {
             hit!("plugins");
+        }
+        if has_permission {
+            hit!("permission");
         }
     }
     // Project `.grok/lsp.json`.
@@ -297,7 +398,7 @@ fn collect_repo_config_kinds(cwd: &Path, first_only: bool) -> Vec<&'static str> 
     // resolve trusted and run ungated. Presence mirrors discovery's "something to
     // gate" check.
     let hook_root = chain.git_root.as_deref().unwrap_or(cwd);
-    if hook_root.join(".grok").join("hooks").is_dir()
+    if path_present_or_uncertain(&hook_root.join(".grok").join("hooks"))
         || hook_root.join(".cursor").join("hooks.json").is_file()
     {
         hit!("hooks");
@@ -318,6 +419,17 @@ fn collect_repo_config_kinds(cwd: &Path, first_only: bool) -> Vec<&'static str> 
     // can't drift from agent discovery — same pattern as the plugin line above.
     if !agent_tui_agent::discovery::project_agent_dirs_in(&chain.dirs).is_empty() {
         hit!("agents");
+    }
+    // Presence matches exact-cwd discovery without parsing repository content.
+    let grok = cwd.join(".grok");
+    if directory_present_or_uncertain(&grok.join("roles")) {
+        hit!("roles");
+    }
+    if directory_present_or_uncertain(&grok.join("personas")) {
+        hit!("personas");
+    }
+    if directory_present_or_uncertain(&hook_root.join(".grok").join("workflows")) {
+        hit!("workflows");
     }
     // `~/.claude.json` `projects.<cwd>.mcpServers`.
     if claude_project_mcp_present(cwd) {
@@ -539,6 +651,74 @@ mod tests {
     }
 
     #[test]
+    fn repo_configs_present_detects_project_roles() {
+        let tmp = repo_tmp();
+        std::fs::create_dir_all(tmp.path().join(".grok").join("roles")).unwrap();
+
+        assert!(repo_configs_present(tmp.path()));
+        assert!(repo_config_kinds(tmp.path()).contains(&"roles"));
+    }
+
+    #[test]
+    fn repo_configs_present_detects_project_personas() {
+        let tmp = repo_tmp();
+        std::fs::create_dir_all(tmp.path().join(".grok").join("personas")).unwrap();
+
+        assert!(repo_configs_present(tmp.path()));
+        assert!(repo_config_kinds(tmp.path()).contains(&"personas"));
+    }
+
+    #[test]
+    fn project_subagent_marker_regular_file_is_absent() {
+        let tmp = repo_tmp();
+        let grok = tmp.path().join(".grok");
+        std::fs::create_dir_all(&grok).unwrap();
+        std::fs::write(grok.join("roles"), "not a directory").unwrap();
+        assert!(!repo_configs_present(tmp.path()));
+    }
+
+    #[test]
+    fn project_subagent_marker_at_repo_root_is_absent_from_subdir() {
+        let tmp = repo_tmp();
+        std::fs::create_dir_all(tmp.path().join(".grok/roles")).unwrap();
+        let subdir = tmp.path().join("nested");
+        std::fs::create_dir_all(&subdir).unwrap();
+        assert!(!repo_configs_present(&subdir));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_subagent_marker_symlink_to_directory_is_present() {
+        let tmp = repo_tmp();
+        let target = tmp.path().join("target-roles");
+        let grok = tmp.path().join(".grok");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::create_dir_all(&grok).unwrap();
+        std::os::unix::fs::symlink(&target, grok.join("roles")).unwrap();
+        assert!(repo_configs_present(tmp.path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_project_subagent_marker_is_absent() {
+        let tmp = repo_tmp();
+        let grok = tmp.path().join(".grok");
+        std::fs::create_dir_all(&grok).unwrap();
+        std::os::unix::fs::symlink("missing", grok.join("personas")).unwrap();
+        assert!(!repo_configs_present(tmp.path()));
+    }
+
+    #[test]
+    fn repo_configs_present_detects_project_workflows_from_subdir() {
+        let tmp = repo_tmp();
+        std::fs::create_dir_all(tmp.path().join(".grok").join("workflows")).unwrap();
+        let subdir = tmp.path().join("crates").join("inner");
+        std::fs::create_dir_all(&subdir).unwrap();
+        assert!(repo_configs_present(&subdir));
+        assert!(repo_config_kinds(&subdir).contains(&"workflows"));
+    }
+
+    #[test]
     fn repo_configs_present_detects_claude_settings_from_subdir() {
         // A `.claude/settings.json` `env` in a SUBDIR (no other repo config),
         // launched from that subdir, must be detected: the env loader walks
@@ -559,6 +739,29 @@ mod tests {
         let tmp = repo_tmp();
         std::fs::create_dir_all(tmp.path().join(".grok").join("hooks")).unwrap();
         assert!(repo_configs_present(tmp.path()));
+    }
+
+    #[test]
+    fn repo_configs_present_detects_project_hooks_file() {
+        let tmp = repo_tmp();
+        let grok = tmp.path().join(".grok");
+        std::fs::create_dir_all(&grok).unwrap();
+        std::fs::write(grok.join("hooks"), "{}").unwrap();
+
+        assert!(repo_configs_present(tmp.path()));
+        assert!(repo_config_kinds(tmp.path()).contains(&"hooks"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repo_configs_present_detects_dangling_project_hooks_symlink() {
+        let tmp = repo_tmp();
+        let grok = tmp.path().join(".grok");
+        std::fs::create_dir_all(&grok).unwrap();
+        std::os::unix::fs::symlink("missing-hooks", grok.join("hooks")).unwrap();
+
+        assert!(repo_configs_present(tmp.path()));
+        assert!(repo_config_kinds(tmp.path()).contains(&"hooks"));
     }
 
     #[test]
@@ -628,6 +831,48 @@ mod tests {
     }
 
     #[test]
+    fn repo_configs_present_detects_grok_config_permission() {
+        // A repo whose ONLY repo-local config is a contributing `[permission]`
+        // section (no MCP/plugins/hooks) must still be gated: those allow rules
+        // auto-approve tool calls, so an ungated clone loads the attacker's
+        // policy. Also covers subdir launch (cwd→git-root walk).
+        let tmp = repo_tmp();
+        let grok = tmp.path().join(".grok");
+        std::fs::create_dir_all(&grok).unwrap();
+        std::fs::write(
+            grok.join("config.toml"),
+            "[permission]\nallow = [\"Bash(*)\"]\n",
+        )
+        .unwrap();
+        assert!(repo_configs_present(tmp.path()));
+        assert!(
+            repo_config_kinds(tmp.path()).contains(&"permission"),
+            "permission-only repo must report the permission kind"
+        );
+        let subdir = tmp.path().join("crates").join("inner");
+        std::fs::create_dir_all(&subdir).unwrap();
+        assert!(
+            repo_configs_present(&subdir),
+            "permission-only config at git root must gate subdir launches"
+        );
+    }
+
+    #[test]
+    fn repo_configs_present_false_for_empty_permission() {
+        // Empty allow/deny/ask arrays contribute no rules, so they must not
+        // trip the gate (mirrors empty `[mcp_servers]` / empty `[plugins].paths`).
+        let tmp = repo_tmp();
+        let grok = tmp.path().join(".grok");
+        std::fs::create_dir_all(&grok).unwrap();
+        std::fs::write(
+            grok.join("config.toml"),
+            "[permission]\nallow = []\ndeny = []\n",
+        )
+        .unwrap();
+        assert!(!repo_configs_present(tmp.path()));
+    }
+
+    #[test]
     fn repo_config_kinds_matches_gate_and_reports_all_kinds() {
         // SSOT guard: `repo_config_kinds` (full scan) must agree with the gate
         // (`repo_configs_present == !repo_config_kinds(..).is_empty()`) AND report
@@ -682,17 +927,18 @@ mod tests {
     // aliased here so the existing `EnvVarGuard::set/unset` call sites are unchanged.
     use crate::TestEnvGuard as EnvVarGuard;
 
-    /// Preserve the existing release-stamp test seam for tests that isolate
-    /// version-dependent behavior elsewhere. Folder trust itself no longer
-    /// changes behavior based on this stamp.
+    /// Simulate a release-stamped build so store I/O runs (a local/dev build makes
+    /// grant/revoke no-ops). Hold the returned guard for the test body.
     fn simulate_release_build() -> EnvVarGuard {
         EnvVarGuard::set(agent_tui_version::TEST_VERSION_ENV, Path::new("0.0.0-sim"))
     }
 
     #[test]
-    fn source_build_honors_remote_rollout() {
-        // Source builds use the same trust inputs as release builds. This test
-        // runs unstamped in normal development and must keep the gate enabled.
+    fn local_build_ignores_remote_rollout() {
+        // A local/dev build never gates (auto-trust): even a remote rollout enable
+        // is ignored, so the feature stays off and resolves Trusted with repo
+        // configs present + interactive. (Env/config isolated to unset so the
+        // remote flag is unambiguously the only enable being dropped here.)
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
         let _home = EnvVarGuard::set("GROK_HOME", home.path());
@@ -702,18 +948,19 @@ mod tests {
             folder_trust_enabled: Some(true),
             ..Default::default()
         };
-        let feature = feature_enabled(Some(&remote));
-        assert!(feature);
+        let feature = feature_enabled_for_build(Some(&remote), true);
+        assert!(!feature);
         let i = DecideInputs {
             is_interactive: true,
             ..inputs()
         };
-        assert_eq!(decide(feature, &i), TrustOutcome::Prompt);
+        assert_eq!(decide(feature, &i), TrustOutcome::Trusted);
     }
 
     #[test]
-    fn gate_stays_enabled_when_remote_enables_it() {
-        // Isolate config so neither on-disk user/managed
+    fn release_build_keeps_gate_when_enabled() {
+        // A release-stamped build (is_local_build=false) honors the remote enable,
+        // keeping today's gate. Isolate config so neither on-disk user/managed
         // config nor an ambient env flag can override it: empty GROK_HOME (no
         // config.toml/managed_config.toml) + GROK_FOLDER_TRUST unset. nextest's
         // process-per-test makes grok_home()'s OnceLock pick up the temp dir.
@@ -726,7 +973,7 @@ mod tests {
             folder_trust_enabled: Some(true),
             ..Default::default()
         };
-        let feature = feature_enabled(Some(&remote));
+        let feature = feature_enabled_for_build(Some(&remote), false);
         assert!(feature);
         let i = DecideInputs {
             is_interactive: true,
@@ -736,51 +983,93 @@ mod tests {
     }
 
     #[test]
-    fn source_build_honors_explicit_env_optin() {
-        // GROK_HOME is isolated so on-disk config cannot influence the result.
+    fn local_build_ignores_explicit_env_optin() {
+        // Auto-trust is absolute on a local build: even an explicit
+        // GROK_FOLDER_TRUST=1 does NOT enable the feature (so a self-built grok
+        // never prompts). GROK_HOME isolated so on-disk config can't influence it.
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
         let _home = EnvVarGuard::set("GROK_HOME", home.path());
         let _flag = EnvVarGuard::set("GROK_FOLDER_TRUST", Path::new("1"));
 
-        assert!(feature_enabled(None));
+        assert!(!feature_enabled_for_build(None, true));
     }
 
     #[test]
-    fn every_build_defaults_on() {
-        // A build with no env/config/managed/remote signal defaults the feature
-        // ON. Empty GROK_HOME (no config.toml/managed config) +
+    fn release_build_defaults_on() {
+        // A release-stamped build with no env/config/managed/remote signal defaults
+        // the feature ON. Empty GROK_HOME (no config.toml/managed config) +
         // GROK_FOLDER_TRUST unset so only the default applies.
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
         let _home = EnvVarGuard::set("GROK_HOME", home.path());
         let _flag = EnvVarGuard::unset("GROK_FOLDER_TRUST");
 
-        assert!(feature_enabled(None));
+        assert!(feature_enabled_for_build(None, false));
     }
 
     #[test]
-    fn store_io_works_on_source_build() {
-        // The default development test binary is unstamped. Grants and revokes
-        // must nevertheless use the durable store exactly like a release build.
+    fn is_local_build_honors_test_version_override() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // A pinned GROK_TEST_VERSION simulates a release build => not a local build.
+        {
+            let _sim = EnvVarGuard::set(agent_tui_version::TEST_VERSION_ENV, Path::new("0.0.0-sim"));
+            assert!(!is_local_build());
+        }
+        // With it unset, an unstamped build (no GROK_VERSION) is a local build.
+        // Guard to the unstamped case so a release-stamped test binary (CI release)
+        // doesn't spuriously fail this arm.
+        let _unset = EnvVarGuard::unset(agent_tui_version::TEST_VERSION_ENV);
+        if option_env!("GROK_VERSION").is_none() {
+            assert!(is_local_build());
+        }
+    }
+
+    #[test]
+    fn store_io_is_noop_on_local_build() {
+        // On a local/dev build the whole feature is inert. Both halves pin a guard
+        // via a UNIQUE per-repo key (never store-file existence) so they hold under
+        // single-process `cargo test` too. Assert ONLY when compiled unstamped
+        // (mirrors `is_local_build_honors_test_version_override`); GROK_HOME-isolated
+        // and ENV_LOCK-serialized so toggling GROK_TEST_VERSION is race-safe.
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
         let _home = EnvVarGuard::set("GROK_HOME", home.path());
+        let _unset = EnvVarGuard::unset(agent_tui_version::TEST_VERSION_ENV);
+        if option_env!("GROK_VERSION").is_some() {
+            return; // a release-stamped test binary is not a local build
+        }
         let tmp = repo_tmp();
         let key = workspace_key(tmp.path());
 
+        // grant is a no-op: a local-build grant never trusts the fresh key.
         grant_folder_trust(tmp.path());
         assert!(
-            TrustStore::load().is_trusted(&key),
-            "source build: grant_folder_trust must trust the folder"
-        );
-        assert!(
-            revoke_folder_trust_store(tmp.path()),
-            "source build: revoke_folder_trust_store must report the grant"
-        );
-        assert!(
             !TrustStore::load().is_trusted(&key),
-            "source build: revoke_folder_trust_store must persist untrust"
+            "local build: grant_folder_trust must not trust the folder"
+        );
+
+        // Seed a genuinely-trusted folder under a simulated release build (so the
+        // store actually records the grant); the guard drops at block end => local.
+        {
+            let _sim = simulate_release_build();
+            let mut store = TrustStore::load();
+            store.set_trusted(&key).unwrap();
+            assert!(
+                TrustStore::load().is_trusted(&key),
+                "release build: seeding must record the trust grant"
+            );
+        }
+
+        // revoke is a no-op: a local-build revoke returns false AND leaves the grant
+        // intact (without the guard it would `set_untrusted` and return true).
+        assert!(
+            !revoke_folder_trust_store(tmp.path()),
+            "local build: revoke_folder_trust_store must return false"
+        );
+        assert!(
+            TrustStore::load().is_trusted(&key),
+            "local build: revoke_folder_trust_store must not untrust the folder"
         );
     }
 

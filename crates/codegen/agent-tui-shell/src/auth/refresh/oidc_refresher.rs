@@ -13,8 +13,9 @@ use crate::auth::manager::AuthManager;
 /// Escalate to `PermanentFailure` after this many consecutive transient
 /// failures (then `PERMANENT_FAILURE_TTL` allows recovery). OIDC tolerates more
 /// blips than `ExternalBinaryRefresher` (1) since network refreshes flake more
-/// than a local binary.
-const MAX_CONSECUTIVE_TRANSIENT_FAILURES: u32 = 3;
+/// than a local binary. Kept above `try_recover_unauthorized`'s per-recovery
+/// attempt budget so one 401 recovery cannot alone escalate.
+const MAX_CONSECUTIVE_TRANSIENT_FAILURES: u32 = 5;
 
 /// Consecutive transient-failure budget, scoped to the credential it accrued
 /// against. Held under one lock so the credential check, reset, and increment
@@ -242,7 +243,12 @@ impl TokenRefresher for OidcRefresher {
                 }
 
                 if let Some(uploader) = &self.diagnostic_uploader {
-                    spawn_diagnostic_upload(uploader, pre_token, pre_email, &self.upload_in_flight);
+                    spawn_diagnostic_upload(
+                        uploader,
+                        pre_token,
+                        pre_user_id,
+                        &self.upload_in_flight,
+                    );
                 }
                 RefreshOutcome::permanent_for(reason, &auth)
             }
@@ -272,7 +278,12 @@ impl TokenRefresher for OidcRefresher {
                     })),
                 );
                 if let Some(uploader) = &self.diagnostic_uploader {
-                    spawn_diagnostic_upload(uploader, pre_token, pre_email, &self.upload_in_flight);
+                    spawn_diagnostic_upload(
+                        uploader,
+                        pre_token,
+                        pre_user_id,
+                        &self.upload_in_flight,
+                    );
                 }
                 self.record_transient_failure(
                     "OIDC token refresh failed".into(),
@@ -285,10 +296,11 @@ impl TokenRefresher for OidcRefresher {
 }
 
 /// Fire-and-forget diagnostic log upload. Guarded against concurrent spawns.
+/// `user_id` is the GCS path segment (never email).
 fn spawn_diagnostic_upload(
     uploader: &DiagnosticUploader,
     auth_token: String,
-    email: String,
+    user_id: String,
     in_flight: &Arc<AtomicBool>,
 ) {
     if in_flight
@@ -324,7 +336,7 @@ fn spawn_diagnostic_upload(
             }
         };
 
-        uploader(log_bytes, auth_token, email).await;
+        uploader(log_bytes, auth_token, user_id).await;
         in_flight.store(false, Ordering::Release);
     });
 }

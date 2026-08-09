@@ -480,8 +480,7 @@ fn follow_up_chip_does_not_execute_slash_command() {
         "a /always-approve chip must NOT flip YOLO mode"
     );
     assert!(
-        matches!(& effects[..], [Effect::SendPrompt { text, .. }] if text ==
-        "/always-approve"),
+        matches!(&effects[..], [Effect::SendPrompt { text, .. }] if text == "/always-approve"),
         "chip text must be submitted literally, got {effects:?}"
     );
 }
@@ -490,7 +489,7 @@ fn follow_up_chip_does_not_execute_exit_alias() {
     let mut app = test_app_with_agent();
     let effects = dispatch(Action::SubmitFollowUp("quit".into()), &mut app);
     assert!(
-        matches!(& effects[..], [Effect::SendPrompt { text, .. }] if text == "quit"),
+        matches!(&effects[..], [Effect::SendPrompt { text, .. }] if text == "quit"),
         "bare 'quit' chip must be a literal prompt, got {effects:?}"
     );
 }
@@ -506,8 +505,7 @@ fn chip_submit_while_running_clears_follow_up_chips() {
     }
     let effects = dispatch(Action::SubmitFollowUp("Summarize".into()), &mut app);
     assert!(
-        matches!(& effects[..], [Effect::SendPrompt { text, .. }] if text ==
-        "Summarize"),
+        matches!(&effects[..], [Effect::SendPrompt { text, .. }] if text == "Summarize"),
         "chip must immediate-send while running, got {effects:?}"
     );
     assert_eq!(app.agents[&id].session.queue_len(), 0);
@@ -539,8 +537,7 @@ fn chip_submit_while_reconnect_pending_keeps_chips_and_does_not_send() {
     app.agents.get_mut(&id).unwrap().session.state = AgentState::TurnRunning;
     let effects2 = dispatch(Action::SubmitFollowUp("Summarize".into()), &mut app);
     assert!(
-        matches!(& effects2[..], [Effect::SendPrompt { text, .. }] if text ==
-        "Summarize"),
+        matches!(&effects2[..], [Effect::SendPrompt { text, .. }] if text == "Summarize"),
         "after reconnect clears, the chip must submit, got {effects2:?}"
     );
     assert!(
@@ -789,12 +786,11 @@ fn dispatch_send_prompt_announcements_via_registry() {
     app.active_announcements = vec![critical_announcement("crit-a")];
     let effects = dispatch(Action::SendPrompt("/announcements hide".into()), &mut app);
     assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::PersistAnnouncementsHidden {
-        hidden_ids } if hidden_ids.contains("crit-a"))),
-        "expected persist effect carrying the hidden id, got {effects:?}"
-    );
+            effects.iter().any(
+                |e| matches!(e, Effect::PersistAnnouncementsHidden { hidden_ids } if hidden_ids.contains("crit-a"))
+            ),
+            "expected persist effect carrying the hidden id, got {effects:?}"
+        );
     assert!(app.hidden_announcement_ids.contains("crit-a"));
     assert_eq!(shown_banner_id(&app), None, "hidden critical closes banner");
     assert!(app.agents[&agent_id].prompt.text().is_empty());
@@ -853,12 +849,11 @@ fn announcements_show_clears_visible_critical_ids_only() {
     assert_eq!(shown_banner_id(&app), None);
     let effects = dispatch(Action::AnnouncementsShow, &mut app);
     assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::PersistAnnouncementsHidden {
-        hidden_ids } if ! hidden_ids.contains("outage-a"))),
-        "expected persist effect without the un-hidden id, got {effects:?}"
-    );
+            effects.iter().any(
+                |e| matches!(e, Effect::PersistAnnouncementsHidden { hidden_ids } if !hidden_ids.contains("outage-a"))
+            ),
+            "expected persist effect without the un-hidden id, got {effects:?}"
+        );
     assert_eq!(shown_banner_id(&app).as_deref(), Some("outage-a"));
     assert!(
         app.hidden_announcement_ids.contains("unrelated"),
@@ -945,10 +940,9 @@ fn announcements_show_clears_hidden_promo_ids() {
     assert_eq!(shown_banner_id(&app), None);
     let effects = dispatch(Action::AnnouncementsShow, &mut app);
     assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::PersistAnnouncementsHidden {
-        hidden_ids } if ! hidden_ids.contains("promo-a"))),
+        effects.iter().any(
+            |e| matches!(e, Effect::PersistAnnouncementsHidden { hidden_ids } if !hidden_ids.contains("promo-a"))
+        ),
         "expected persist effect without the un-hidden promo id, got {effects:?}"
     );
     assert_eq!(shown_banner_id(&app).as_deref(), Some("promo-a"));
@@ -971,10 +965,7 @@ fn switch_model_dispatch_produces_effect_and_sets_pending() {
         &mut app,
     );
     assert_eq!(effects.len(), 1);
-    assert!(
-        matches!(& effects[0], Effect::SwitchModel { model_id : mid, .. } if mid == &
-        model_id)
-    );
+    assert!(matches!(&effects[0], Effect::SwitchModel { model_id: mid, .. } if mid == &model_id));
     assert!(app.agents[&id].session.model_switch_pending);
     assert!(app.agents[&id].session.state.is_idle());
 }
@@ -992,10 +983,7 @@ fn switch_model_allowed_when_agent_chat_kind() {
         &mut app,
     );
     assert_eq!(effects.len(), 1);
-    assert!(
-        matches!(& effects[0], Effect::SwitchModel { model_id : mid, .. } if mid == &
-        model_id)
-    );
+    assert!(matches!(&effects[0], Effect::SwitchModel { model_id: mid, .. } if mid == &model_id));
     assert!(app.agents[&id].session.model_switch_pending);
 }
 #[test]
@@ -1012,10 +1000,7 @@ fn switch_model_allowed_when_app_chat_mode() {
         &mut app,
     );
     assert_eq!(effects.len(), 1);
-    assert!(
-        matches!(& effects[0], Effect::SwitchModel { model_id : mid, .. } if mid == &
-        model_id)
-    );
+    assert!(matches!(&effects[0], Effect::SwitchModel { model_id: mid, .. } if mid == &model_id));
     assert!(app.agents[&id].session.model_switch_pending);
 }
 #[test]
@@ -1181,7 +1166,7 @@ fn slash_hooks_opens_modal() {
     let id = AgentId(0);
     let effects = dispatch(Action::SendPrompt("/hooks".into()), &mut app);
     assert!(app.agents[&id].extensions_modal.is_some());
-    assert_eq!(effects.len(), 5);
+    assert_eq!(effects.len(), 6);
 }
 #[test]
 fn acp_bootstrap_command_appears_in_autocomplete() {
@@ -1241,7 +1226,7 @@ fn acp_bootstrap_command_executes_as_passthrough() {
     let effects = dispatch(Action::SendPrompt("/flush".into()), &mut app);
     assert_eq!(effects.len(), 1);
     assert!(
-        matches!(& effects[0], Effect::SendPrompt { text, .. } if text == "/flush"),
+        matches!(&effects[0], Effect::SendPrompt { text, .. } if text == "/flush"),
         "ACP command should passthrough, got: {effects:?}"
     );
 }
@@ -1376,8 +1361,7 @@ fn acp_command_with_args_passthrough_includes_args() {
     let effects = dispatch(Action::SendPrompt("/search find bugs".into()), &mut app);
     assert_eq!(effects.len(), 1);
     assert!(
-        matches!(& effects[0], Effect::SendPrompt { text, .. } if text ==
-        "/search find bugs"),
+        matches!(&effects[0], Effect::SendPrompt { text, .. } if text == "/search find bugs"),
         "ACP passthrough should preserve args, got: {effects:?}"
     );
 }
@@ -1418,9 +1402,10 @@ fn tick_propagates_available_commands_to_bootstrap() {
     dispatch(Action::NewSession, &mut app);
     let id = AgentId(0);
     app.active_view = crate::app::app_view::ActiveView::Agent(id);
-    let skill_meta = serde_json::json!(
-        { "scope" : "user", "path" : "/home/user/.grok/skills/pick-best/SKILL.md", }
-    );
+    let skill_meta = serde_json::json!({
+        "scope": "user",
+        "path": "/home/user/.grok/skills/pick-best/SKILL.md",
+    });
     app.agents.get_mut(&id).unwrap().session.available_commands = vec![
         acp::AvailableCommand::new("compact".to_string(), "Builtin".to_string()),
         acp::AvailableCommand::new("pick-best".to_string(), "Parallel tournament".to_string())
@@ -1620,10 +1605,14 @@ fn request_bundle_status_emits_effect() {
 fn conversation_entry_load_sets_chat_kind_bit() {
     let mut app = test_app();
     let effects = dispatch(Action::LoadSession("conv-id".into(), None, true), &mut app);
-    assert!(
-        matches!(& effects[..], [Effect::LoadSession { session_id, chat_kind : true, ..
-        }] if session_id == "conv-id")
-    );
+    assert!(matches!(
+        &effects[..],
+        [Effect::LoadSession {
+            session_id,
+            chat_kind: true,
+            ..
+        }] if session_id == "conv-id"
+    ));
     let agent = app.agents.values().next().expect("agent");
     assert!(agent.chat_kind, "conversation entry → agent chat_kind");
 }
@@ -1637,10 +1626,14 @@ fn chat_mode_resume_without_local_disk_loads_as_chat() {
         Action::LoadSession("remote-conv-only".into(), None, false),
         &mut app,
     );
-    assert!(
-        matches!(& effects[..], [Effect::LoadSession { session_id, chat_kind : false, ..
-        }] if session_id == "remote-conv-only")
-    );
+    assert!(matches!(
+        &effects[..],
+        [Effect::LoadSession {
+            session_id,
+            chat_kind: false,
+            ..
+        }] if session_id == "remote-conv-only"
+    ));
     let agent = app.agents.values().next().expect("agent");
     assert!(
         agent.chat_kind,
@@ -1704,10 +1697,11 @@ fn view_catalog_entry_emits_fetch_effect() {
         &mut app,
     );
     assert_eq!(effects.len(), 1);
-    assert!(
-        matches!(& effects[0], Effect::FetchCatalogEntry { kind, name } if kind ==
-        "persona" && name == "researcher")
-    );
+    assert!(matches!(
+        &effects[0],
+        Effect::FetchCatalogEntry { kind, name }
+        if kind == "persona" && name == "researcher"
+    ));
 }
 /// End-to-end regression test for the "always re-asks" requirement.
 ///
@@ -2148,7 +2142,7 @@ fn show_tasks_empty_commits_empty_message() {
     assert_eq!(agent_scrollback_len(&app), before + 1);
     assert_eq!(
         last_system_text(&app, AgentId(0)),
-        "No background tasks or subagents."
+        "No background tasks, workflows, or subagents."
     );
 }
 #[test]
@@ -2166,6 +2160,7 @@ fn show_tasks_lists_a_scheduled_task() {
                 created_at: std::time::Instant::now(),
                 next_fire_at: None,
                 tag: "loop".to_string(),
+                last_subagent_id: None,
             },
         );
     }
@@ -2511,8 +2506,6 @@ fn mouse_click_on_peek_close_rect_clears_peek() {
             time_ago: String::new(),
             response_type: "Idle".into(),
             last_user_message: None,
-            last_agent_lines: Vec::new(),
-            last_response_truncated: false,
             question: None,
             options: Vec::new(),
             request_id: None,

@@ -106,19 +106,33 @@ pub(crate) struct BlockingWaitGuard {
     generation: u64,
 }
 impl BlockingWaitGuard {
-    pub(crate) fn enter(depth: Arc<std::sync::atomic::AtomicUsize>) -> Self {
-        depth.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Self(depth)
+    pub(crate) fn enter(state: Arc<BlockingWaitState>) -> Self {
+        let generation = {
+            let mut inner = state.0.lock().expect("blocking wait state mutex poisoned");
+            inner.depth = inner.depth.saturating_add(1);
+            inner.generation
+        };
+        Self { state, generation }
     }
 }
 impl Drop for BlockingWaitGuard {
     fn drop(&mut self) {
-        let _ = self.0.fetch_update(
-            std::sync::atomic::Ordering::SeqCst,
-            std::sync::atomic::Ordering::SeqCst,
-            |depth| Some(depth.saturating_sub(1)),
-        );
+        let mut inner = self
+            .state
+            .0
+            .lock()
+            .expect("blocking wait state mutex poisoned");
+        if inner.generation == self.generation {
+            inner.depth = inner.depth.saturating_sub(1);
+        }
     }
+}
+pub(crate) fn subagent_foreground_wait(
+    state: Arc<BlockingWaitState>,
+) -> agent_tui_tools::implementations::grok_build::task::types::SubagentForegroundWait {
+    agent_tui_tools::implementations::grok_build::task::types::SubagentForegroundWait::new(
+        move || Box::new(BlockingWaitGuard::enter(Arc::clone(&state))),
+    )
 }
 /// Session-level context. NOT used for tool execution (bridge handles that).
 /// Holds ACP gateway, cwd, hunk tracker, etc. for session infrastructure.
@@ -156,16 +170,17 @@ pub struct ToolContext {
     /// Shared turn-active flag — set `true` at turn start, `false` at turn end.
     /// Used by the between-turn completion drain in `handle_prompt`.
     pub is_turn_active: Option<Arc<std::sync::atomic::AtomicBool>>,
+    pub(crate) unattributed_background_usage: Arc<std::sync::atomic::AtomicBool>,
     /// Shared buffer for mid-turn monitor event notifications.
     /// Events pushed here are drained by the session turn loop
     /// (`inject_pending_monitor_events`) and surfaced as ONE hidden
     /// synthetic user message before the next sampling step.
     pub monitor_event_buffer:
-        Option<agent_tui_tools::implementations::grok_build::task::types::MonitorEventBuffer>,
-    /// Shared set of IDs delivered via auto-wake synthetic prompts.
-    /// Used by `TaskCompletionReminder` to suppress duplicate reminders.
-    pub auto_wake_delivered:
-        Option<agent_tui_tools::reminders::task_completion::AutoWakeDeliveredIds>,
+        Option<agent_tui_tools::implementations::grok_build::monitor::types::MonitorEventBuffer>,
+    pub task_completion_reservations:
+        Option<agent_tui_tools::reminders::task_completion::TaskCompletionReservations>,
+    pub task_wake_suppressed:
+        Option<agent_tui_tools::reminders::task_completion::TaskWakeSuppressed>,
     /// Channel for requesting trace uploads for synthetic auto-wake turns.
     pub(crate) synthetic_trace_tx:
         Option<tokio::sync::mpsc::UnboundedSender<crate::upload::turn::SyntheticTurnTraceRequest>>,
@@ -205,6 +220,28 @@ pub struct ToolContext {
     pub process_scope: Option<ProcessScope>,
 }
 impl ToolContext {
+    pub(crate) fn clamp_task_model_request(
+        &self,
+        configured: Option<u32>,
+    ) -> Result<Option<u32>, &'static str> {
+        match self.task_output_token_budget.as_ref() {
+            Some(budget) => match budget.clamp_request(configured) {
+                Some(0) => Err("workflow child output-token budget exhausted"),
+                clamped => Ok(clamped),
+            },
+            None => Ok(configured),
+        }
+    }
+    pub(crate) fn record_task_model_output(&self, output_tokens: u64) {
+        if let Some(budget) = self.task_output_token_budget.as_ref() {
+            budget.record_reported_output(output_tokens);
+        }
+    }
+    pub(crate) fn fail_task_output_usage_closed(&self) {
+        if let Some(budget) = self.task_output_token_budget.as_ref() {
+            budget.mark_incomplete_and_exhaust();
+        }
+    }
     pub fn new(
         cwd: AbsPathBuf,
         gateway: Option<GatewaySender>,
@@ -233,8 +270,10 @@ impl ToolContext {
             lsp: None,
             lsp_server_names: Vec::new(),
             is_turn_active: None,
+            unattributed_background_usage: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             monitor_event_buffer: None,
-            auto_wake_delivered: None,
+            task_completion_reservations: None,
+            task_wake_suppressed: None,
             synthetic_trace_tx: None,
             synthetic_trace_tx_shared: None,
             task_output_tool_name:
@@ -272,8 +311,10 @@ impl ToolContext {
             lsp: None,
             lsp_server_names: Vec::new(),
             is_turn_active: None,
+            unattributed_background_usage: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             monitor_event_buffer: None,
-            auto_wake_delivered: None,
+            task_completion_reservations: None,
+            task_wake_suppressed: None,
             synthetic_trace_tx: None,
             synthetic_trace_tx_shared: None,
             task_output_tool_name:
@@ -298,7 +339,40 @@ impl ToolContext {
     }
 }
 #[cfg(test)]
+mod output_budget_tests {
+    use super::TaskOutputTokenBudget;
+    #[test]
+    fn clamps_every_request_to_remaining_and_stops_at_zero() {
+        let budget = TaskOutputTokenBudget::limited(10);
+        assert_eq!(budget.clamp_request(None), Some(10));
+        assert_eq!(budget.clamp_request(Some(7)), Some(7));
+        budget.record_reported_output(6);
+        assert_eq!(budget.clamp_request(None), Some(4));
+        assert_eq!(budget.clamp_request(Some(9)), Some(4));
+        budget.record_reported_output(4);
+        assert_eq!(budget.clamp_request(None), Some(0));
+    }
+    #[test]
+    fn provider_output_not_context_drives_spend() {
+        let budget = TaskOutputTokenBudget::limited(100);
+        let provider_prompt_tokens = 90_000u64;
+        budget.record_reported_output(25);
+        assert_eq!(budget.usage(), (25, false));
+        assert_eq!(provider_prompt_tokens, 90_000);
+        assert_eq!(budget.remaining(), Some(75));
+    }
+    #[test]
+    fn unknown_usage_exhausts_grant_pessimistically() {
+        let budget = TaskOutputTokenBudget::limited(50);
+        budget.record_reported_output(7);
+        budget.mark_incomplete_and_exhaust();
+        assert_eq!(budget.usage(), (50, true));
+        assert_eq!(budget.clamp_request(None), Some(0));
+    }
+}
+#[cfg(test)]
 mod tests {
+    use super::BlockingWaitState;
     use crate::{terminal::AsyncTerminalRunner, tools::ToolContext};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -327,8 +401,10 @@ mod tests {
                 lsp: None,
                 lsp_server_names: Vec::new(),
                 is_turn_active: None,
+                unattributed_background_usage: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 monitor_event_buffer: None,
-                auto_wake_delivered: None,
+                task_completion_reservations: None,
+                task_wake_suppressed: None,
                 synthetic_trace_tx: None,
                 synthetic_trace_tx_shared: None,
                 task_output_tool_name:

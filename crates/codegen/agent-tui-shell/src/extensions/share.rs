@@ -263,7 +263,7 @@ mod tests {
         // are also rejected the same way).
         let non_xai = GrokAuth {
             auth_mode: AuthMode::ApiKey,
-            key: "xai-test-key".into(),
+            key: "agent-tui-test-key".into(),
             create_time: Utc::now(),
             ..Default::default()
         };

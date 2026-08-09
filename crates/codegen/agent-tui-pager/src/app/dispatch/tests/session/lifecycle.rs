@@ -132,14 +132,15 @@ fn session_created_sets_session_id() {
             agent_id: id,
             session_id: "new-session-123".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
     assert_eq!(effects.len(), 7);
-    assert!(
-        matches!(& effects[0], Effect::FetchPromptHistory { session_id, .. } if
-        session_id == "new-session-123")
-    );
+    assert!(matches!(
+        &effects[0],
+        Effect::FetchPromptHistory { session_id, .. } if session_id == "new-session-123"
+    ));
     assert!(matches!(&effects[1], Effect::FetchSessionAgentName { .. }));
     assert!(matches!(
         &effects[2],
@@ -175,6 +176,7 @@ fn session_created_omits_cta_catalog_when_disabled() {
             agent_id: id,
             session_id: "new-session-123".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -219,6 +221,7 @@ fn session_created_banner_advertises_resume_in_minimal_mode() {
             agent_id: id,
             session_id: "new-session-123".into(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -300,6 +303,7 @@ fn worktree_session_created_sets_session_and_cwd() {
             worktree_path: worktree_path.clone(),
             session_cwd: session_cwd.clone(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -358,6 +362,7 @@ fn worktree_session_preserves_subdirectory_offset() {
             worktree_path: worktree_root.clone(),
             session_cwd: session_cwd.clone(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -455,12 +460,13 @@ fn new_worktree_session_rejects_non_git_cwd() {
     assert!(effects.is_empty());
     assert!(app.agents.is_empty());
     assert!(matches!(app.active_view, ActiveView::Welcome));
-    assert!(
-        app.startup_warnings
-            .iter()
-            .any(|w| w.message.contains("Not inside a git repository")),
-        "expected git-repo warning"
-    );
+    let warning = app
+        .startup_warnings
+        .iter()
+        .find(|warning| warning.message.contains("Not inside a git repository"))
+        .expect("expected git-repo warning");
+    assert_eq!(warning.severity, crate::startup::WarningSeverity::Warning);
+    assert!(warning.action.is_none());
 }
 #[test]
 fn worktree_session_created_drains_queued_prompts() {
@@ -485,14 +491,14 @@ fn worktree_session_created_drains_queued_prompts() {
             worktree_path,
             session_cwd: PathBuf::from("/tmp/grok-worktrees/pager-abc"),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
     assert!(
         effects
             .iter()
-            .any(|e| matches!(e, Effect::SendPrompt { text, .. } if text ==
-        "hello"))
+            .any(|e| matches!(e, Effect::SendPrompt { text, .. } if text == "hello"))
     );
     assert!(
         effects
@@ -519,14 +525,14 @@ fn session_created_drains_queued_prompts() {
             agent_id: id,
             session_id: acp::SessionId::new("sess-drain-1"),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
     assert!(
         effects
             .iter()
-            .any(|e| matches!(e, Effect::SendPrompt { text, .. } if text ==
-        "queued msg"))
+            .any(|e| matches!(e, Effect::SendPrompt { text, .. } if text == "queued msg"))
     );
     assert!(
         effects
@@ -556,6 +562,7 @@ fn session_created_with_flag_emits_five_fetches_and_clears_flag() {
             agent_id: id,
             session_id: acp::SessionId::new("s"),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
@@ -578,31 +585,157 @@ fn session_created_without_flag_emits_no_extension_fetches() {
             agent_id: id,
             session_id: acp::SessionId::new("s"),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
     assert_eq!(count_extension_fetches(&effects), 0);
 }
 #[test]
-fn session_failed_clears_flag_no_fetches() {
-    use crate::views::extensions_modal::{ExtensionsModalState, ExtensionsTab};
+fn session_failed_keeps_agent_clears_loading_and_toasts() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    {
+        let a = app.agents.get_mut(&id).unwrap();
+        a.session.session_id = Some(acp::SessionId::new("existing"));
+        a.pending_extensions_fetch = true;
+        a.mcp_init_progress = Some(crate::app::agent_view::McpInitProgress {
+            total: 0,
+            connected: 0,
+            started_at: std::time::Instant::now(),
+        });
+    }
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::SessionFailed {
+            agent_id: id,
+            error: "No space left on device".to_string(),
+        }),
+        &mut app,
+    );
+    assert!(effects.is_empty());
+    let agent = &app.agents[&id];
+    assert!(!agent.pending_extensions_fetch);
+    assert!(agent.mcp_init_progress.is_none());
+    assert_eq!(
+        agent.toast.as_ref().map(|(m, _)| m.as_str()),
+        Some("Session creation failed: No space left on device"),
+    );
+}
+#[test]
+fn session_failed_orphan_returns_to_welcome_with_warning() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     {
         let a = app.agents.get_mut(&id).unwrap();
         a.session.session_id = None;
-        a.pending_extensions_fetch = true;
-        a.extensions_modal = Some(ExtensionsModalState::new(ExtensionsTab::Hooks));
+        a.session.forked_from = None;
+        a.mcp_init_progress = Some(crate::app::agent_view::McpInitProgress {
+            total: 0,
+            connected: 0,
+            started_at: std::time::Instant::now(),
+        });
     }
     let effects = dispatch(
         Action::TaskComplete(TaskResult::SessionFailed {
             agent_id: id,
-            error: "boom".to_string(),
+            error: "No space left on device".to_string(),
         }),
         &mut app,
     );
-    assert_eq!(count_extension_fetches(&effects), 0);
-    assert!(!app.agents[&id].pending_extensions_fetch);
+    assert!(effects.is_empty());
+    assert!(!app.agents.contains_key(&id));
+    assert!(matches!(app.active_view, ActiveView::Welcome));
+    assert!(
+        app.startup_warnings
+            .iter()
+            .any(|w| { w.message == "Session creation failed: No space left on device" })
+    );
+}
+#[test]
+fn session_failed_orphan_with_fallback_toasts() {
+    let mut app = test_app_with_agent();
+    let keep_id = AgentId(0);
+    let fail_id = AgentId(1);
+    let mut session = make_test_agent_session(&app, fail_id, "unused");
+    session.session_id = None;
+    app.agents
+        .insert(fail_id, AgentView::new(session, ScrollbackState::new()));
+    app.active_view = ActiveView::Agent(fail_id);
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::SessionFailed {
+            agent_id: fail_id,
+            error: "No space left on device".to_string(),
+        }),
+        &mut app,
+    );
+    assert!(effects.is_empty());
+    assert!(!app.agents.contains_key(&fail_id));
+    assert!(matches!(app.active_view, ActiveView::Agent(id) if id == keep_id));
+    assert_eq!(
+        app.agents[&keep_id].toast.as_ref().map(|(m, _)| m.as_str()),
+        Some("Session creation failed: No space left on device"),
+    );
+}
+#[test]
+fn session_failed_orphan_does_not_steal_other_active_agent() {
+    let mut app = test_app_with_agent();
+    let keep_id = AgentId(0);
+    let fail_id = AgentId(1);
+    let mut session = make_test_agent_session(&app, fail_id, "unused");
+    session.session_id = None;
+    app.agents
+        .insert(fail_id, AgentView::new(session, ScrollbackState::new()));
+    app.active_view = ActiveView::Agent(keep_id);
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::SessionFailed {
+            agent_id: fail_id,
+            error: "No space left on device".to_string(),
+        }),
+        &mut app,
+    );
+    assert!(effects.is_empty());
+    assert!(!app.agents.contains_key(&fail_id));
+    assert!(matches!(app.active_view, ActiveView::Agent(id) if id == keep_id));
+    assert_eq!(
+        app.agents[&keep_id].toast.as_ref().map(|(m, _)| m.as_str()),
+        Some("Session creation failed: No space left on device"),
+    );
+}
+#[test]
+fn session_failed_orphan_on_welcome_with_survivor_uses_startup_warning() {
+    let mut app = test_app_with_agent();
+    let keep_id = AgentId(0);
+    let fail_id = AgentId(1);
+    let mut session = make_test_agent_session(&app, fail_id, "unused");
+    session.session_id = None;
+    app.agents
+        .insert(fail_id, AgentView::new(session, ScrollbackState::new()));
+    app.active_view = ActiveView::Welcome;
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::SessionFailed {
+            agent_id: fail_id,
+            error: "No space left on device".to_string(),
+        }),
+        &mut app,
+    );
+    assert!(effects.is_empty());
+    assert!(!app.agents.contains_key(&fail_id));
+    assert!(app.agents.contains_key(&keep_id));
+    assert!(matches!(app.active_view, ActiveView::Welcome));
+    assert!(
+        app.startup_warnings
+            .iter()
+            .any(|w| w.message == "Session creation failed: No space left on device"),
+        "Welcome + survivor must record a startup warning; got {:?}",
+        app.startup_warnings
+            .iter()
+            .map(|w| w.message.as_str())
+            .collect::<Vec<_>>(),
+    );
+    assert!(
+        app.agents[&keep_id].toast.is_none(),
+        "must not force-switch to survivor just to toast"
+    );
 }
 #[test]
 fn switch_model_without_session_sends_nothing_to_server() {
@@ -898,18 +1031,20 @@ fn deferred_model_switch_applied_on_session_created() {
             agent_id: id,
             session_id: session_id.clone(),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
     assert!(app.agents[&id].session.deferred_model_switch.is_none());
     assert!(app.agents[&id].session.model_switch_pending);
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::SwitchModel { agent_id : a_id,
-        session_id : s_id, model_id : m_id, .. } if * a_id == id && * s_id == session_id
-        && * m_id == model_id))
-    );
+    assert!(effects.iter().any(|e| matches!(
+        e,
+        Effect::SwitchModel {
+            agent_id: a_id,
+            session_id: s_id,
+            model_id: m_id,
+            .. } if *a_id == id && *s_id == session_id && *m_id == model_id
+    )));
 }
 #[test]
 fn deferred_model_switch_applied_on_worktree_session_created() {
@@ -941,18 +1076,20 @@ fn deferred_model_switch_applied_on_worktree_session_created() {
             worktree_path: PathBuf::from("/tmp/worktree"),
             session_cwd: PathBuf::from("/tmp/worktree"),
             models: None,
+            scheduler_background_loops: None,
         }),
         &mut app,
     );
     assert!(app.agents[&id].session.deferred_model_switch.is_none());
     assert!(app.agents[&id].session.model_switch_pending);
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::SwitchModel { agent_id : a_id,
-        session_id : s_id, model_id : m_id, .. } if * a_id == id && * s_id == session_id
-        && * m_id == model_id))
-    );
+    assert!(effects.iter().any(|e| matches!(
+        e,
+        Effect::SwitchModel {
+            agent_id: a_id,
+            session_id: s_id,
+            model_id: m_id,
+            .. } if *a_id == id && *s_id == session_id && *m_id == model_id
+    )));
 }
 /// The session-startup gate requires BOTH auth AND trust resolved. Trust is
 /// gated AFTER auth, so either one pending defers session creation.
@@ -1247,10 +1384,12 @@ fn deferred_worktree_ref_replays_through_gate() {
     assert!(app.deferred_startup.worktree);
     let effects = finish_trust(&mut app);
     assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::CreateWorktreeSession { git_ref :
-        Some(r), .. } if r == "feature-branch")),
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::CreateWorktreeSession {
+                git_ref: Some(r),
+                .. } if r == "feature-branch"
+        )),
         "the deferred --worktree <ref> replays with its git ref",
     );
     assert!(
@@ -1308,10 +1447,12 @@ fn gated_worktree_without_load_id_preserves_stashed_resume() {
     );
     let effects = finish_trust(&mut app);
     assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::CreateWorktreeSession {
-        load_session_id : Some(id), .. } if id == "resume-me")),
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::CreateWorktreeSession {
+                load_session_id: Some(id),
+                .. } if id == "resume-me"
+        )),
         "the deferred worktree replays with the preserved resume id",
     );
     assert!(app.deferred_startup.session.is_none());
@@ -1338,9 +1479,10 @@ fn gated_worktree_with_none_companions_preserves_stashed_label_and_ref() {
         &mut app,
     );
     assert!(effects.is_empty(), "a gated worktree produces no effects");
-    assert!(matches!(app.deferred_startup.session.as_ref(), Some(crate
-        ::app::session_startup::DeferredSessionStartup::Load { session_id, .. }) if
-        session_id == "mysess"));
+    assert!(matches!(
+        app.deferred_startup.session.as_ref(),
+        Some(crate::app::session_startup::DeferredSessionStartup::Load { session_id, .. }) if session_id == "mysess"
+    ));
     assert_eq!(
         app.deferred_startup.worktree_label.as_deref(),
         Some("mylabel")
@@ -1380,11 +1522,14 @@ fn gated_worktree_with_none_companions_preserves_stashed_label_and_ref() {
     assert!(app.deferred_startup.worktree);
     let effects = finish_trust(&mut app);
     assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::CreateWorktreeSession {
-        load_session_id : Some(id), label : Some(l), git_ref : Some(r), .. } if id ==
-        "mysess" && l == "mylabel" && r == "featbranch")),
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::CreateWorktreeSession {
+                load_session_id: Some(id),
+                label: Some(l),
+                git_ref: Some(r),
+                .. } if id == "mysess" && l == "mylabel" && r == "featbranch"
+        )),
         "the deferred worktree replays with the preserved id, label, and ref",
     );
     assert!(app.deferred_startup.worktree_ref.is_none());
@@ -1451,8 +1596,8 @@ fn auth_complete_strips_reauth_prompt_after_mid_session_login() {
     let sb = &app.agents[&id].scrollback;
     let has_reauth = (0..sb.len()).any(|i| {
         matches!(
-            sb.entry(i).map(| e | & e.block), Some(RenderBlock::SessionEvent(ev)) if
-            matches!(ev.event, SessionEvent::ReAuthRequired)
+            sb.entry(i).map(|e| &e.block),
+            Some(RenderBlock::SessionEvent(ev)) if matches!(ev.event, SessionEvent::ReAuthRequired)
         )
     });
     assert!(
@@ -1476,6 +1621,7 @@ fn auth_complete_retries_stashed_prompt_after_mid_session_login() {
             text: "retry me".into(),
             images: Vec::new(),
             scrollback_entry: crate::scrollback::EntryId::new(0),
+            combined_scrollback_entries: Vec::new(),
             chip_elements: Vec::new(),
         });
     }
@@ -1495,10 +1641,10 @@ fn auth_complete_retries_stashed_prompt_after_mid_session_login() {
         "stashed prompt must be consumed on re-auth"
     );
     assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::SendPrompt { text, .. } if text ==
-        "retry me")),
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::SendPrompt { text, .. } if text == "retry me"
+        )),
         "the stashed prompt must be auto-resubmitted, got: {effects:?}"
     );
 }
@@ -2343,8 +2489,7 @@ fn set_plan_mode_on_from_off_emits_set_session_mode() {
     );
     assert_eq!(effects.len(), 1);
     assert!(
-        matches!(& effects[0], Effect::SetSessionMode { mode_id, .. } if &* mode_id.0 ==
-        "plan"),
+        matches!(&effects[0], Effect::SetSessionMode { mode_id, .. } if &*mode_id.0 == "plan"),
         "expected SetSessionMode(plan), got: {effects:?}"
     );
     let agent = app.agents.get(&AgentId(0)).unwrap();
@@ -2380,7 +2525,7 @@ fn dashboard_stop_with_peek_open_moves_selection_and_peek_down_one() {
     let first = order[0].clone();
     let second = order[1].clone();
     app.dashboard.as_mut().unwrap().focus_row(first.clone());
-    let area = Rect::new(0, 0, 80, 24);
+    let area = Rect::new(0, 0, 80, 40);
     let reg = crate::actions::ActionRegistry::defaults();
     let render = |app: &mut AppView| {
         let mut buf = Buffer::empty(area);
@@ -2388,7 +2533,7 @@ fn dashboard_stop_with_peek_open_moves_selection_and_peek_down_one() {
             &mut buf,
             area,
             app.dashboard.as_mut().unwrap(),
-            &app.agents,
+            &mut app.agents,
             &reg,
             None,
             &[],

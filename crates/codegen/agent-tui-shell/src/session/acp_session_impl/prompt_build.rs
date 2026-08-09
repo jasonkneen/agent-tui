@@ -3,11 +3,6 @@
 //! payload preparation.
 #![allow(clippy::items_after_test_module)]
 use super::*;
-/// Partition the AGENTS.md / Claude.md / `.grok/rules/*.md` files returned
-/// by `read_agents_config_with_paths` into "workspace" (cwd / repo root /
-/// extra workspace user dir) and "user" (`~/.grok/`, `~/.claude/`,
-/// `~/.grok/bundled/`) buckets, mirroring the split between
-/// `<always_applied_workspace_rules>` and `<user_rules>`.
 /// Normalize a free-form name (e.g. an MCP server identifier) into a
 /// single safe filesystem segment.
 ///
@@ -41,26 +36,157 @@ pub(super) fn pick_user_image_url(image: &agent_client_protocol::ImageContent) -
 }
 fn partition_rules_by_scope(
     files: Vec<agent_tui_agent::prompt::agents_md::AgentConfigFile>,
+    grok_home: &std::path::Path,
+    vendor_homes: &[(std::path::PathBuf, bool)],
+    workspace_root: Option<&std::path::Path>,
 ) -> (
     Vec<agent_tui_agent::prompt::user_message::RuleEntry>,
     Vec<agent_tui_agent::prompt::user_message::RuleEntry>,
 ) {
-    let home = dirs::home_dir().map(|p| p.to_string_lossy().to_string());
-    let user_prefixes: Vec<String> = match home {
-        Some(h) => vec![format!("{h}/.grok/"), format!("{h}/.claude/")],
-        None => vec![],
-    };
     let mut workspace = Vec::new();
     let mut user = Vec::new();
-    for f in files {
-        let entry = agent_tui_agent::prompt::user_message::RuleEntry::from(f);
-        if user_prefixes.iter().any(|p| entry.path.starts_with(p)) {
+    for file in files {
+        let is_user_rule = crate::util::is_user_instruction_path(
+            std::path::Path::new(&file.file_path),
+            grok_home,
+            vendor_homes,
+            workspace_root,
+        );
+        let entry = agent_tui_agent::prompt::user_message::RuleEntry::from(file);
+        if is_user_rule {
             user.push(entry);
         } else {
             workspace.push(entry);
         }
     }
     (workspace, user)
+}
+#[cfg(test)]
+mod partition_rules_by_scope_tests {
+    use super::partition_rules_by_scope;
+    use std::path::Path;
+    use agent_tui_agent::prompt::agents_md::AgentConfigFile;
+    fn file(path: &str) -> AgentConfigFile {
+        AgentConfigFile {
+            file_name: Path::new(path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            file_path: path.to_string(),
+            content: path.to_string(),
+        }
+    }
+    fn paths(entries: &[agent_tui_agent::prompt::user_message::RuleEntry]) -> Vec<&str> {
+        entries.iter().map(|entry| entry.content.as_str()).collect()
+    }
+    #[test]
+    fn partitions_custom_grok_and_vendor_home_rules_as_user_scope() {
+        let files = vec![
+            file("/custom/config/rules/a.md"),
+            file("/home/user/.cursor/rules/b.md"),
+            file("/repo/.cursor/rules/c.md"),
+            file("/repo/src/AGENTS.md"),
+            file("/custom/config/rules/d.md"),
+        ];
+        let vendor_homes = vec![
+            (Path::new("/home/user/.claude").to_path_buf(), true),
+            (Path::new("/home/user/.cursor").to_path_buf(), true),
+        ];
+        let (workspace, user) = partition_rules_by_scope(
+            files,
+            Path::new("/custom/config"),
+            &vendor_homes,
+            Some(Path::new("/repo")),
+        );
+        assert_eq!(
+            paths(&user),
+            vec![
+                "/custom/config/rules/a.md",
+                "/home/user/.cursor/rules/b.md",
+                "/custom/config/rules/d.md",
+            ]
+        );
+        assert_eq!(
+            paths(&workspace),
+            vec!["/repo/.cursor/rules/c.md", "/repo/src/AGENTS.md"]
+        );
+    }
+    #[test]
+    fn grok_home_nested_in_workspace_keeps_direct_surfaces_user_scoped() {
+        let files = vec![
+            file("/repo/config/AGENTS.md"),
+            file("/repo/config/rules/global.md"),
+            file("/repo/config/.grok/rules/project.md"),
+            file("/repo/config/src/AGENTS.md"),
+        ];
+        let (workspace, user) = partition_rules_by_scope(
+            files,
+            Path::new("/repo/config"),
+            &[],
+            Some(Path::new("/repo")),
+        );
+        assert_eq!(
+            paths(&user),
+            vec!["/repo/config/AGENTS.md", "/repo/config/rules/global.md"]
+        );
+        assert_eq!(
+            paths(&workspace),
+            vec![
+                "/repo/config/.grok/rules/project.md",
+                "/repo/config/src/AGENTS.md",
+            ]
+        );
+    }
+    #[test]
+    fn vendor_home_nested_in_workspace_keeps_direct_surfaces_user_scoped() {
+        let files = vec![
+            file("/repo/.claude/rules/global.md"),
+            file("/repo/.claude/CLAUDE.md"),
+            file("/repo/.claude/.claude/rules/project.md"),
+            file("/repo/.claude/src/AGENTS.md"),
+        ];
+        let vendor_homes = vec![(Path::new("/repo/.claude").to_path_buf(), true)];
+        let (workspace, user) = partition_rules_by_scope(
+            files,
+            Path::new("/other/grok"),
+            &vendor_homes,
+            Some(Path::new("/repo")),
+        );
+        assert_eq!(
+            paths(&user),
+            vec!["/repo/.claude/rules/global.md", "/repo/.claude/CLAUDE.md"]
+        );
+        assert_eq!(
+            paths(&workspace),
+            vec![
+                "/repo/.claude/.claude/rules/project.md",
+                "/repo/.claude/src/AGENTS.md",
+            ]
+        );
+    }
+    #[test]
+    fn nested_grok_home_workspace_files_stay_workspace_scoped() {
+        let files = vec![
+            file("/custom/grok/rules/global.md"),
+            file("/custom/grok/worktrees/repo/.cursor/rules/project.md"),
+            file("/custom/grok/worktrees/repo/src/AGENTS.md"),
+        ];
+        let (workspace, user) = partition_rules_by_scope(
+            files,
+            Path::new("/custom/grok"),
+            &[],
+            Some(Path::new("/custom/grok/worktrees/repo")),
+        );
+        assert_eq!(paths(&user), vec!["/custom/grok/rules/global.md"]);
+        assert_eq!(
+            paths(&workspace),
+            vec![
+                "/custom/grok/worktrees/repo/.cursor/rules/project.md",
+                "/custom/grok/worktrees/repo/src/AGENTS.md",
+            ]
+        );
+    }
 }
 /// True iff `conversation` already contains a project-instructions reminder,
 /// either tagged [`SyntheticReason::ProjectInstructions`] or a legacy untagged
@@ -182,9 +308,8 @@ mod install_system_prompt_tests {
         );
     }
 }
-pub(super) const LARGE_PROMPT_THRESHOLD: usize = agent_tui_sampling_types::MAX_MODEL_ITEM_BYTES;
-pub(super) const TRUNCATED_PROMPT_PREFIX_SIZE: usize =
-    agent_tui_sampling_types::MAX_MODEL_ITEM_BYTES;
+pub(super) const LARGE_PROMPT_THRESHOLD: usize = 25_000;
+pub(super) const TRUNCATED_PROMPT_PREFIX_SIZE: usize = 25_000;
 /// Percent of the bounded-prompt budget given to the query (capped; rest is context head).
 const LARGE_QUERY_BUDGET_PERCENT: usize = 80;
 /// Bytes kept at the TAIL when bounding head+tail, so a trailing question survives.
@@ -319,8 +444,8 @@ impl SessionActor {
         drop_startup_skill_reminder: bool,
     ) {
         let is_prefix_slot = matches!(
-            conversation.get(1), Some(ConversationItem::User(u)) if u.synthetic_reason
-            .is_none()
+            conversation.get(1),
+            Some(ConversationItem::User(u)) if u.synthetic_reason.is_none()
         );
         if is_prefix_slot {
             conversation[1] = ConversationItem::user(new_prefix);
@@ -331,8 +456,10 @@ impl SessionActor {
         if drop_startup_skill_reminder {
             conversation.retain(|item| {
                 !matches!(
-                    item, ConversationItem::User(u) if u.synthetic_reason ==
-                    Some(agent_tui_sampling_types::SyntheticReason::SystemReminder)
+                    item,
+                    ConversationItem::User(u)
+                        if u.synthetic_reason
+                            == Some(agent_tui_sampling_types::SyntheticReason::SystemReminder)
                 )
             });
         }
@@ -351,6 +478,7 @@ impl SessionActor {
             .definition()
             .user_message_template
             .clone();
+        let mut prefix_carries_fallback_date = false;
         #[allow(unused_mut)]
         let mut out = if !matches!(template, UserMessageTemplate::Default) {
             if let Some(rendered) = self
@@ -362,6 +490,7 @@ impl SessionActor {
                 tracing::warn!(
                     "templated user message render failed; falling back to legacy prefix"
                 );
+                prefix_carries_fallback_date = !template.surfaces_local_date();
                 if self.startup_hints.skip_git_status {
                     construct_user_message_minimal(cwd, None)
                 } else {
@@ -375,6 +504,8 @@ impl SessionActor {
         };
         self.last_announced_local_date
             .set(chrono::Local::now().date_naive());
+        self.prefix_carries_fallback_date
+            .set(prefix_carries_fallback_date);
         out
     }
     /// Build the custom-templated first user message.
@@ -511,9 +642,10 @@ impl SessionActor {
         )> = {
             let state = self.mcp_state.lock().await;
             tracing::debug!(
-                session_id = % self.session_info.id.0, client_count = state.owned_clients
-                .len() + state.shared_clients.len(), initializing_count = state
-                .handshaking_servers_count(), finished_init = state.has_finished_init(),
+                session_id = %self.session_info.id.0,
+                client_count = state.owned_clients.len() + state.shared_clients.len(),
+                initializing_count = state.handshaking_servers_count(),
+                finished_init = state.has_finished_init(),
                 config_count = state.configs.len(),
                 "gather_mcp_servers: snapshotting MCP state for user preamble render"
             );
@@ -729,8 +861,10 @@ impl SessionActor {
         let skip_count = persisted.len().saturating_sub(limit);
         if skip_count > 0 {
             tracing::info!(
-                session_id = % self.session_info.id, total = persisted.len(), skipped =
-                skip_count, limit,
+                session_id = %self.session_info.id,
+                total = persisted.len(),
+                skipped = skip_count,
+                limit,
                 "image transcription: skipping oldest images due to processing limit",
             );
         }

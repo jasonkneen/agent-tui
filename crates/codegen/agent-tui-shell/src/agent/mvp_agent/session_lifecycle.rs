@@ -106,9 +106,7 @@ impl MvpAgent {
             let sid = id.0.to_string();
             tokio::spawn(async move {
                 if let Err(e) = client.finalize(&sid).await {
-                    tracing::warn!(
-                        error = % e, "session registry finalize failed (non-fatal)"
-                    );
+                    tracing::warn!(error = %e, "session registry finalize failed (non-fatal)");
                 }
             });
         }
@@ -201,7 +199,9 @@ impl MvpAgent {
             .borrow_mut()
             .push((id.0.to_string(), final_state));
         tracing::debug!(
-            session_id = % id.0, ? final_state, "roster delta: session removed"
+            session_id = %id.0,
+            ?final_state,
+            "roster delta: session removed"
         );
         self.emit_roster_changed(Vec::new(), vec![id.0.to_string()]);
     }
@@ -375,14 +375,14 @@ impl MvpAgent {
             }
             if self.is_resident(&id) {
                 tracing::warn!(
-                    session_id = % id.0,
+                    session_id = %id.0,
                     "Resident session actor exited unexpectedly; reaping as DeadFailed"
                 );
                 self.reap_dead_session(&id);
             } else {
                 self.session_registry.clear_exited_thread(&id);
                 tracing::debug!(
-                    session_id = % id.0,
+                    session_id = %id.0,
                     "Reaped finished thread for non-resident session (clean exit)"
                 );
             }

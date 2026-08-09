@@ -14,7 +14,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use agent_tui_sqlite_journal::{BUSY_RETRY_BUDGET, JournalMode};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WorktreeKind {
     Session,
@@ -38,14 +38,33 @@ impl WorktreeKind {
     }
 
     pub fn from_str_lossy(s: &str) -> Self {
+        Self::from_str_exact(s).unwrap_or(Self::Manual)
+    }
+
+    /// Exact known kind key. Unknown → None (unlike [`Self::from_str_lossy`]).
+    pub fn from_str_exact(s: &str) -> Option<Self> {
         match s {
-            "session" => Self::Session,
-            "ab" => Self::Ab,
-            "pool" => Self::Pool,
-            "fork" => Self::Fork,
-            "manual" => Self::Manual,
-            "subagent" => Self::Subagent,
-            _ => Self::Manual,
+            "session" => Some(Self::Session),
+            "ab" => Some(Self::Ab),
+            "pool" => Some(Self::Pool),
+            "fork" => Some(Self::Fork),
+            "manual" => Some(Self::Manual),
+            "subagent" => Some(Self::Subagent),
+            _ => None,
+        }
+    }
+
+    /// Config key parse: trim + case-insensitive; unknown → None.
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        let t = s.trim();
+        if let Some(k) = Self::from_str_exact(t) {
+            return Some(k);
+        }
+        // Only allocate lowercase when needed.
+        if t.bytes().any(|b| b.is_ascii_uppercase()) {
+            Self::from_str_exact(&t.to_ascii_lowercase())
+        } else {
+            None
         }
     }
 }
@@ -387,6 +406,35 @@ impl WorktreeDb {
     pub fn sweep_dead(&self) -> Result<u64> {
         queries::sweep_dead(&self.conn)
     }
+
+    /// Read a value from the `meta` table. `Ok(None)` when the key is absent.
+    pub fn get_meta(&self, key: &str) -> Result<Option<String>> {
+        match self
+            .conn
+            .query_row(schema::GET_META, [key], |row| row.get(0))
+        {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e).with_context(|| format!("failed to read meta key {key}")),
+        }
+    }
+
+    /// Insert or replace a `meta` table value.
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        self.conn
+            .execute(schema::UPSERT_META, rusqlite::params![key, value])
+            .with_context(|| format!("failed to write meta key {key}"))?;
+        Ok(())
+    }
+
+    /// Test-only: run raw SQL (e.g. drop tables to force fail-closed paths).
+    #[cfg(test)]
+    pub(crate) fn execute_batch_for_test(&self, sql: &str) -> Result<()> {
+        self.conn
+            .execute_batch(sql)
+            .context("execute_batch_for_test failed")?;
+        Ok(())
+    }
 }
 
 /// Derive a worktree ID from its destination path: `<basename>-<hash of full path>`
@@ -419,20 +467,15 @@ pub fn now_epoch_secs() -> i64 {
 }
 
 pub fn resolve_grok_home() -> Result<PathBuf> {
-    // Prefer Agent TUI home; accept legacy GROK_HOME for dual-install / tests.
-    if let Ok(v) = std::env::var("AGENT_TUI_HOME").or_else(|_| std::env::var("GROK_HOME")) {
+    if let Ok(v) = std::env::var("GROK_HOME") {
         return Ok(PathBuf::from(v));
     }
-    let home = PathBuf::from(
-        std::env::var("HOME").context("neither $AGENT_TUI_HOME/$GROK_HOME nor $HOME is set")?,
-    );
-    // Canonicalize the home dir so worktree paths share the same physical
-    // `.agent-tui` tree as trust/hooks even when it is symlinked. The dunce
-    // canonicalization must stay in sync with agent_tui_config::default_grok_home();
+    let home = PathBuf::from(std::env::var("HOME").context("neither $GROK_HOME nor $HOME is set")?);
+    // Canonicalize the home dir so worktree paths share the same physical .grok
+    // tree as trust/hooks even when it is symlinked. The dunce canonicalization
+    // must stay in sync with agent_tui_config::default_grok_home();
     // home resolution deliberately differs ($HOME here vs std::env::home_dir()).
-    Ok(dunce::canonicalize(&home)
-        .unwrap_or(home)
-        .join(".agent-tui"))
+    Ok(dunce::canonicalize(&home).unwrap_or(home).join(".grok"))
 }
 
 /// Serializes tests that mutate the process-global `GROK_HOME` env var so they

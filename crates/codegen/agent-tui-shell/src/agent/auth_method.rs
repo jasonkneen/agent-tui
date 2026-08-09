@@ -201,7 +201,7 @@ fn build_pinned_api_key(has_external_api_key: bool) -> BuiltAuthMethods {
         };
     }
     BuiltAuthMethods {
-        methods: vec![xai_api_key_auth_method()],
+        methods: vec![agent_tui_api_key_auth_method()],
         default_auth_method_id: Some(acp::AuthMethodId::new(XAI_API_KEY_METHOD_ID)),
     }
 }
@@ -247,7 +247,7 @@ fn build_unpinned(
     let mut default_auth_method_id: Option<acp::AuthMethodId> = None;
 
     if has_external_api_key {
-        methods.push(xai_api_key_auth_method());
+        methods.push(agent_tui_api_key_auth_method());
         default_auth_method_id = Some(acp::AuthMethodId::new(XAI_API_KEY_METHOD_ID));
     }
 
@@ -857,7 +857,7 @@ mod tests {
     #[test]
     #[serial]
     fn global_external_api_key_advertises_xai_api_key_first() {
-        let _set = EnvGuard::set(XAI_API_KEY_ENV_VAR, "xai-external-key");
+        let _set = EnvGuard::set(XAI_API_KEY_ENV_VAR, "agent-tui-external-key");
         let cfg = Config::default();
         let models = resolve_model_list(&cfg, None);
         let has_external_api_key = should_advertise_xai_api_key(false, models.values());
@@ -876,7 +876,7 @@ mod tests {
     #[test]
     #[serial]
     fn disable_api_key_auth_suppresses_xai_api_key_method() {
-        let _set = EnvGuard::set(XAI_API_KEY_ENV_VAR, "xai-external-key");
+        let _set = EnvGuard::set(XAI_API_KEY_ENV_VAR, "agent-tui-external-key");
         let cfg = Config::default();
         let models = resolve_model_list(&cfg, None);
 
@@ -974,9 +974,9 @@ mod tests {
     #[serial]
     fn legacy_env_var_fallback_advertises_xai_api_key() {
         let _unset_new = EnvGuard::unset(XAI_API_KEY_ENV_VAR);
-        let _set_legacy = EnvGuard::set(LEGACY_XAI_API_KEY_ENV_VAR, "xai-legacy-key");
+        let _set_legacy = EnvGuard::set(LEGACY_XAI_API_KEY_ENV_VAR, "agent-tui-legacy-key");
         assert!(has_xai_api_key_env());
-        assert_eq!(read_xai_api_key_env().unwrap(), "xai-legacy-key");
+        assert_eq!(read_xai_api_key_env().unwrap(), "agent-tui-legacy-key");
 
         let cfg = Config::default();
         let models = resolve_model_list(&cfg, None);

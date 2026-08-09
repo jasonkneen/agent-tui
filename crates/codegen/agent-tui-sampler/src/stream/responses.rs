@@ -4,6 +4,10 @@
 //! [`SamplingEvent`]s. Pure: no I/O, no shell coupling.
 
 use std::collections::BTreeMap;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
@@ -45,8 +49,15 @@ pub(crate) fn responses_event_has_meaningful_content(event: &rs::ResponseStreamE
         ResponseStreamEvent::ResponseCodeInterpreterCallCodeDone(event) => !event.code.is_empty(),
         ResponseStreamEvent::ResponseCustomToolCallInputDelta(event) => !event.delta.is_empty(),
         ResponseStreamEvent::ResponseCustomToolCallInputDone(event) => !event.input.is_empty(),
+        ResponseStreamEvent::ResponseFailed(event) => {
+            !event.response.output.is_empty()
+                || event
+                    .response
+                    .usage
+                    .as_ref()
+                    .is_some_and(|usage| usage.output_tokens > 0)
+        }
         ResponseStreamEvent::ResponseCompleted(_)
-        | ResponseStreamEvent::ResponseFailed(_)
         | ResponseStreamEvent::ResponseIncomplete(_)
         | ResponseStreamEvent::ResponseOutputItemAdded(_)
         | ResponseStreamEvent::ResponseOutputItemDone(_)
@@ -78,6 +89,11 @@ pub(crate) fn responses_event_has_meaningful_content(event: &rs::ResponseStreamE
     }
 }
 
+pub(crate) fn responses_event_may_have_output(event: &rs::ResponseStreamEvent) -> bool {
+    !matches!(event, rs::ResponseStreamEvent::ResponseError(_))
+        && responses_event_has_meaningful_content(event)
+}
+
 /// Transform a raw Responses API event stream into a stream of
 /// [`SamplingEvent`]s.
 ///
@@ -97,6 +113,24 @@ pub fn stream_responses<'a>(
     request_id: RequestId,
     idle_timeout: Duration,
     doom_loop: Option<crate::doom_loop::DoomLoopSignalCollector>,
+) -> impl Stream<Item = SamplingEvent> + Send + 'a {
+    stream_responses_tracked(
+        raw_stream,
+        model_metadata,
+        request_id,
+        idle_timeout,
+        doom_loop,
+        Arc::new(AtomicBool::new(false)),
+    )
+}
+
+pub(crate) fn stream_responses_tracked<'a>(
+    raw_stream: BoxStream<'a, Result<rs::ResponseStreamEvent, SamplingError>>,
+    model_metadata: Option<ResponseModelMetadata>,
+    request_id: RequestId,
+    idle_timeout: Duration,
+    doom_loop: Option<crate::doom_loop::DoomLoopSignalCollector>,
+    output_observed: Arc<AtomicBool>,
 ) -> impl Stream<Item = SamplingEvent> + Send + 'a {
     async_stream::stream! {
         use rs::{ResponseStreamEvent, Status};
@@ -157,6 +191,10 @@ pub fn stream_responses<'a>(
                     return;
                 }
             };
+
+            if responses_event_may_have_output(&event) {
+                output_observed.store(true, Ordering::Relaxed);
+            }
 
             // A confident server-detected loop aborts the attempt (dropping
             // the SSE connection) so the retry loop can resample instead of
@@ -692,6 +730,15 @@ mod tests {
             }
             other => panic!("expected Completed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn empty_failed_response_is_not_treated_as_output() {
+        let event = rs::ResponseStreamEvent::ResponseFailed(rs_types::ResponseFailedEvent {
+            response: failed_response_with_error("boom"),
+            sequence_number: 0,
+        });
+        assert!(!responses_event_may_have_output(&event));
     }
 
     #[tokio::test]

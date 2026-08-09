@@ -132,6 +132,32 @@ impl ScrollbackState {
         }
     }
 
+    /// Jump directly to a turn by index: select its prompt and scroll it to
+    /// the viewport top (same behavior as h/l turn navigation, random
+    /// access). Returns `false` for an out-of-range index.
+    pub fn jump_to_turn(&mut self, turn_idx: usize) -> bool {
+        if turn_idx >= self.turns.len() {
+            return false;
+        }
+        self.activate_turn(turn_idx);
+        true
+    }
+
+    /// Jump to a turn by its prompt's stable [`EntryId`]: resolve to the
+    /// current index and activate that turn. Returns `false` if the id no
+    /// longer exists or isn't a turn's prompt (e.g. removed since capture) —
+    /// stable identity so a shifted index can't land on the wrong block.
+    pub fn jump_to_entry(&mut self, prompt_id: EntryId) -> bool {
+        let Some(entry_idx) = self.index_of_id(prompt_id) else {
+            return false;
+        };
+        let Some(turn_idx) = self.turns.iter().position(|t| t.prompt_index == entry_idx) else {
+            return false;
+        };
+        self.activate_turn(turn_idx);
+        true
+    }
+
     /// Navigate to the next turn (l key).
     ///
     /// If we're before the first turn (e.g., at system messages), jumps to the first turn.
@@ -392,15 +418,51 @@ impl ScrollbackState {
         self.bump_generation();
     }
 
+    /// Rows to advance for a full-page scroll.
+    ///
+    /// A page is the *content* area (viewport minus any sticky prompt header
+    /// pinned at the top) less a 2-row overlap for continuity. Subtracting the
+    /// header is what keeps a page-flip from skipping the lines that sit behind
+    /// the pinned prompt: without it, a page moves `viewport_height - 2` rows
+    /// but only `viewport_height - header` rows are actually on screen, so
+    /// `header - 2` lines are silently jumped over at the top border. Always
+    /// moves at least 1 row so paging never stalls on a tiny viewport.
+    fn page_scroll_rows(&self) -> u16 {
+        let header = self.current_header_screen_rows();
+        self.viewport_height
+            .saturating_sub(header)
+            .saturating_sub(2)
+            .max(1)
+    }
+
+    /// Current sticky header height in screen rows (0 when no header/cache).
+    fn current_header_screen_rows(&self) -> u16 {
+        // Mirror render_with_sticky_headers: no sticky header is drawn when disabled
+        // or in compact prompt mode, so the whole viewport is content and paging
+        // must not subtract a header height.
+        if !self.appearance.scrollback.display.sticky_headers || self.appearance.prompt.compact {
+            return 0;
+        }
+        let Some(cache) = self.layout_cache.as_ref() else {
+            return 0;
+        };
+        let range = self.visible_entry_range();
+        if range.is_empty() {
+            return 0;
+        }
+        self.current_sticky_layout(cache, &range)
+            .header_screen_rows()
+    }
+
     /// Page up: scroll viewport, then select the topmost selectable on-screen entry.
     pub fn page_up(&mut self) {
-        self.scroll_up(self.viewport_height.saturating_sub(2));
+        self.scroll_up(self.page_scroll_rows());
         self.select_viewport_edge(/* prefer_top */ true);
     }
 
     /// Page down: scroll viewport, then select the bottommost selectable on-screen entry.
     pub fn page_down(&mut self) {
-        self.scroll_down(self.viewport_height.saturating_sub(2));
+        self.scroll_down(self.page_scroll_rows());
         self.select_viewport_edge(/* prefer_top */ false);
     }
 
@@ -534,9 +596,36 @@ impl ScrollbackState {
         self.follow_preserve_scroll = true;
     }
 
+    /// Viewport policy for a turn this client just started.
+    ///
+    /// - `page_flip` + prompt: pin at viewport top and arm follow-with-preserve.
+    /// - `page_flip` + no prompt (bash/synthetic): arm follow-with-preserve only.
+    /// - `!page_flip` + prompt: leave scroll and follow unchanged.
+    /// - `!page_flip` + no prompt: still arm follow-with-preserve (there is no
+    ///   prompt to snap; pre-setting bash/adoption always engaged follow).
+    ///
+    /// Always selects `prompt_idx` when present.
+    pub fn follow_new_turn(&mut self, prompt_idx: Option<usize>, page_flip: bool) {
+        if page_flip {
+            if let Some(idx) = prompt_idx {
+                self.scroll_to_entry_top(idx);
+            }
+            self.enable_follow_with_preserve();
+        } else if prompt_idx.is_none() {
+            self.enable_follow_with_preserve();
+        }
+        if let Some(idx) = prompt_idx {
+            self.set_selected(Some(idx));
+        }
+    }
+
     /// Check if follow mode is enabled.
     pub fn is_follow_mode(&self) -> bool {
         self.follow_mode
+    }
+
+    pub(crate) fn is_follow_preserve_scroll(&self) -> bool {
+        self.follow_preserve_scroll
     }
 
     /// Check if there's content below the viewport (not at the bottom).
@@ -1128,6 +1217,63 @@ mod tests {
     use super::super::test_util::*;
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn follow_new_turn_scroll_policies() {
+        fn tall_state_with_prompt() -> (ScrollbackState, usize) {
+            let mut state = ScrollbackState::new();
+            for i in 0..30 {
+                state.push_block(agent_block(&format!("filler line {i}")));
+            }
+            state.push_block(user_block("next question"));
+            let prompt_idx = state.len() - 1;
+            state.prepare_layout(80, 8);
+            (state, prompt_idx)
+        }
+
+        let (mut state, prompt_idx) = tall_state_with_prompt();
+        state.goto_bottom();
+        let bottom = state.scroll_offset();
+        state.follow_new_turn(Some(prompt_idx), true);
+        assert!(state.is_follow_mode());
+        assert!(state.is_follow_preserve_scroll());
+        assert_eq!(state.selected(), Some(prompt_idx));
+        assert_ne!(state.scroll_offset(), bottom);
+
+        let (mut state, prompt_idx) = tall_state_with_prompt();
+        state.goto_bottom();
+        let bottom = state.scroll_offset();
+        state.follow_new_turn(Some(prompt_idx), false);
+        assert!(state.is_follow_mode());
+        assert!(!state.is_follow_preserve_scroll());
+        assert_eq!(state.scroll_offset(), bottom);
+        assert_eq!(state.selected(), Some(prompt_idx));
+
+        let (mut state, prompt_idx) = tall_state_with_prompt();
+        state.goto_bottom();
+        state.scroll_up(10);
+        let reading = state.scroll_offset();
+        state.follow_new_turn(Some(prompt_idx), false);
+        assert!(!state.is_follow_mode());
+        assert_eq!(state.scroll_offset(), reading);
+        assert_eq!(state.selected(), Some(prompt_idx));
+
+        // No prompt (bash/synthetic): always arm follow, with or without page_flip.
+        let (mut state, _) = tall_state_with_prompt();
+        state.goto_bottom();
+        state.follow_new_turn(None, true);
+        assert!(state.is_follow_mode());
+        assert!(state.is_follow_preserve_scroll());
+
+        let (mut state, _) = tall_state_with_prompt();
+        state.goto_bottom();
+        state.scroll_up(10);
+        let reading = state.scroll_offset();
+        state.follow_new_turn(None, false);
+        assert!(state.is_follow_mode());
+        assert!(state.is_follow_preserve_scroll());
+        assert_eq!(state.scroll_offset(), reading);
+    }
 
     #[test]
     fn test_response_anchor_trailing_run_skips_interleaved_messages() {

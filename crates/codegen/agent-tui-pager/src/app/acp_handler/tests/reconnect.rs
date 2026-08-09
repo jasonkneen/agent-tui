@@ -239,7 +239,7 @@
             make_agent_chunk_with_event("sess-rc", "live tail", "p9", Some("sess-rc-40")),
             &mut app,
         );
-        let _ = handle_ext_notification(&xai_model_switch_notif("sess-rc", "sess-rc-30"), &mut app);
+        let _ = handle_ext_notification(&agent_tui_model_switch_notif("sess-rc", "sess-rc-30"), &mut app);
         assert_eq!(
             app.agents[&id].last_applied_event_seq,
             Some(40),
@@ -533,12 +533,12 @@
     /// order diverge, leader fan-out) is dropped instead of re-applied — the
     /// xAI arms have no other dedup. Replay stays exempt.
     #[test]
-    fn xai_session_update_dedup_drops_already_applied_event() {
+    fn agent_tui_session_update_dedup_drops_already_applied_event() {
         let mut app = make_app_with_agent("sess-xdup");
         let id = AgentId(0);
 
         assert!(handle_ext_notification(
-            &xai_model_switch_notif("sess-xdup", "sess-xdup-10"),
+            &agent_tui_model_switch_notif("sess-xdup", "sess-xdup-10"),
             &mut app
         ));
         assert_eq!(app.agents[&id].scrollback.len(), 1);
@@ -546,7 +546,7 @@
 
         // Exact re-delivery: dropped, nothing re-applied, cursor unchanged.
         assert!(!handle_ext_notification(
-            &xai_model_switch_notif("sess-xdup", "sess-xdup-10"),
+            &agent_tui_model_switch_notif("sess-xdup", "sess-xdup-10"),
             &mut app
         ));
         assert_eq!(
@@ -561,7 +561,7 @@
 
         // A newer event still applies.
         assert!(handle_ext_notification(
-            &xai_model_switch_notif("sess-xdup", "sess-xdup-11"),
+            &agent_tui_model_switch_notif("sess-xdup", "sess-xdup-11"),
             &mut app
         ));
         assert_eq!(app.agents[&id].scrollback.len(), 2);
@@ -571,7 +571,7 @@
         // the cursor tail, e.g. goal mode) is dropped too — `<=`, not just
         // equality.
         assert!(!handle_ext_notification(
-            &xai_model_switch_notif("sess-xdup", "sess-xdup-9"),
+            &agent_tui_model_switch_notif("sess-xdup", "sess-xdup-9"),
             &mut app
         ));
         assert_eq!(
@@ -591,7 +591,7 @@
         let id = AgentId(0);
 
         assert!(!handle_ext_notification(
-            &xai_unhandled_notif("sess-ig", "sess-ig-7"),
+            &agent_tui_unhandled_notif("sess-ig", "sess-ig-7"),
             &mut app
         ));
         assert_eq!(
@@ -605,7 +605,7 @@
 
         // An applied kind (ModelAutoSwitched) advances both.
         assert!(handle_ext_notification(
-            &xai_model_switch_notif("sess-ig", "sess-ig-8"),
+            &agent_tui_model_switch_notif("sess-ig", "sess-ig-8"),
             &mut app
         ));
         assert_eq!(
@@ -627,7 +627,7 @@
 
         // Direct xAI emission stamped N+1 arrives first.
         assert!(handle_ext_notification(
-            &xai_model_switch_notif("sess-split", "sess-split-21"),
+            &agent_tui_model_switch_notif("sess-split", "sess-split-21"),
             &mut app
         ));
         assert_eq!(app.agents[&id].last_applied_xai_event_seq, Some(21));
@@ -790,7 +790,7 @@
     /// xAI extension session updates: replay-stamped ones are gated like ACP
     /// updates, and applied ones advance the reconnect cursor.
     #[test]
-    fn xai_session_update_replay_gating_and_cursor() {
+    fn agent_tui_session_update_replay_gating_and_cursor() {
         fn model_switch_notif(meta: Option<serde_json::Value>) -> acp::ExtNotification {
             let payload = SessionNotification {
                 session_id: acp::SessionId::new("sess-xai"),
@@ -811,7 +811,7 @@
         let id = AgentId(0);
 
         // Replay-stamped with no load in flight → dropped, nothing pushed.
-        let replay_meta = serde_json::json!({ "isReplay": true, "eventId": "sess-xai-7" });
+        let replay_meta = serde_json::json!({ "isReplay": true, "eventId": "sess-agent-tui-7" });
         assert!(!handle_ext_notification(
             &model_switch_notif(Some(replay_meta.clone())),
             &mut app
@@ -838,7 +838,7 @@
         let agent = app.agents.get_mut(&id).unwrap();
         assert_eq!(
             agent.last_seen_event_id.as_deref(),
-            Some("sess-xai-7"),
+            Some("sess-agent-tui-7"),
             "applied xAI updates advance the reconnect cursor"
         );
         assert!(agent.finish_session_reload(1, true));
@@ -966,7 +966,7 @@
 
         // The running turn's terminal arrives in the reconnect replay → recorded.
         let _ = handle_ext_notification(
-            &xai_turn_completed_notif("sess-1", "p-run", "end_turn", true),
+            &agent_tui_turn_completed_notif("sess-1", "p-run", "end_turn", true),
             &mut app,
         );
         assert!(app.agents[&id].replayed_terminal_prompts.contains("p-run"));

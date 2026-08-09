@@ -1,6 +1,6 @@
 # Headless Mode and Scripting
 
-Headless mode runs Agent TUI non-interactively from the command line. It accepts a single prompt, executes it with full tool access, and returns the result. Use it to automate tasks, script workflows, build integrations, and parse output programmatically.
+Headless mode runs Grok non-interactively from the command line. It accepts a single prompt, executes it with full tool access, and returns the result. Use it to automate tasks, script workflows, build integrations, and parse output programmatically.
 
 ---
 
@@ -9,10 +9,10 @@ Headless mode runs Agent TUI non-interactively from the command line. It accepts
 Passing a prompt non-interactively triggers headless mode. The most common way is the `-p` flag (short for `--single`); `--prompt-json` and `--prompt-file` also trigger it:
 
 ```bash
-agent-tui -p "Your prompt here"
+grok -p "Your prompt here"
 ```
 
-Agent TUI processes the prompt, runs any necessary tools, and prints the result to stdout. The process exits when the response is complete.
+Grok processes the prompt, runs any necessary tools, and prints the result to stdout. The process exits when the response is complete.
 
 ---
 
@@ -24,7 +24,7 @@ Agent TUI processes the prompt, runs any necessary tools, and prints the result 
 | `-m, --model <MODEL>`   | Model to use (e.g., `grok-build`)              |
 | `-s, --session-id <ID>` | Create a **new** session with this **UUID** (errors if invalid UUID or already in use under the target session directory; does not resume, use `-r`/`-c`) |
 | `--fork-session`        | With `-r`/`-c`, fork into a new session ID instead of appending to the original |
-| `-r, --resume <ID>`     | Resume an existing session (errors if not found)      |
+| `-r, --resume <ID_OR_TITLE>` | Resume an existing session by ID, or by title for the current directory, ignoring letter case (a sole manually renamed match wins among duplicates; remaining duplicates error with their IDs; UUID-shaped values always take the ID path; scripts should prefer IDs) |
 | `-c, --continue`        | Continue the most recent session in current directory  |
 | `--cwd <PATH>`          | Set working directory                                 |
 | `--output-format <FMT>` | Output format: `plain`, `json`, `streaming-json`, `streaming-messages-json` |
@@ -34,8 +34,8 @@ Agent TUI processes the prompt, runs any necessary tools, and prints the result 
 | `--tools <TOOLS>`       | Allowlist of built-in tools (comma-separated). MCP meta-tools remain available unless denied. Headless only. |
 | `--disallowed-tools <TOOLS>` | Denylist of built-in tools to remove (comma-separated). Supports `Agent` entries. Headless only. |
 | `--max-turns <N>`       | Maximum number of agentic turns before stopping. Headless only. |
-| `--reasoning-effort` / `--effort <LEVEL>` | Reasoning effort for reasoning models. Canonical levels: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (alias of `xhigh`). Also accepts per-model menu option ids (e.g. `deep` → mapped wire value), same as `/effort`. Works in TUI and headless. |
-| `--permission-mode <MODE>` | Permission mode. `bypassPermissions` enables always-approve via this flag (see [22-permissions-and-safety.md](22-permissions-and-safety.md)); for deny-by-default use `defaultMode` in `.claude/settings.json`. |
+| `--reasoning-effort` / `--effort <LEVEL>` | Reasoning effort for reasoning models. Canonical levels: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` (each a distinct tier; a model only accepts the levels its menu advertises). Also accepts per-model menu option ids (e.g. `deep` → mapped wire value), same as `/effort`. Works in TUI and headless. |
+| `--permission-mode <MODE>` | Permission mode. `bypassPermissions` enables always-approve (see [Permissions and safety](22-permissions-and-safety.md#permission-modes)); for deny-by-default use `defaultMode` in `.claude/settings.json`. |
 | `--allow <RULE>`        | Permission allow rule with glob patterns (repeatable). Works in TUI and headless. |
 | `--deny <RULE>`         | Permission deny rule with glob patterns (repeatable). Works in TUI and headless. |
 | `--prompt-json <JSON>`  | Prompt as JSON content blocks                         |
@@ -44,7 +44,7 @@ Agent TUI processes the prompt, runs any necessary tools, and prints the result 
 | `--no-auto-update`      | Disable update checks for this session                |
 | `--sandbox <PROFILE>`   | Sandbox profile for filesystem/network access         |
 
-> **Note:** `--tools`, `--disallowed-tools`, `--max-turns`, and `--agents` are headless-only flags. If used in the interactive TUI, a warning is printed and the flag is ignored. `--reasoning-effort`/`--effort`, `--permission-mode`, `--allow`, and `--deny` work in both modes. For more flags (agents, verification, worktrees), see [Additional Headless Flags](#additional-headless-flags).
+> **Note:** `--tools`, `--disallowed-tools`, `--max-turns`, and `--agents` are headless-only flags. If used in the interactive TUI, a warning is printed and the flag is ignored. `--reasoning-effort`/`--effort`, `--permission-mode`, `--allow`, and `--deny` work in both modes. For more flags (agents and worktrees), see [Additional Headless Flags](#additional-headless-flags).
 
 ### Tool Filtering
 
@@ -54,13 +54,13 @@ Tool names are internal tool IDs (e.g. the shell tool is `run_terminal_cmd`, not
 
 ```bash
 # Only allow read-only tools
-agent-tui -p "Explain this codebase" --tools "read_file,grep,list_dir"
+grok -p "Explain this codebase" --tools "read_file,grep,list_dir"
 
 # Remove web access and file editing
-agent-tui -p "Review this code" --disallowed-tools "web_search,web_fetch,search_replace"
+grok -p "Review this code" --disallowed-tools "web_search,web_fetch,search_replace"
 
 # Remove shell access
-agent-tui -p "Review this code" --disallowed-tools "run_terminal_cmd"
+grok -p "Review this code" --disallowed-tools "run_terminal_cmd"
 ```
 
 `--disallowed-tools` also supports special `Agent` entries to control subagent spawning:
@@ -73,10 +73,10 @@ agent-tui -p "Review this code" --disallowed-tools "run_terminal_cmd"
 
 ```bash
 # Prevent the agent from spawning any subagents
-agent-tui -p "Fix this bug" --disallowed-tools "Agent"
+grok -p "Fix this bug" --disallowed-tools "Agent"
 
 # Block only the explore subagent
-agent-tui -p "Refactor this module" --disallowed-tools "Agent(explore)"
+grok -p "Refactor this module" --disallowed-tools "Agent(explore)"
 ```
 
 `--tools` preserves the selected agent profile's injection policy: stock profiles inject enabled optional tools before applying the allowlist, while curated profiles remain strict. The final toolset retains requested tools plus always-on MCP meta-tools. When both flags are present, `--disallowed-tools` wins.
@@ -101,13 +101,13 @@ For path rules (`Read`, `Edit`, `Write`, `Grep`), `*` is a single-level wildcard
 
 ```bash
 # Deny shell commands matching "rm*"
-agent-tui -p "Clean up this project" --deny "Bash(rm*)"
+grok -p "Clean up this project" --deny "Bash(rm*)"
 
 # Allow npm commands, deny sudo
-agent-tui -p "Set up the project" --allow "Bash(npm*)" --deny "Bash(sudo*)"
+grok -p "Set up the project" --allow "Bash(npm*)" --deny "Bash(sudo*)"
 
 # Allow all bash commands (auto-approve without prompting)
-agent-tui -p "Build the project" --allow "Bash"
+grok -p "Build the project" --allow "Bash"
 ```
 
 `--allow` and `--deny` can be repeated. Deny rules take precedence over allow rules.
@@ -202,7 +202,7 @@ Usage notes:
 
 The `sessionId` field is useful for resuming the conversation later.
 
-On failure, Agent TUI emits an error object (process exit non-zero). Prompt-level
+On failure, Grok emits an error object (process exit non-zero). Prompt-level
 failures may also include frozen spend fields when usage was recorded:
 
 ```json
@@ -244,7 +244,7 @@ reason (e.g. `tool_use`, `pause_turn`) is on the `usage` line's `stopReason`.
 Per-response `message_id`/`stopReason`/`signature` are populated on the Messages
 API backend; other backends report what they carry.
 
-Agent TUI may also emit `max_turns_reached` and `auto_compact_*` events; treat the list as non-exhaustive and switch on `type`.
+Grok may also emit `max_turns_reached` and `auto_compact_*` events; treat the list as non-exhaustive and switch on `type`.
 
 ### streaming-messages-json
 
@@ -328,7 +328,7 @@ Like `streaming-json`, this stream is read only. Tool approvals and other bidire
 
 ## Session Management in Headless Mode
 
-By default, each `agent-tui -p` invocation creates a fresh session. To maintain context across calls, use session flags.
+By default, each `grok -p` invocation creates a fresh session. To maintain context across calls, use session flags.
 
 ### Named Sessions (`-s`)
 
@@ -336,13 +336,13 @@ To carry context across headless calls, use `-r/--resume` or `-c/--continue`. Us
 
 ```bash
 # Start a headless session and capture its ID
-agent-tui -p "Review the changes in this PR" --output-format json | jq -r '.sessionId'
+grok -p "Review the changes in this PR" --output-format json | jq -r '.sessionId'
 
 # Continue in the same session
-agent-tui -p "Now check for security issues" --resume "<id>"
+grok -p "Now check for security issues" --resume "<id>"
 
 # Optional: create with a client-chosen UUID (must not already exist)
-agent-tui -p "hello" --session-id "$(uuidgen | tr '[:upper:]' '[:lower:]')" --output-format json
+grok -p "hello" --session-id "$(uuidgen | tr '[:upper:]' '[:lower:]')" --output-format json
 ```
 
 > **Note:** `-s/--session-id` creates a new session only (valid UUID; errors if already in use). Use `-r` to resume.
@@ -353,11 +353,11 @@ The `-r/--resume` flag resumes a specific session by ID, or by title for the cur
 
 ```bash
 # Get the session ID from a previous JSON response
-agent-tui -p "Remember: the secret number is 42" --output-format json
+grok -p "Remember: the secret number is 42" --output-format json
 # Output includes "sessionId": "abc123"
 
 # Resume that exact session
-agent-tui -p "What's the secret number?" --resume abc123
+grok -p "What's the secret number?" --resume abc123
 ```
 
 ### Continue (`-c`)
@@ -365,7 +365,7 @@ agent-tui -p "What's the secret number?" --resume abc123
 The `-c/--continue` flag continues the most recent session in the current working directory:
 
 ```bash
-agent-tui -p "Continue where we left off" -c
+grok -p "Continue where we left off" -c
 ```
 
 ### Extracting Session IDs
@@ -373,7 +373,7 @@ agent-tui -p "Continue where we left off" -c
 Use `--output-format json` and parse the `sessionId` field:
 
 ```bash
-agent-tui -p "Hello" --output-format json | jq -r '.sessionId'
+grok -p "Hello" --output-format json | jq -r '.sessionId'
 ```
 
 ---
@@ -386,10 +386,10 @@ Headless mode works naturally with Unix pipes and redirection.
 
 ```bash
 # Pipe output to a file
-agent-tui -p "Generate a README" > README.md
+grok -p "Generate a README" > README.md
 
 # Parse JSON output with jq
-agent-tui -p "List files" --output-format json | jq -r '.text'
+grok -p "List files" --output-format json | jq -r '.text'
 ```
 
 ### Standard Input
@@ -398,12 +398,12 @@ Headless mode does not read piped stdin into the prompt. Pass external content t
 
 ```bash
 # Include git diff as context via command substitution
-agent-tui -p "Write a concise commit message for these changes:
+grok -p "Write a concise commit message for these changes:
 
 $(git diff --staged)"
 
 # Or read the prompt from a file
-agent-tui --prompt-file ./prompt.txt
+grok --prompt-file ./prompt.txt
 ```
 
 ---
@@ -413,14 +413,14 @@ agent-tui --prompt-file ./prompt.txt
 ### Automated Code Review
 
 ```bash
-agent-tui -p "Review changes for bugs and security issues." \
+grok -p "Review changes for bugs and security issues." \
   --output-format json --yolo | jq -r '.text' > review.md
 ```
 
 ### Pre-Commit Hook
 
 ```bash
-agent-tui -p "Review staged changes for obvious bugs. Reply OK if fine, or list issues." \
+grok -p "Review staged changes for obvious bugs. Reply OK if fine, or list issues." \
   --yolo --output-format json | jq -r '.text' | grep -q "^OK" || exit 1
 ```
 
@@ -428,7 +428,7 @@ agent-tui -p "Review staged changes for obvious bugs. Reply OK if fine, or list 
 
 ```bash
 for file in src/*.js; do
-  agent-tui -p "Migrate $file from CommonJS to ES modules." --yolo
+  grok -p "Migrate $file from CommonJS to ES modules." --yolo
 done
 ```
 
@@ -438,7 +438,7 @@ done
 
 ### Python Wrapper
 
-Agent TUI's headless mode can be wrapped as an OpenAI-compatible chat completion API:
+Grok's headless mode can be wrapped as an OpenAI-compatible chat completion API:
 
 ```python
 import asyncio
@@ -524,20 +524,16 @@ echo "No issues found"
 
 ---
 
-## Fully Automated Runs with --yolo
+## Always-approve for automation
 
-The `--yolo` flag enables always-approve mode (the same mode as `--permission-mode bypassPermissions` and `--always-approve`), auto-approving tool executions (file writes, command execution, etc.) without prompting for confirmation. Explicit `deny` rules and `PreToolUse` hooks still apply, and administrators can disable the mode via `requirements.toml` (see [22-permissions-and-safety.md](22-permissions-and-safety.md)). This is required for unattended automation:
+`--always-approve` (alias `--yolo`, same as `--permission-mode bypassPermissions`) runs tool calls without interactive permission prompts. Deny rules, hooks, and admin locks still apply (see [Permissions and safety](22-permissions-and-safety.md#permission-modes)).
 
 ```bash
-# Format all files without asking
-agent-tui -p "Format all files" --yolo
-
-# Run tests and fix failures
-agent-tui -p "Run the tests and fix any failures" --cwd ~/projects/my-app --yolo
+grok -p "Format all files" --always-approve
+grok -p "Run the tests and fix any failures" --cwd ~/projects/my-app --always-approve
 ```
 
-**Use `--yolo` with care.** It grants the agent full autonomy to modify files and run commands. Only use it in trusted environments or with well-scoped prompts.
-
+For agent servers and SDKs, see [Agent mode](15-agent-mode.md#automation-and-sdks).
 ---
 
 ## Environment Variables for Headless
@@ -547,7 +543,7 @@ Key environment variables that affect headless mode:
 | Variable                        | Description                                                   |
 | ------------------------------- | ------------------------------------------------------------- |
 | `XAI_API_KEY`        | API key for authentication (required when no browser login)   |
-| `GROK_HOME`                    | Override config directory (default: `~/.agent-tui`)                |
+| `GROK_HOME`                    | Override config directory (default: `~/.grok`)                |
 | `GROK_LOG_FILE`                | Path to a log file (used verbatim as the path; works in headless and TUI, honors `RUST_LOG`) |
 | `RUST_LOG`                     | Log level filter (e.g. `debug`). Headless logs to stderr.     |
 
@@ -555,7 +551,7 @@ For CI environments without browser access, set `XAI_API_KEY` with an API key fr
 
 ```bash
 export XAI_API_KEY="xai-..."
-agent-tui -p "Run the test suite" --yolo
+grok -p "Run the test suite" --yolo
 ```
 
 ---
@@ -588,18 +584,18 @@ If you've previously logged in, cached credentials are used automatically.
 
 - Headless mode starts a **fresh session by default**. Use `-r/--resume` or `-c/--continue` to maintain context across calls.
 - The `--output-format json` response always includes a `sessionId` you can use with `--resume` for follow-up calls.
-- Combine `--yolo` with `--rules` to set guardrails: `agent-tui -p "..." --yolo --rules "Never delete files"`.
+- Combine `--yolo` with `--rules` to set guardrails: `grok -p "..." --yolo --rules "Never delete files"`.
 - For debugging, raise the log level and capture stderr: `RUST_LOG=debug grok -p "..." 2> debug.log`.
 
 ---
 
 ## Project Root Discovery
 
-When Agent TUI starts, it discovers the project root by walking upward from `--cwd`
+When Grok starts, it discovers the project root by walking upward from `--cwd`
 (or the current directory) until it finds a `.git` directory.
 
 Note: If `--cwd` is nested inside a large repository (such as a monorepo),
-Agent TUI discovers that repository as the project root and scopes its discovery (AGENTS.md, skills, git history) to it, which can make
+Grok discovers that repository as the project root and scopes its discovery (AGENTS.md, skills, git history) to it, which can make
 startup slow. Point `--cwd` at the specific subproject you want to work in to keep
 the scope small.
 
@@ -607,7 +603,7 @@ the scope small.
 
 ## File Locations
 
-Agent TUI stores data in `~/.agent-tui` (override with `GROK_HOME`; see [Environment Variables for Headless](#environment-variables-for-headless)):
+Grok stores data in `~/.grok` (override with `GROK_HOME`; see [Environment Variables for Headless](#environment-variables-for-headless)):
 
 | Path                     | Contents                              |
 | ------------------------ | ------------------------------------- |
@@ -624,9 +620,9 @@ Agent TUI stores data in `~/.agent-tui` (override with `GROK_HOME`; see [Environ
 | `trace-exports/`         | Session trace exports                 |
 | `worktrees/`             | Git worktree metadata                 |
 
-### Read-Only `~/.agent-tui`
+### Read-Only `~/.grok`
 
-For containers or CI, mount `~/.agent-tui` read-only:
+For containers or CI, mount `~/.grok` read-only:
 
 - Pre-populate `auth.json` or use `XAI_API_KEY`
 - Session persistence fails silently (ephemeral)
@@ -635,7 +631,7 @@ For containers or CI, mount `~/.agent-tui` read-only:
 ```bash
 export XAI_API_KEY="xai-..."
 export GROK_DISABLE_AUTOUPDATER=1
-agent-tui -p "..." --no-auto-update
+grok -p "..." --no-auto-update
 ```
 
 ---
@@ -648,6 +644,12 @@ agent-tui -p "..." --no-auto-update
 | `GROK_DISABLE_AUTOUPDATER=1`    | Process   |
 | Non-TTY stderr (auto-detected)  | Automatic |
 | `[cli] auto_update = false`     | Persistent|
+
+`GROK_DISABLE_AUTOUPDATER` set to a falsy value (`0`, `false`, `off`, `no`, or empty, any
+case) counts as not set. The agent SDKs
+inject `GROK_DISABLE_AUTOUPDATER=1` for the non-leader agents they spawn (a falsy value in
+the SDK's isolation env keeps updates on), and the stdio agent skips its background update
+unless it runs from the managed install (`$GROK_HOME/bin/grok`).
 
 Update messages go to **stderr**. Stdout stays clean for `--output-format json`. See also [Environment Variables for Headless](#environment-variables-for-headless).
 
@@ -662,8 +664,6 @@ These flags supplement the [Command-Line Options](#command-line-options) table a
 | `--agent <NAME>`              | Agent name or definition file path                |
 | `--agents <JSON>`             | Inline subagent definitions as JSON               |
 | `--system-prompt-override`    | Override the agent's system prompt                |
-| `--check` / `--self-verify`   | Append verification loop (headless only)          |
-| `--best-of-n <N>`             | Run task N ways, pick best (headless only)         |
 | `--no-plan`                   | Disable plan mode                                 |
 | `--no-subagents`              | Disable subagent spawning                         |
 | `--no-memory`                 | Disable cross-session memory                      |
@@ -681,6 +681,6 @@ On SIGINT/SIGTERM:
 - Session state saved up to the last completed tool call
 - File modifications by tools are **not rolled back**
 - Exit code is **130** for SIGINT (`128 + 2`) and **143** for SIGTERM (`128 + 15`); CI pipelines can distinguish these from a normal error (exit code `1`)
-- Resume: `agent-tui -p "continue" --resume "<id>"` or `agent-tui -p "continue" --continue`
+- Resume: `grok -p "continue" --resume "<id>"` or `grok -p "continue" --continue`
 
 See [Session Management in Headless Mode](#session-management-in-headless-mode) for details on named sessions and the `-s`/`-r`/`-c` flags.

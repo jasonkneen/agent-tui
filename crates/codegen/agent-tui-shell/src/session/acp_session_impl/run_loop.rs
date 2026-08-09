@@ -195,6 +195,25 @@ pub(super) async fn run_session(
             }
         });
     }
+    let _workflow_watch = crate::config::watcher::ProjectDiscoveryWatcher::start(
+        std::path::Path::new(session.session_info.cwd.as_str()),
+    )
+    .map(|(mut watcher, mut changes)| {
+        let session = session.clone();
+        tokio::task::spawn_local(async move {
+            while let Some(change) = changes.recv().await {
+                watcher.refresh_new_dirs();
+                match change {
+                    crate::config::watcher::DiscoveryChange::Skills => {
+                        session.reload_skills_from_disk().await;
+                    }
+                    crate::config::watcher::DiscoveryChange::Workflows => {
+                        session.send_available_commands_update().await;
+                    }
+                }
+            }
+        })
+    });
     let _fs_watch: Option<fs_watch::FsWatchHandle> = if fs_watch_caps.needs_watcher() {
         let deps = fs_watch::FsWatchDeps::from_session(
             &session,

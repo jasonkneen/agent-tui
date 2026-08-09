@@ -1,6 +1,6 @@
 # Getting Started
 
-Agent TUI is a terminal-based AI coding assistant from SpaceXAI. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, searches the web, and manages tasks.
+Grok Build is a terminal-based AI coding assistant from SpaceXAI. It runs as a TUI (Terminal User Interface) that understands your codebase, executes shell commands, edits files, searches the web, and manages tasks.
 
 You can use it interactively as a full-screen TUI, run it headlessly for scripting and CI/CD, or integrate it into editors via the Agent Client Protocol (ACP).
 
@@ -8,80 +8,61 @@ You can use it interactively as a full-screen TUI, run it headlessly for scripti
 
 ## Installation
 
-**Agent TUI** is a packaging fork of Grok Build. Prefer a prebuilt release, or build from source.
-
-### Prebuilt (GitHub Releases)
+Install the latest stable release (macOS, Linux, or Windows via Git Bash):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jasonkneen/agent-tui/fork/agent-tui/crates/codegen/agent-tui-pager/scripts/install.sh | bash
+curl -fsSL https://x.ai/cli/install.sh | bash
 ```
 
-Windows (PowerShell):
+Install a specific version:
+
+```bash
+curl -fsSL https://x.ai/cli/install.sh | bash -s 0.1.42
+```
+
+On **Windows (PowerShell)**, use the native PowerShell installer:
 
 ```powershell
-irm https://raw.githubusercontent.com/jasonkneen/agent-tui/fork/agent-tui/crates/codegen/agent-tui-pager/scripts/install.ps1 | iex
+irm https://x.ai/cli/install.ps1 | iex
 ```
 
-Useful variants:
+Install a specific version:
 
-```bash
-# specific version
-curl -fsSL …/install.sh | bash -s 0.1.220
-
-# alpha channel
-AGENT_TUI_CHANNEL=alpha curl -fsSL …/install.sh | bash
+```powershell
+$env:GROK_VERSION="0.1.42"; irm https://x.ai/cli/install.ps1 | iex
 ```
 
-Maintainer release process: **`RELEASING.md`** at the repository root.
-Releases: https://github.com/jasonkneen/agent-tui/releases
-
-### Build from source
-
-```bash
-cargo run -p agent-tui-bin                 # debug
-cargo build -p agent-tui-bin --release     # binary: target/release/agent-tui
-```
-
-Put the release binary on your `PATH` (example):
-
-```bash
-mkdir -p ~/.agent-tui/bin
-cp target/release/agent-tui ~/.agent-tui/bin/
-export PATH="$HOME/.agent-tui/bin:$PATH"
-```
-
-Or install the npm package wrappers (when published for this fork):
-
-```bash
-npm i -g @agent-tui/agent-tui
-```
-
-> **Note:** Official `https://x.ai/cli/install.sh` installs upstream Grok Build (`grok`), not this fork.
+The PowerShell installer automatically adds `%USERPROFILE%\.grok\bin` to your User PATH. Alternatively, install via [Git for Windows](https://gitforwindows.org/) (Git Bash) or MSYS2 using the bash script above. WSL users get the Linux binary automatically.
 
 Verify the installation:
 
 ```bash
-agent-tui --version
+grok --version
 ```
 
-Config defaults to `~/.agent-tui` (override with `$AGENT_TUI_HOME`; legacy `$GROK_HOME` is still accepted).
+Update to the latest version at any time:
+
+```bash
+grok update
+```
+
 ---
 
 ## First Launch
 
-Start Agent TUI by running:
+Start Grok by running:
 
 ```bash
-agent-tui
+grok
 ```
 
-On first launch, Agent TUI opens your browser to authenticate with grok.com. After you sign in, Agent TUI stores your credentials in `~/.agent-tui/auth.json`, where they persist across sessions. Agent TUI refreshes your credentials automatically and prompts you to sign in again when they can no longer be renewed.
+On first launch, Grok opens your browser to authenticate with grok.com. After you sign in, Grok stores your credentials in `~/.grok/auth.json`, where they persist across sessions. Grok refreshes your credentials automatically and prompts you to sign in again when they can no longer be renewed.
 
 If you prefer API key authentication (e.g., for CI/CD or environments without a browser), set the `XAI_API_KEY` environment variable instead:
 
 ```bash
 export XAI_API_KEY="xai-..."
-agent-tui
+grok
 ```
 
 See [Authentication](02-authentication.md) for the full set of auth options including OIDC, external auth providers, and device code flow.
@@ -90,14 +71,14 @@ See [Authentication](02-authentication.md) for the full set of auth options incl
 
 ## Basic Interaction
 
-Once authenticated, Agent TUI presents a full-screen TUI with two main areas:
+Once authenticated, Grok presents a full-screen TUI with two main areas:
 
-- **Scrollback** -- the conversation history showing your prompts, the agent's responses, tool calls, file edits, and more.
+- **Scrollback** -- the conversation history showing your prompts, Grok's responses, tool calls, file edits, and more.
 - **Prompt** -- the input area at the bottom where you type messages.
 
-Type a message and press `Enter` to send it. Agent TUI reads files, runs commands, and edits code as needed. Each tool run streams into the scrollback in real time.
+Type a message and press `Enter` to send it. Grok reads files, runs commands, and edits code as needed. Each tool run streams into the scrollback in real time.
 
-Press `Tab` to move focus between the prompt and the scrollback. While a turn is running, `Ctrl+C` cancels it (or clears a non-empty draft first); `Esc` is a no-op mid-turn. Idle, press `Esc` twice within 800ms to clear a non-empty prompt, or (with an empty prompt and conversation messages) to open rewind — see [Keyboard Shortcuts](03-keyboard-shortcuts.md#escape). With the scrollback focused, use the arrow keys to select entries and to collapse or expand them. To navigate with `j`/`k` and fold with `h`/`l` instead, enable Vim mode.
+Press `Tab` to move focus between the prompt and the scrollback. While a turn is running, `Esc` cancels it (the exception is fullscreen vim scrollback mode, where mid-turn `Esc` is a no-op; minimal mode cancels even with vim on); `Ctrl+C` cancels once the composer is empty — with a draft, the first press only clears it. Idle, press `Esc` twice within 800ms to clear a non-empty prompt, or (with an empty prompt and conversation messages) to open rewind — see [Keyboard Shortcuts](03-keyboard-shortcuts.md#escape). With the scrollback focused, use the arrow keys to select entries and to collapse or expand them. To navigate with `j`/`k` and fold with `h`/`l` instead, enable Vim mode.
 
 ### File References
 
@@ -118,10 +99,10 @@ The `@` operator opens a fuzzy file picker. By default it respects `.gitignore` 
 
 ### Permissions
 
-By default, Agent TUI asks for permission before executing shell commands or editing files. You can approve individually or toggle always-approve mode:
+By default, Grok asks for permission before executing shell commands or editing files. You can approve individually or toggle always-approve mode:
 
 - Press `Ctrl+O` to toggle always-approve mode
-- Use the `--yolo` flag at launch: `agent-tui --yolo`
+- Use the `--yolo` flag at launch: `grok --yolo`
 - Type `/always-approve` in the prompt to toggle the mode
 
 ---
@@ -130,19 +111,19 @@ By default, Agent TUI asks for permission before executing shell commands or edi
 
 ### Sessions
 
-Every conversation is a **session**. Sessions are automatically saved to `~/.agent-tui/sessions/` and can be resumed later. Each session tracks the full conversation history, tool calls, file edits, and task state.
+Every conversation is a **session**. Sessions are automatically saved to `~/.grok/sessions/` and can be resumed later. Each session tracks the full conversation history, tool calls, file edits, and task state.
 
 - Start a new session: `Ctrl+N` or `/new`
 - Resume a previous session: `/resume` in the TUI, or `--resume <ID>` from the CLI
-- Continue the most recent session: `agent-tui -c`
+- Continue the most recent session: `grok -c`
 
 ### Scrollback
 
 The scrollback is the main display area. It shows:
 
 - **User prompts** -- your messages, rendered as sticky headers
-- **Agent messages** -- the agent's responses with full markdown rendering and syntax highlighting
-- **Thinking blocks** -- Agent TUI's reasoning process (collapsible)
+- **Agent messages** -- Grok's responses with full markdown rendering and syntax highlighting
+- **Thinking blocks** -- Grok's reasoning process (collapsible)
 - **Tool calls** -- file edits (with inline diffs), command executions, search results, and more
 - **Task lists** -- TODO items tracking progress
 
@@ -150,7 +131,7 @@ Collapse or expand the selected entry with the `Left`/`Right` arrow keys (or `h`
 
 ### Tools
 
-Agent TUI has built-in tools for:
+Grok has built-in tools for:
 
 | Tool | Description |
 |------|-------------|
@@ -184,54 +165,54 @@ See [Slash Commands](04-slash-commands.md) for the complete reference.
 
 ```bash
 # Launch the interactive TUI and submit an initial prompt as the first turn
-agent-tui "fix the failing auth test and run it"
+grok "fix the failing auth test and run it"
 
 # Initial prompt in a new git worktree. Use --worktree=<name> (with `=`) so the
-# prompt isn't swallowed as the worktree name — `agent-tui -w "refactor module X"`
+# prompt isn't swallowed as the worktree name — `grok -w "refactor module X"`
 # would treat "refactor module X" as the worktree label, not the prompt.
-agent-tui --worktree=feat "refactor module X"
+grok --worktree=feat "refactor module X"
 
 # Base the worktree on a specific branch (e.g. main) instead of the current HEAD:
-agent-tui -w --ref main "implement feature from main"
+grok -w --ref main "implement feature from main"
 
 
 # Start in a specific project directory
-agent-tui --cwd ~/projects/my-app
+grok --cwd ~/projects/my-app
 
 # Add project-specific rules
-agent-tui --rules "Always use TypeScript. Prefer functional components."
+grok --rules "Always use TypeScript. Prefer functional components."
 
 # Auto-approve all tool executions
-agent-tui --yolo
+grok --yolo
 
 # Use a specific model
-agent-tui -m grok-build
+grok -m grok-build
 
 # Resume a previous session
-agent-tui --resume <session-id>
+grok --resume <session-id>
 
 # Continue the most recent session
-agent-tui -c
+grok -c
 
-# Experimental scrollback-native render mode. Sticky: plain `agent-tui` reopens in
+# Experimental scrollback-native render mode. Sticky: plain `grok` reopens in
 # the mode last chosen via --minimal/--fullscreen (or /minimal//fullscreen).
-agent-tui --minimal
+grok --minimal
 
 # Back to the standard fullscreen TUI (and make it sticky again)
-agent-tui --fullscreen
+grok --fullscreen
 
 # Headless mode (for scripts)
-agent-tui -p "Explain this codebase"
+grok -p "Explain this codebase"
 ```
 
 ---
 
 ## Headless Mode
 
-run agent-tui non-interactively for scripting, CI/CD, and automation:
+Run Grok non-interactively for scripting, CI/CD, and automation:
 
 ```bash
-agent-tui -p "Your prompt here"
+grok -p "Your prompt here"
 ```
 
 Output formats:
@@ -245,22 +226,22 @@ Output formats:
 Example CI/CD usage:
 
 ```bash
-agent-tui -p "Review changes for bugs" --output-format json --yolo | jq -r '.text'
+grok -p "Review changes for bugs" --output-format json --yolo | jq -r '.text'
 ```
 
 ---
 
 ## Project Rules (AGENTS.md)
 
-Add per-project instructions by creating an `AGENTS.md` file in your repository. Agent TUI reads these files and injects their contents as a project-instructions message at the start of the conversation:
+Add per-project instructions by creating an `AGENTS.md` file in your repository. Grok reads these files and injects their contents as a project-instructions message at the start of the conversation:
 
 ```
-~/.agent-tui/AGENTS.md           # Global rules (apply to all projects)
+~/.grok/AGENTS.md           # Global rules (apply to all projects)
 <repo-root>/AGENTS.md       # Repository-level rules
 <cwd>/AGENTS.md             # Directory-level rules (highest priority)
 ```
 
-Deeper files take precedence. Agent TUI also reads `CLAUDE.md` files for compatibility.
+Deeper files take precedence. Grok also reads `CLAUDE.md` files for compatibility.
 
 ---
 

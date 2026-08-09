@@ -16,7 +16,7 @@ use crate::session::worktree::{
 
 type ExtResult = Result<acp::ExtResponse, acp::Error>;
 
-const WORKTREE_EXT_LOG: &str = "xai_worktree";
+const WORKTREE_EXT_LOG: &str = "agent_tui_worktree";
 
 /// Wrapper to send worktree progress notifications via gateway.
 #[derive(Clone)]

@@ -35,6 +35,111 @@ fn drop_cli_catchall_allows(
     }
     (kept, dropped)
 }
+/// Build the per-session current-thread tokio runtime.
+///
+/// Construction acquires fds (epoll/kqueue, waker) and fails with
+/// `EMFILE`/`EAGAIN` under resource pressure. Extracted so the containment
+/// contract — exhaustion returns `Err`, never aborts — is testable
+/// (`runtime_containment_tests`).
+pub(crate) fn build_session_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+/// Building the session runtime under fd exhaustion must return `Err`, never
+/// panic (under `panic=abort` a panic kills every live session).
+///
+/// The rlimit is lowered only in a re-exec'd child (the `agent-tui-gix-status`
+/// pattern), so parallel tests are unaffected; stdout markers distinguish
+/// skip (unenforceable environment) from pass/fail.
+#[cfg(all(test, unix))]
+mod runtime_containment_tests {
+    use super::build_session_runtime;
+    /// Env marker dispatching the re-exec'd test binary into child logic.
+    const CHILD_ENV: &str = "XAI_GROK_SHELL_RUNTIME_CONTAINMENT_CHILD";
+    const PASS_MARK: &str = "runtime-build-contained:";
+    const SKIP_MARK: &str = "skip-child:";
+    /// Child: lower RLIMIT_NOFILE, fill the fd table, assert `Err`.
+    fn run_child() -> ! {
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
+            println!("{SKIP_MARK} getrlimit failed");
+            std::process::exit(0);
+        }
+        lim.rlim_cur = 64.min(lim.rlim_max);
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) } != 0 {
+            println!("{SKIP_MARK} setrlimit failed");
+            std::process::exit(0);
+        }
+        let mut held = Vec::new();
+        loop {
+            let fd = unsafe { libc::dup(0) };
+            if fd < 0 {
+                break;
+            }
+            held.push(fd);
+            if held.len() > 4096 {
+                println!("{SKIP_MARK} fd limit not enforced");
+                std::process::exit(0);
+            }
+        }
+        match build_session_runtime() {
+            Err(e) => {
+                println!("{PASS_MARK} {e}");
+                std::process::exit(0);
+            }
+            Ok(_) => {
+                println!("{SKIP_MARK} runtime built despite full fd table");
+                std::process::exit(0);
+            }
+        }
+    }
+    /// Doubles as the child entry point when `CHILD_ENV` is set.
+    #[test]
+    fn child_entry_runtime_build_under_fd_exhaustion() {
+        if std::env::var_os(CHILD_ENV).is_some() {
+            run_child();
+        }
+    }
+    #[test]
+    fn runtime_build_failure_is_contained() {
+        let filter = module_path!()
+            .split_once("::")
+            .map(|(_, rest)| rest)
+            .unwrap_or_default();
+        let exe = std::env::current_exe().expect("current_exe");
+        let mut cmd = std::process::Command::new(exe);
+        cmd.arg("--exact")
+            .arg(format!(
+                "{filter}::child_entry_runtime_build_under_fd_exhaustion"
+            ))
+            .arg("--nocapture")
+            .arg("--test-threads=1")
+            .env(CHILD_ENV, "1")
+            .stdin(std::process::Stdio::null());
+        agent_tui_tty_utils::detach_std_command(&mut cmd);
+        let out = cmd.output().expect("spawn child test process");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success() && !stderr.contains("panicked at"),
+            "child aborted/panicked instead of containing the failure \
+             (status: {:?})\nstdout:\n{stdout}\nstderr:\n{stderr}",
+            out.status
+        );
+        if stdout.contains(SKIP_MARK) {
+            eprintln!("skipped: {stdout}");
+            return;
+        }
+        assert!(
+            stdout.contains(PASS_MARK),
+            "no pass/skip marker (filter matched nothing?)\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+    }
+}
 #[cfg(test)]
 mod cli_catchall_drop_tests {
     use super::drop_cli_catchall_allows;
@@ -67,7 +172,11 @@ mod cli_catchall_drop_tests {
     /// while a scoped `Bash(git *)` survives.
     #[test]
     fn pin_drops_cli_bare_and_prefix_bash_keeps_scoped() {
-        let rules = vec![allow("Bash"), allow("Bash(?*)"), allow("Bash(git *)")];
+        let rules = vec![
+            allow("Bash"),        // bare {Allow, Bash, None}
+            allow("Bash(?*)"),    // prefix-regime catch-all
+            allow("Bash(git *)"), // scoped — survives
+        ];
         let (kept, dropped) = drop_cli_catchall_allows(rules, Some(YOLO_PIN_REASON_REQUIREMENTS));
         assert_eq!(kept.len(), 1, "only the scoped Bash rule survives");
         assert_eq!(kept[0].pattern.as_deref(), Some("git *"));
@@ -123,6 +232,7 @@ pub(crate) async fn spawn_session_actor(
     system_prompt_label: String,
     compaction_mode: agent_tui_chat_state::CompactionMode,
     compaction_verbatim_input: bool,
+    compaction_tool_choice: crate::util::config::CompactionToolChoice,
     two_pass_enabled: bool,
     buffering_settings: Option<BufferingSettings>,
     origin_client: Option<crate::http::OriginClientInfo>,
@@ -145,6 +255,7 @@ pub(crate) async fn spawn_session_actor(
     persisted_signals: Option<crate::session::signals::SessionSignals>,
     persisted_plan_mode: Option<crate::session::plan_mode::PlanModeSnapshot>,
     persisted_goal_mode: Option<crate::session::goal_tracker::GoalOrchestration>,
+    persisted_workflow_runs: Vec<crate::session::workflow::store::RestoredWorkflowRun>,
     persisted_announcement_state: Option<crate::session::announcement_state::AnnouncementState>,
     memory_config: Option<crate::config::MemoryConfig>,
     loc_tracking_enabled: bool,
@@ -165,6 +276,7 @@ pub(crate) async fn spawn_session_actor(
     app_builder_deployer_config: agent_tui_tools::implementations::grok_build::deploy_app::AppBuilderDeployerConfig,
     write_file_enabled: bool,
     goal_enabled: bool,
+    background_workflows_enabled: bool,
     subagents_enabled: bool,
     subagents_max_depth: u32,
     workflow_max_concurrent_agents: usize,
@@ -235,9 +347,12 @@ pub(crate) async fn spawn_session_actor(
             WebFetchConfig::Enabled { params } => params.allowed_domains(),
             WebFetchConfig::Disabled => vec![],
         };
+        let project_trusted =
+            crate::agent::folder_trust::project_scope_allowed(tool_context.cwd.as_path());
         let mut permission_config =
             agent_tui_workspace::permission::resolution::resolve_permission_config_with_fallback(
                 tool_context.cwd.as_path(),
+                project_trusted,
             )
             .await;
         let yolo_pin = agent_tui_workspace::permission::resolution::yolo_disabled_by_policy();
@@ -295,7 +410,7 @@ pub(crate) async fn spawn_session_actor(
                 });
             if transport.is_none() {
                 tracing::debug!(
-                    session_id = % session_info.id.0,
+                    session_id = %session_info.id.0,
                     "hitl permission live enabled but no remote transport available; using local prompt"
                 );
             }
@@ -420,6 +535,8 @@ pub(crate) async fn spawn_session_actor(
         top_p: sampling_config.top_p,
         api_backend: sampling_config.api_backend.clone(),
         extra_headers: sampling_config.extra_headers.clone(),
+        query_params: sampling_config.query_params.clone(),
+        env_http_headers: sampling_config.env_http_headers.clone(),
         context_window: context_window_override.unwrap_or(baseline_context_window),
         reasoning_effort: sampling_config.reasoning_effort,
         stream_tool_calls: Some(sampling_config.stream_tool_calls),
@@ -443,24 +560,24 @@ pub(crate) async fn spawn_session_actor(
         chat_state_event_tx,
         tokio_util::sync::CancellationToken::new(),
     );
-    if !initial_prompt_texts.is_empty()
+    if (!initial_prompt_texts.is_empty()
         || initial_total_tokens > 0
-        || initial_last_compaction.is_some()
+        || initial_last_compaction.is_some())
+        && let Some(mut snap) = chat_state_handle.snapshot().await
     {
-        if let Some(mut snap) = chat_state_handle.snapshot().await {
-            snap.prompt_index = initial_prompt_texts.len();
-            snap.prompt_texts = initial_prompt_texts;
-            if initial_total_tokens > 0 {
-                snap.total_tokens = initial_total_tokens;
-            }
-            snap.last_compaction_prompt_index = initial_last_compaction;
-            chat_state_handle.restore_snapshot(snap);
+        snap.prompt_index = initial_prompt_texts.len();
+        snap.prompt_texts = initial_prompt_texts;
+        if initial_total_tokens > 0 {
+            snap.total_tokens = initial_total_tokens;
         }
+        snap.last_compaction_prompt_index = initial_last_compaction;
+        chat_state_handle.restore_snapshot(snap);
     }
     chat_state_handle.update_credentials(credentials);
     let state = TokioMutex::new(State {
         running_task: None,
         pending_inputs: VecDeque::new(),
+        combine_edit_holds: std::collections::HashSet::new(),
         pending_notifications: Vec::new(),
         notifications_suppressed: false,
         rewindable: false,
@@ -473,9 +590,12 @@ pub(crate) async fn spawn_session_actor(
         None => FileStateTracker::new(),
     });
     let file_state_handle = FileStateHandle::new(file_state_tracker.clone());
-    let auto_wake_delivered =
-        agent_tui_tools::reminders::task_completion::AutoWakeDeliveredIds::default();
-    tool_context.auto_wake_delivered = Some(auto_wake_delivered.clone());
+    let task_completion_reservations =
+        agent_tui_tools::reminders::task_completion::TaskCompletionReservations::default();
+    let task_wake_suppressed =
+        agent_tui_tools::reminders::task_completion::TaskWakeSuppressed::default();
+    tool_context.task_completion_reservations = Some(task_completion_reservations.clone());
+    tool_context.task_wake_suppressed = Some(task_wake_suppressed.clone());
     let synthetic_trace_tx_shared: std::sync::Arc<
         std::sync::Mutex<
             Option<
@@ -502,6 +622,7 @@ pub(crate) async fn spawn_session_actor(
         };
         Arc::new(parking_lot::Mutex::new(tracker))
     };
+    let goal_was_restored = persisted_goal_mode.is_some();
     let goal_tracker = {
         let session_dir = crate::session::persistence::session_dir(&session_info);
         let tracker = if let Some(snapshot) = persisted_goal_mode {
@@ -526,13 +647,14 @@ pub(crate) async fn spawn_session_actor(
             prompt_index: prompt_index_for_bridge,
             cwd: tool_context.cwd.as_path().to_path_buf(),
             gateway_enabled: gateway_enabled.clone(),
-            persistence_tx: persistence.tx.clone(),
+            persistence: persistence.clone(),
             incremental_bash_output,
             plan_mode: plan_mode.clone(),
             current_prompt_mode: current_prompt_mode.clone(),
             turn_prompt_mode: turn_prompt_mode.clone(),
             session_cmd_tx: cmd_tx.clone(),
-            auto_wake_delivered: auto_wake_delivered.clone(),
+            task_completion_reservations: task_completion_reservations.clone(),
+            task_wake_suppressed: task_wake_suppressed.clone(),
             synthetic_trace_tx: synthetic_trace_tx_shared.clone(),
             task_output_tool_name: task_output_tool_name.clone(),
             read_tool_name: read_tool_name.clone(),
@@ -542,12 +664,25 @@ pub(crate) async fn spawn_session_actor(
         },
     );
     let tool_context_for_handle = tool_context.clone();
+    let cursor_harness = false;
+    let terminal_backend_kind = select_terminal_backend_kind(
+        startup_hints.is_subagent,
+        parent_terminal_backend.is_some(),
+        client_terminal_capable,
+        tool_context.gateway.is_some(),
+        cursor_harness,
+    );
+    let effective_cfg = matches!(
+        terminal_backend_kind,
+        TerminalBackendKind::LocalPersistent | TerminalBackendKind::LocalNonPersistent
+    )
+    .then(crate::config::load_effective_config)
+    .and_then(Result::ok);
     let resolve_search_shadows = || {
-        let user_cfg = crate::config::load_effective_config().ok();
         let requirements = crate::config::load_merged_requirements();
         let (find_bfs, grep_ugrep) = crate::util::config::resolve_search_tools_enabled(
             requirements.as_ref(),
-            user_cfg.as_ref(),
+            effective_cfg.as_ref(),
             None,
         );
         agent_tui_tools::computer::local::SearchShadowConfig {
@@ -555,6 +690,7 @@ pub(crate) async fn spawn_session_actor(
             grep_ugrep,
         }
     };
+    let resolve_policy = || crate::util::config::resolve_shell_env_policy(effective_cfg.as_ref());
     let terminal_backend: std::sync::Arc<dyn agent_tui_tools::computer::types::TerminalBackend> =
         match terminal_backend_kind {
             TerminalBackendKind::ReuseParent => parent_terminal_backend
@@ -585,17 +721,20 @@ pub(crate) async fn spawn_session_actor(
                 ))
             }
         };
+    if matches!(
+        terminal_backend_kind,
+        TerminalBackendKind::LocalPersistent | TerminalBackendKind::LocalNonPersistent
+    ) {
+        terminal_backend
+            .warm_shell(tool_context.cwd.as_path())
+            .await;
+    }
     let fs_backend: std::sync::Arc<dyn agent_tui_tools::computer::types::AsyncFileSystem> =
         if client_fs_capable && tool_context.gateway.is_some() {
-            std::sync::Arc::new(
-                agent_tui_workspace::file_system::AcpFsAdapter::new(
-                    tool_context.gateway.clone().unwrap(),
-                    tool_context.session_id.clone().unwrap(),
-                )
-                .with_local_read_root(
-                    crate::session::persistence::session_dir(&session_info).join("tool-results"),
-                ),
-            )
+            std::sync::Arc::new(agent_tui_workspace::file_system::AcpFsAdapter::new(
+                tool_context.gateway.clone().unwrap(),
+                tool_context.session_id.clone().unwrap(),
+            ))
         } else {
             std::sync::Arc::new(agent_tui_tools::computer::local::LocalFs)
         };
@@ -649,7 +788,8 @@ pub(crate) async fn spawn_session_actor(
     > = if let Some(ref storage) = memory_storage_for_session {
         if let Err(e) = storage.ensure_initialized() {
             tracing::warn!(
-                target : agent_tui_telemetry::memory_log::TARGET, error = % e,
+                target: agent_tui_telemetry::memory_log::TARGET,
+                error = %e,
                 "MEMORY_INIT: ensure_initialized failed, continuing without template files"
             );
         }
@@ -659,13 +799,15 @@ pub(crate) async fn spawn_session_actor(
             tokio::task::spawn_blocking(move || match gc_storage.gc(gc_max_age) {
                 Ok(removed) if removed > 0 => {
                     tracing::info!(
-                        target : agent_tui_telemetry::memory_log::TARGET, removed,
+                        target: agent_tui_telemetry::memory_log::TARGET,
+                        removed,
                         "MEMORY_GC: cleaned orphaned workspace directories"
                     );
                 }
                 Err(e) => {
                     tracing::debug!(
-                        target : agent_tui_telemetry::memory_log::TARGET, error = % e,
+                        target: agent_tui_telemetry::memory_log::TARGET,
+                        error = %e,
                         "MEMORY_GC: failed"
                     );
                 }
@@ -683,6 +825,11 @@ pub(crate) async fn spawn_session_actor(
         } else {
             None
         };
+        let embed_credentials = crate::auth::credential_provider::embedding_session_credentials(
+            &embed_base_url,
+            auth_manager.as_ref(),
+            api_key_provider.clone(),
+        );
         let params = crate::session::memory::MemoryBackendParams {
             session_id: session_info.id.to_string(),
             embed_config: memory_config.as_ref().map(|mc| mc.embedding.clone()),
@@ -694,16 +841,7 @@ pub(crate) async fn spawn_session_actor(
             watcher,
             stale_claim_secs: watcher_config.stale_claim_secs,
             search_source: "tool",
-            api_key_provider: api_key_provider.clone(),
-            auth_credentials: auth_manager.as_ref().map(|am| {
-                std::sync::Arc::new(
-                    crate::auth::credential_provider::ShellAuthCredentialProvider::new(
-                        am.clone(),
-                        None,
-                        None,
-                    ),
-                ) as std::sync::Arc<dyn agent_tui_auth::AuthCredentialProvider>
-            }),
+            embedding_credentials: embed_credentials,
         };
         let backend = crate::session::memory::MemoryBackendImpl::from_session_params(
             storage.clone(),
@@ -716,15 +854,17 @@ pub(crate) async fn spawn_session_actor(
         memory_backend_params_for_session = Some(params);
         if watcher_config.enabled && !watcher_started {
             tracing::warn!(
-                target : agent_tui_telemetry::memory_log::TARGET,
+                target: agent_tui_telemetry::memory_log::TARGET,
                 "MEMORY_INIT: watcher was configured but failed to start \
                  (directory may not exist or OS watcher unavailable)"
             );
         }
         tracing::info!(
-            target : agent_tui_telemetry::memory_log::TARGET, workspace = % storage
-            .workspace_dir().display(), global = % storage.global_dir().display(),
-            watcher_config_enabled = watcher_config.enabled, watcher_started,
+            target: agent_tui_telemetry::memory_log::TARGET,
+            workspace = %storage.workspace_dir().display(),
+            global = %storage.global_dir().display(),
+            watcher_config_enabled = watcher_config.enabled,
+            watcher_started,
             "MEMORY_INIT: storage + backend created"
         );
         let mc = memory_config.as_ref();
@@ -749,7 +889,7 @@ pub(crate) async fn spawn_session_actor(
         Some(backend)
     } else {
         tracing::debug!(
-            target : agent_tui_telemetry::memory_log::TARGET,
+            target: agent_tui_telemetry::memory_log::TARGET,
             "MEMORY_INIT: memory disabled, no storage created"
         );
         None
@@ -757,6 +897,11 @@ pub(crate) async fn spawn_session_actor(
     let context_window_tokens = context_window_override
         .map(|c| c.get())
         .unwrap_or(sampling_config.context_window);
+    let scheduler_background_loops = crate::util::config::resolve_scheduler_background_loops(
+        remote_settings
+            .as_ref()
+            .and_then(|r| r.scheduler_background_loops),
+    );
     let managed_gateway_tool_client = auth_manager.as_ref().map(|am| {
         agent_tui_tools::types::resources::ManagedGatewayToolClient(Arc::new(
             ShellManagedGatewayToolClient {
@@ -770,8 +915,9 @@ pub(crate) async fn spawn_session_actor(
         if let Some(ref pool) = parent_mcp_pool {
             state.import_shared_clients(pool);
             tracing::info!(
-                session_id = % session_info.id.0, shared_clients = state.shared_clients
-                .len(), "Imported shared MCP clients from parent pool"
+                session_id = %session_info.id.0,
+                shared_clients = state.shared_clients.len(),
+                "Imported shared MCP clients from parent pool"
             );
         }
         if !acp_mcp_servers.is_empty() {
@@ -781,7 +927,8 @@ pub(crate) async fn spawn_session_actor(
             let acp_server_count = acp_mcp_servers.len();
             state.set_acp_servers(acp_mcp_servers, invoker);
             tracing::info!(
-                session_id = % session_info.id.0, acp_mcp_servers = acp_server_count,
+                session_id = %session_info.id.0,
+                acp_mcp_servers = acp_server_count,
                 "Registered in-process SDK MCP servers (x.ai/mcp/sdk_call)"
             );
         }
@@ -814,6 +961,7 @@ pub(crate) async fn spawn_session_actor(
         write_file_enabled,
         subagents_enabled,
         subagent_toggle: subagent_toggle.clone(),
+        background_workflows_enabled,
         ask_user_question_enabled,
         persona_summaries: persona_summaries.clone(),
         prompt_audience,
@@ -832,9 +980,12 @@ pub(crate) async fn spawn_session_actor(
         monitor_event_buffer: tool_context.monitor_event_buffer.clone(),
         user_question_tx: user_question_tx.clone(),
         subagent_depth: tool_context.subagent_depth,
+        subagents_max_depth,
         session_id_str: session_info.id.0.to_string(),
+        blocking_wait_depth: tool_context.blocking_wait_depth.clone(),
         respect_gitignore,
         path_not_found_hints,
+        scheduler_background_loops,
         mcp_state: mcp_state.clone(),
         managed_gateway_tool_client: managed_gateway_tool_client.clone(),
         is_non_interactive: startup_hints.non_interactive,
@@ -858,7 +1009,8 @@ pub(crate) async fn spawn_session_actor(
         .await
         .map_err(|e| {
             tracing::error!(
-                session_id = % session_info.id.0, error = % e,
+                session_id = %session_info.id.0,
+                error = %e,
                 "Agent building failed, please check your config"
             );
             e
@@ -937,7 +1089,7 @@ pub(crate) async fn spawn_session_actor(
         agent.tool_bridge().toolset(),
         None,
     ) {
-        tracing::warn!(error = % e, "failed to bind local session toolset");
+        tracing::warn!(error = %e, "failed to bind local session toolset");
     }
     let system_prompt = agent.system_prompt().to_string();
     let mut prompt_context = agent.prompt_context().clone();
@@ -980,6 +1132,13 @@ pub(crate) async fn spawn_session_actor(
     } else {
         save_system_prompt(&session_info, &system_prompt);
     }
+    let initial_prefix_carries_fallback_date = resumed_prefix_carries_fallback_date(
+        agent
+            .definition()
+            .user_message_template
+            .surfaces_local_date(),
+        &conversation,
+    );
     persist_chat_history_jsonl_sync(&session_info, &conversation);
     chat_state_handle.replace_conversation(conversation);
     let feedback_client = feedback_proxy_url.map(|base_url| {
@@ -994,7 +1153,8 @@ pub(crate) async fn spawn_session_actor(
     });
     let has_feedback_client = feedback_client.is_some();
     tracing::info!(
-        session_id = % session_info.id.0, has_feedback_client = has_feedback_client,
+        session_id = %session_info.id.0,
+        has_feedback_client = has_feedback_client,
         "Creating feedback manager"
     );
     let feedback_client_type = match client_type {
@@ -1008,13 +1168,22 @@ pub(crate) async fn spawn_session_actor(
         ClientType::Desktop => prod_mc_cli_chat_proxy_types::feedback_types::ClientType::Desktop,
         ClientType::GrokPager => prod_mc_cli_chat_proxy_types::feedback_types::ClientType::Tui,
     };
+    let user_cfg = feedback_flags.user;
     let feedback_config = FeedbackManagerConfig {
         feedback_enabled: feedback_flags.enabled,
         telemetry_enabled,
         client_type: feedback_client_type,
         loc_tracking_enabled,
+        user: user_cfg.clone(),
         ..Default::default()
     };
+    if feedback_flags.enabled
+        && let Some(user_cfg) = user_cfg
+    {
+        tokio::spawn(async move {
+            let _ = crate::util::user_identity::cached_identity(Some(&user_cfg)).await;
+        });
+    }
     let feedback_manager = Arc::new(FeedbackManager::new(
         session_info.id.0.to_string(),
         feedback_client,
@@ -1053,9 +1222,16 @@ pub(crate) async fn spawn_session_actor(
     let (event_tx, event_rx) = mpsc::unbounded_channel::<SessionEvent>();
     let mut sampler_config_initial = sampling_config.clone();
     sampler_config_initial.idle_timeout_secs = Some(inference_idle_timeout_secs);
+    let task_output_budgeted = tool_context.task_output_token_budget.is_some();
+    let retry_only_before_output =
+        task_output_budgeted || tool_context.sampler_retry_only_before_output;
+    if retry_only_before_output {
+        sampler_config_initial.doom_loop_recovery = None;
+    }
     let sampler_retry_policy = agent_tui_sampler::RetryPolicy {
         max_retries: max_retries.unwrap_or(5),
         rate_limit_retry_threshold: 2,
+        retry_only_before_output,
     };
     let (sampler_event_tx, sampler_event_rx) =
         tokio::sync::mpsc::unbounded_channel::<agent_tui_sampler::SamplingEvent>();
@@ -1088,7 +1264,7 @@ pub(crate) async fn spawn_session_actor(
                 project_trusted,
             );
             for e in &errors {
-                tracing::warn!(error = ? e, "hook loading error");
+                tracing::warn!(error = ?e, "hook loading error");
             }
             hook_discovery_errors = errors;
             if registry.is_empty() {
@@ -1370,10 +1546,13 @@ pub(crate) async fn spawn_session_actor(
         }
     };
     let doom_loop_recovery = effective_config.resolve_doom_loop_recovery();
+    let resolved_tool_overrides: std::sync::Arc<
+        arc_swap::ArcSwapOption<agent_tui_sampling_types::ToolOverrides>,
+    > = std::sync::Arc::new(arc_swap::ArcSwapOption::empty());
     let session = Arc::new_cyclic(|weak: &std::sync::Weak<SessionActor>| SessionActor {
         session_info: session_info.clone(),
         auth_method_id,
-        model_auth_facts: std::cell::RefCell::new(None),
+        model_auth_memo: std::cell::RefCell::new(None),
         attribution_callback,
         auth_manager,
         is_chat_kind,
@@ -1391,10 +1570,13 @@ pub(crate) async fn spawn_session_actor(
         mcp_strategy: std::cell::Cell::new(mcp_strategy),
         initial_client_mcp_servers: initial_client_mcp_servers.clone(),
         chat_state_handle,
+        unattributed_background_usage: std::sync::atomic::AtomicBool::new(false),
         current_prompt_id: current_prompt_id.clone(),
         pending_interactions: pending_interactions.clone(),
         telemetry_enabled,
         supports_backend_search: std::cell::Cell::new(sampling_config.supports_backend_search),
+        tool_overrides: std::cell::RefCell::new(None),
+        resolved_tool_overrides: resolved_tool_overrides.clone(),
         compactions_remaining: std::cell::Cell::new(sampling_config.compactions_remaining),
         compaction_at_tokens: std::cell::Cell::new(sampling_config.compaction_at_tokens),
         doom_loop_recovery,
@@ -1414,6 +1596,7 @@ pub(crate) async fn spawn_session_actor(
             previous_model: std::cell::Cell::new(None),
             compaction_mode,
             verbatim_input: compaction_verbatim_input,
+            tool_choice: compaction_tool_choice,
             prefire: crate::session::compaction_config::PrefireState::default(),
             prefix_released: std::sync::atomic::AtomicBool::new(false),
             cancel: Default::default(),
@@ -1495,7 +1678,12 @@ pub(crate) async fn spawn_session_actor(
         turn_prompt_mode: turn_prompt_mode.clone(),
         plan_mode: plan_mode.clone(),
         goal_enabled,
-        goal_harness_enabled: std::sync::atomic::AtomicBool::new(false),
+        background_workflows_enabled,
+        goal_harness_enabled: std::sync::atomic::AtomicBool::new(if background_workflows_enabled {
+            goal_enabled
+        } else {
+            false
+        }),
         goal_harness_availability_reconciled: std::sync::atomic::AtomicBool::new(false),
         goal_tracker,
         goal_turn_task_ids: parking_lot::Mutex::new(std::collections::HashSet::new()),
@@ -1503,6 +1691,8 @@ pub(crate) async fn spawn_session_actor(
         goal_blocked_streak: std::sync::atomic::AtomicU32::new(0),
         goal_update_rx: std::cell::RefCell::new(Some(goal_update_rx)),
         goal_update_tx,
+        workflow_manager: workflow_manager.clone(),
+        workflow_launch_tx: workflow_launch_tx.clone(),
         goal_classifier_enabled: effective_config
             .resolve_goal_classifier_enabled(goal_enabled)
             .value,
@@ -1543,6 +1733,7 @@ pub(crate) async fn spawn_session_actor(
         deferred_prefix: TaskSlot::new(),
         extension_registry: session_extension_registry(weak.clone()),
         last_announced_local_date: std::cell::Cell::new(chrono::Local::now().date_naive()),
+        prefix_carries_fallback_date: std::cell::Cell::new(initial_prefix_carries_fallback_date),
         last_search_prompt_index: std::sync::atomic::AtomicI64::new(-1),
         last_api_request_at: std::sync::atomic::AtomicI64::new(0),
         hook_registry: std::cell::RefCell::new(built_hook_registry),
@@ -1578,11 +1769,20 @@ pub(crate) async fn spawn_session_actor(
         rebuild_spec: rebuild_spec.clone(),
         image_description_model,
         image_describe_cache: Arc::new(crate::session::image_describe::ImageDescribeCache::new()),
-        subagent_spawn_info: parking_lot::Mutex::new(HashMap::new()),
         subagent_token_records: parking_lot::Mutex::new(HashMap::new()),
         workspace_ops: workspace_ops.clone(),
         trace_config_template: std::cell::RefCell::new(None),
     });
+    if goal_was_restored {
+        let current_tokens = session.chat_state_handle.get_total_tokens().await as i64;
+        let (tokens_used, finished_marginal) = session.goal_tokens(current_tokens);
+        session.goal_notify_sender().emit_goal_updated(
+            &mut session.goal_tracker.lock(),
+            tokens_used,
+            finished_marginal,
+        );
+    }
+    session.emit_resolved_tool_overrides();
     {
         let drainer_session = session.clone();
         let mut sampler_event_rx = sampler_event_rx;
@@ -1593,7 +1793,7 @@ pub(crate) async fn spawn_session_actor(
             tracing::debug!("sampler event drainer exiting (channel closed)");
         });
     }
-    {
+    if !background_workflows_enabled {
         let drainer_session = session.clone();
         let Some(mut goal_update_rx) = session.goal_update_rx.borrow_mut().take() else {
             unreachable!("goal_update_rx must be Some at session spawn");
@@ -1651,11 +1851,23 @@ pub(crate) async fn spawn_session_actor(
         .borrow()
         .tool_bridge()
         .update_resource(
-            agent_tui_tools::implementations::grok_build::update_goal::GoalUpdateHandle(
-                session.goal_update_tx.clone(),
+            agent_tui_tools::implementations::grok_build::workflow::WorkflowLaunchHandle(
+                session.workflow_launch_tx.clone(),
             ),
         )
         .await;
+    if !background_workflows_enabled {
+        session
+            .agent
+            .borrow()
+            .tool_bridge()
+            .update_resource(
+                agent_tui_tools::implementations::grok_build::update_goal::GoalUpdateHandle(
+                    session.goal_update_tx.clone(),
+                ),
+            )
+            .await;
+    }
     if let Some(ref display_cwd) = prompt_display_cwd {
         session
             .agent
@@ -1698,7 +1910,8 @@ pub(crate) async fn spawn_session_actor(
                     }
                 }
                 tracing::info!(
-                    target : agent_tui_telemetry::memory_log::TARGET, files = files.len(),
+                    target: agent_tui_telemetry::memory_log::TARGET,
+                    files = files.len(),
                     "MEMORY_REINDEX: background reindex complete"
                 );
                 let embedded_count = if let Some(api_key) = sampling_api_key {
@@ -1734,14 +1947,17 @@ pub(crate) async fn spawn_session_actor(
         });
     }
     if let Some(cancel) = sync_loop_cancel {
-        tracing::info!(session_id = % session_info.id.0, "Spawning feedback sync loop");
+        tracing::info!(
+            session_id = %session_info.id.0,
+            "Spawning feedback sync loop"
+        );
         let fm = feedback_manager.clone();
         tokio::spawn(async move {
             fm.run_sync_loop(cancel).await;
         });
     } else {
         tracing::debug!(
-            session_id = % session_info.id.0,
+            session_id = %session_info.id.0,
             "No feedback client available, skipping sync loop"
         );
     }
@@ -1800,17 +2016,31 @@ pub(crate) async fn spawn_session_actor(
                             crate::session::pending_interaction::PendingKind::Question,
                         );
                     tokio::select! {
-                        biased; () = request.result_tx.closed() => { tracing::info!(%
-                        tool_call_id,
-                        "ask_user_question tool receiver closed (timeout or cancel); abandoning ACP wait");
-                        Ok(UserQuestionResponse::Cancelled) } acp_result = gateway
-                        .ext_method(ext_request) => { match acp_result { Ok(raw) => {
-                        match serde_json::from_str::< AskUserQuestionExtResponse > (raw.0
-                        .get(),) { Ok(typed) => { Ok(typed
-                        .into_response(questions_for_response)) } Err(e) =>
-                        Err(UserQuestionError::MalformedResponse(e.to_string(),)), } }
-                        Err(e) => Err(UserQuestionError::TransportError(e.to_string())),
-                        } }
+                        biased;
+                        () = request.result_tx.closed() => {
+                            tracing::info!(
+                                %tool_call_id,
+                                "ask_user_question tool receiver closed (timeout or cancel); abandoning ACP wait"
+                            );
+                            Ok(UserQuestionResponse::Cancelled)
+                        }
+                        acp_result = gateway.ext_method(ext_request) => {
+                            match acp_result {
+                                Ok(raw) => {
+                                    match serde_json::from_str::<AskUserQuestionExtResponse>(
+                                        raw.0.get(),
+                                    ) {
+                                        Ok(typed) => {
+                                            Ok(typed.into_response(questions_for_response))
+                                        }
+                                        Err(e) => Err(UserQuestionError::MalformedResponse(
+                                            e.to_string(),
+                                        )),
+                                    }
+                                }
+                                Err(e) => Err(UserQuestionError::TransportError(e.to_string())),
+                            }
+                        }
                     }
                 };
                 let _ = request.result_tx.send(result);
@@ -1865,6 +2095,7 @@ pub(crate) async fn spawn_session_actor(
             pending_interactions,
             info: session_info,
             max_turns,
+            resolved_tool_overrides,
             hunk_tracker_handle,
             chat_state_handle: chat_state_handle_for_handle,
             signals_handle,
@@ -1877,6 +2108,7 @@ pub(crate) async fn spawn_session_actor(
             upload_failures_since_success: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             tool_context: tool_context_for_handle,
             model_id: session_model_id,
+            scheduler_background_loops,
             reasoning_effort: sampling_config.reasoning_effort,
             yolo_mode: session_yolo_mode,
             origin_client: origin_client.clone(),
@@ -1961,6 +2193,7 @@ pub(crate) async fn spawn_session_on_thread(
     system_prompt_label: String,
     compaction_mode: agent_tui_chat_state::CompactionMode,
     compaction_verbatim_input: bool,
+    compaction_tool_choice: crate::util::config::CompactionToolChoice,
     two_pass_enabled: bool,
     buffering_settings: Option<BufferingSettings>,
     origin_client: Option<crate::http::OriginClientInfo>,
@@ -1983,6 +2216,7 @@ pub(crate) async fn spawn_session_on_thread(
     persisted_signals: Option<crate::session::signals::SessionSignals>,
     persisted_plan_mode: Option<crate::session::plan_mode::PlanModeSnapshot>,
     persisted_goal_mode: Option<crate::session::goal_tracker::GoalOrchestration>,
+    persisted_workflow_runs: Vec<crate::session::workflow::store::RestoredWorkflowRun>,
     persisted_announcement_state: Option<crate::session::announcement_state::AnnouncementState>,
     memory_config: Option<crate::config::MemoryConfig>,
     loc_tracking_enabled: bool,
@@ -2003,6 +2237,7 @@ pub(crate) async fn spawn_session_on_thread(
     app_builder_deployer_config: agent_tui_tools::implementations::grok_build::deploy_app::AppBuilderDeployerConfig,
     write_file_enabled: bool,
     goal_enabled: bool,
+    background_workflows_enabled: bool,
     subagents_enabled: bool,
     subagents_max_depth: u32,
     workflow_max_concurrent_agents: usize,
@@ -2081,14 +2316,21 @@ pub(crate) async fn spawn_session_on_thread(
                 };
                 (initial_last_compaction, initial_prompt_texts)
             };
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("session runtime");
+            let rt = match build_session_runtime() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "failed to build session runtime (resource exhaustion?)"
+                    );
+                    let _ = init_tx.send(Err(agent_tui_agent::AgentBuildError::RuntimeBuild(e)));
+                    return;
+                }
+            };
             let local = tokio::task::LocalSet::new();
             local.block_on(&rt, async move {
                 let _trace_span = parent_traceparent.as_ref().map(|tp| {
-                    let meta = serde_json::json!({ "traceparent" : tp })
+                    let meta = serde_json::json!({ "traceparent": tp })
                         .as_object()
                         .cloned()
                         .unwrap_or_default();
@@ -2126,6 +2368,7 @@ pub(crate) async fn spawn_session_on_thread(
                         system_prompt_label,
                         compaction_mode,
                         compaction_verbatim_input,
+                        compaction_tool_choice,
                         two_pass_enabled,
                         buffering_settings,
                         origin_client,
@@ -2148,6 +2391,7 @@ pub(crate) async fn spawn_session_on_thread(
                         persisted_signals,
                         persisted_plan_mode,
                         persisted_goal_mode,
+                        persisted_workflow_runs,
                         persisted_announcement_state,
                         memory_config,
                         loc_tracking_enabled,
@@ -2168,6 +2412,7 @@ pub(crate) async fn spawn_session_on_thread(
                         app_builder_deployer_config,
                         write_file_enabled,
                         goal_enabled,
+                        background_workflows_enabled,
                         subagents_enabled,
                         subagents_max_depth,
                         workflow_max_concurrent_agents,
@@ -2217,15 +2462,28 @@ pub(crate) async fn spawn_session_on_thread(
                 }));
                 let _ = session_done_rx.await;
             });
-        })
-        .expect("spawn session thread");
+        });
+    let join_handle = match join_handle {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "failed to spawn session thread (thread/PID limit or memory pressure?)"
+            );
+            return Err(
+                acp::Error::internal_error().data(format!("failed to spawn session thread: {e}"))
+            );
+        }
+    };
     let init = init_rx
         .await
         .map_err(|_| {
             tracing::error!("Session thread panicked during initialization");
             acp::Error::internal_error().data("session thread panicked during initialization")
         })?
-        .map_err(|e| acp::Error::internal_error().data(format!("agent building failed: {e}")))?;
+        .map_err(|e| {
+            acp::Error::internal_error().data(format!("session initialization failed: {e}"))
+        })?;
     Ok((
         init.handle,
         init.permission_events_rx,
@@ -2296,5 +2554,141 @@ impl crate::session::mcp_restart::RestartActions for SessionRestartActions {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .end_restart(server);
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalBackendKind {
+    ReuseParent,
+    AcpClient,
+    LocalPersistent,
+    LocalNonPersistent,
+}
+fn select_terminal_backend_kind(
+    is_subagent: bool,
+    has_parent_backend: bool,
+    client_terminal_capable: bool,
+    has_gateway: bool,
+    cursor_harness: bool,
+) -> TerminalBackendKind {
+    if is_subagent && has_parent_backend {
+        TerminalBackendKind::ReuseParent
+    } else if client_terminal_capable && has_gateway {
+        TerminalBackendKind::AcpClient
+    } else if cursor_harness {
+        TerminalBackendKind::LocalPersistent
+    } else {
+        TerminalBackendKind::LocalNonPersistent
+    }
+}
+/// Recovers `prefix_carries_fallback_date` on resume, which skips the prefix rebuild. Fail-safe: any
+/// user item with both `<user_info>` and the date marker counts as stamped, so it may over-keep the
+/// reminder but never suppresses a dated session.
+fn resumed_prefix_carries_fallback_date(
+    template_surfaces_local_date: bool,
+    conversation: &[ConversationItem],
+) -> bool {
+    if template_surfaces_local_date {
+        return false;
+    }
+    conversation.iter().any(|item| {
+        let ConversationItem::User(u) = item else {
+            return false;
+        };
+        let contains = |needle: &str| {
+            u.content.iter().any(|part| {
+                matches!(
+                    part,
+                    agent_tui_sampling_types::conversation::ContentPart::Text { text }
+                        if text.contains(needle)
+                )
+            })
+        };
+        contains("<user_info>") && contains(crate::session::user_message::USER_INFO_DATE_MARKER)
+    })
+}
+#[cfg(test)]
+mod resumed_prefix_fallback_tests {
+    use super::resumed_prefix_carries_fallback_date;
+    use crate::session::user_message::USER_INFO_DATE_MARKER;
+    use agent_tui_sampling_types::conversation::ConversationItem;
+    #[test]
+    fn resumed_prefix_fallback_detection_is_fail_safe() {
+        let with_date = vec![ConversationItem::user(format!(
+            "<user_info>\n{USER_INFO_DATE_MARKER} 2024-01-01\n</user_info>"
+        ))];
+        let without_date = vec![ConversationItem::user(
+            "<user_info>\nWorkspace: /x\n</user_info>",
+        )];
+        let spoofed_leading_user_info = vec![
+            ConversationItem::user("<user_info>\nWorkspace: /x\n</user_info>"),
+            ConversationItem::user(format!(
+                "<user_info>\n{USER_INFO_DATE_MARKER} 2024-01-01\n</user_info>"
+            )),
+        ];
+        let leading_noise = vec![
+            ConversationItem::user("project instructions: do the thing"),
+            ConversationItem::user(format!(
+                "<user_info>\n{USER_INFO_DATE_MARKER} 2024-01-01\n</user_info>"
+            )),
+        ];
+        assert!(resumed_prefix_carries_fallback_date(false, &with_date));
+        assert!(!resumed_prefix_carries_fallback_date(false, &without_date));
+        assert!(resumed_prefix_carries_fallback_date(
+            false,
+            &spoofed_leading_user_info
+        ));
+        assert!(resumed_prefix_carries_fallback_date(false, &leading_noise));
+        assert!(!resumed_prefix_carries_fallback_date(true, &with_date));
+    }
+}
+#[cfg(test)]
+mod terminal_backend_select_tests {
+    use super::{TerminalBackendKind, select_terminal_backend_kind};
+    #[test]
+    fn subagent_with_parent_reuses_parent() {
+        assert_eq!(
+            select_terminal_backend_kind(true, true, true, true, true),
+            TerminalBackendKind::ReuseParent
+        );
+    }
+    #[test]
+    fn subagent_without_parent_falls_through() {
+        assert_eq!(
+            select_terminal_backend_kind(true, false, true, true, true),
+            TerminalBackendKind::AcpClient
+        );
+        assert_eq!(
+            select_terminal_backend_kind(true, false, false, true, true),
+            TerminalBackendKind::LocalPersistent
+        );
+    }
+    #[test]
+    fn non_subagent_never_reuses_parent() {
+        assert_eq!(
+            select_terminal_backend_kind(false, true, false, false, true),
+            TerminalBackendKind::LocalPersistent
+        );
+    }
+    #[test]
+    fn client_terminal_uses_acp_only_with_gateway() {
+        assert_eq!(
+            select_terminal_backend_kind(false, false, true, true, true),
+            TerminalBackendKind::AcpClient
+        );
+        assert_eq!(
+            select_terminal_backend_kind(false, false, true, false, true),
+            TerminalBackendKind::LocalPersistent
+        );
+    }
+    #[test]
+    fn local_session_cursor_harness_selects_persistent_backend() {
+        assert_eq!(
+            select_terminal_backend_kind(false, false, false, false, true),
+            TerminalBackendKind::LocalPersistent
+        );
+        assert_eq!(
+            select_terminal_backend_kind(false, false, false, false, false),
+            TerminalBackendKind::LocalNonPersistent
+        );
     }
 }

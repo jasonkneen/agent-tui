@@ -66,12 +66,133 @@ python3 "$SCRIPT_DIR/port-to-agent-tui.py" --manifests
 
 # Workspace root deps often need manual review — print a hint from upstream Cargo.toml delta
 echo
+echo "=== Post-port fork restore (product + identity) ==="
+# Pre-sync tip holds product skins / runtimes / bin packaging.
+PRE="${UPSTREAM_SYNC_HEAD_REV:-$PRE_HEAD}"
+git checkout "$PRE" -- \
+  crates/codegen/agent-tui-bin \
+  crates/codegen/agent-tui-claude-runtime \
+  crates/codegen/agent-tui-codex-runtime \
+  crates/codegen/agent-tui-lazar-runtime \
+  crates/codegen/agent-tui-hermes-runtime \
+  crates/codegen/agent-tui-update/src/version.rs \
+  crates/codegen/agent-tui-version \
+  2>/dev/null || true
+
+# Product modules live only on the fork; re-copy and wire into pager lib.
+for f in \
+  crates/codegen/agent-tui-pager/src/product_profile.rs \
+  crates/codegen/agent-tui-pager/src/runtime_addon.rs \
+  crates/codegen/agent-tui-pager/src/runtime_backend.rs \
+  crates/codegen/agent-tui-pager/src/runtime_backend \
+  crates/codegen/agent-tui-shell/src/auth/local_cli
+do
+  git checkout "$PRE" -- "$f" 2>/dev/null || true
+done
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+p = Path("crates/codegen/agent-tui-pager/src/lib.rs")
+if p.is_file():
+    t = p.read_text()
+    if "mod product_profile" not in t:
+        m = re.search(r"(?m)^(pub )?mod app;", t)
+        if m:
+            insert = "\npub mod product_profile;\npub mod runtime_addon;\npub mod runtime_backend;\n"
+            p.write_text(t[: m.end()] + insert + t[m.end() :])
+            print("wired product mods into pager lib.rs")
+# Pager needs runtime crates + which
+pt = Path("crates/codegen/agent-tui-pager/Cargo.toml")
+if pt.is_file():
+    t = pt.read_text()
+    for dep in [
+        "agent-tui-codex-runtime = { workspace = true }",
+        "agent-tui-claude-runtime = { workspace = true }",
+        "agent-tui-lazar-runtime = { workspace = true }",
+        "agent-tui-hermes-runtime = { workspace = true }",
+        "which = { workspace = true }",
+    ]:
+        key = dep.split("=", 1)[0].strip()
+        if key not in t:
+            t = t.replace("[dependencies]\n", f"[dependencies]\n{dep}\n", 1)
+            print("pager dep", key)
+    pt.write_text(t)
+# Bin: never enable local-workspace by default — OSS lacks gateway_bridge
+bt = Path("crates/codegen/agent-tui-bin/Cargo.toml")
+if bt.is_file():
+    t = bt.read_text()
+    t = re.sub(
+        r'default = \[\s*"jemalloc",\s*"sandbox-enforce",\s*"local-workspace",\s*\]',
+        'default = [\n    "jemalloc",\n    "sandbox-enforce",\n    ]',
+        t,
+    )
+    bt.write_text(t)
+print("fork restore done")
+PY
+
+# Rebuild bin lib body from upstream pager-bin + product prefix (API lockstep).
+python3 - <<'PY'
+import re, subprocess
+from pathlib import Path
+import sys
+sys.path.insert(0, "scripts/upstream-sync")
+from rename import rename_text
+
+pre = __import__("os").environ.get("UPSTREAM_SYNC_HEAD_REV", "HEAD")
+try:
+    fork_lib = subprocess.check_output(
+        ["git", "show", f"{pre}:crates/codegen/agent-tui-bin/src/lib.rs"], text=True
+    )
+except subprocess.CalledProcessError:
+    fork_lib = Path("crates/codegen/agent-tui-bin/src/lib.rs").read_text()
+ups = subprocess.check_output(
+    ["git", "show", "upstream/main:crates/codegen/xai-grok-pager-bin/src/main.rs"], text=True
+)
+body = rename_text(ups)
+fl = fork_lib.splitlines(True)
+body_start = 0
+for i, l in enumerate(fl):
+    if ("jemalloc" in l and "feature" in l) or l.startswith("use anyhow"):
+        body_start = i
+        break
+product = "".join(fl[:body_start])
+# Drop multi-line #![allow] from body completely
+rest = body.splitlines(True)
+i = 0
+if rest and rest[0].startswith("#!["):
+    # skip until line with )]
+    while i < len(rest):
+        if ")]" in rest[i] and i > 0:
+            i += 1
+            break
+        i += 1
+    while i < len(rest) and rest[i].strip() == "":
+        i += 1
+body_rest = "".join(rest[i:])
+body_rest = re.sub(r"(?m)^fn main\s*\(", "pub fn run(", body_rest)
+final = product + body_rest
+if "pub fn run(" not in final:
+    final = re.sub(r"(?m)^fn main\s*\(", "pub fn run(", final)
+Path("crates/codegen/agent-tui-bin/src/lib.rs").write_text(final)
+Path("crates/codegen/agent-tui-bin/src/main.rs").write_text(
+    "//! Single core binary. Product skins are **symlinks** "
+    "(`scripts/link-product-bins.sh`).\n\n"
+    "fn main() {\n"
+    "    agent_tui_bin::apply_product_from_invocation();\n"
+    "    agent_tui_bin::run();\n"
+    "}\n"
+)
+print("rebuilt agent-tui-bin lib+main")
+PY
+
 echo "=== Manual checklist ==="
 echo "  [ ] Cargo.toml [workspace.dependencies]: new crates (ctor, rustls, zip, rhai, …)"
-echo "  [ ] clippy.toml reasons use agent_tui_* path names (not xai_*)"
-echo "  [ ] agent-tui-bin still thin main + product skins (not full upstream pager-bin)"
-echo "  [ ] version.rs / install scripts still point at jasonkneen/agent-tui"
-echo "  [ ] Wire contracts untouched: xai-grok-cli, X-XAI-Token-Auth, xai.api_key"
+echo "  [ ] members/path deps for agent-tui-extra-ca, agent-tui-workflow when present"
+echo "  [ ] agent-tui-bin still thin main + product skins"
+echo "  [ ] version.rs / install hints → jasonkneen/agent-tui (not x.ai/cli)"
+echo "  [ ] Wire contracts: xai-grok-cli, X-XAI-Token-Auth, xai.api_key"
+echo "  [ ] Do NOT enable local-workspace by default (OSS lacks gateway_bridge)"
 echo
 
 if [[ "${SKIP_CHECK:-}" != "1" ]]; then

@@ -53,7 +53,8 @@ pub fn install_plugin(source: &str, cwd: &Path) -> Result<InstallOutcome, Instal
     let is_local = matches!(install_source, git_install::InstallSource::Local { .. });
     let mut registry = InstallRegistry::load();
 
-    let result = git_install::install_from_source(&install_source, &registry)?;
+    let result =
+        git_install::install_from_source(&install_source, &registry, marketplace_require_sha())?;
 
     let repo = git_install::build_installed_repo(&result, &install_source);
     registry.insert(result.repo_key.clone(), repo);
@@ -281,11 +282,13 @@ fn update_marketplace_repo(
             name: provenance.plugin_subdir.clone(),
         })?;
 
+    let require_sha = crate::plugin::marketplace_require_sha();
     installer::update_from_marketplace_entry_transactional(
         &marketplace_root.path,
         &entry,
         provenance,
         registry,
+        require_sha,
     )
 }
 
@@ -398,7 +401,7 @@ pub(crate) fn update_plugins_by_selector(
                 },
             }
         } else {
-            match git_install::update_repo(repo_key, repo) {
+            match git_install::update_repo(repo_key, repo, marketplace_require_sha()) {
                 Ok(UpdateStatus::Updated(result)) if result.changed => {
                     apply_update_to_registry(&mut registry, repo_key, &result);
                     RepoUpdateOutcome::Updated {
@@ -527,6 +530,7 @@ pub fn classify_install_error(err: &InstallError) -> String {
         InstallError::Json { .. } => "json",
         InstallError::PluginNotFound { .. } => "not_found",
         InstallError::ShaMismatch { .. } => "sha_mismatch",
+        InstallError::UnpinnedRemoteRefused { .. } => "unpinned_remote_refused",
         InstallError::InstallFailed { .. } => "install_failed",
     }
     .to_string()
@@ -1068,6 +1072,7 @@ fn install_marketplace_entry(
     };
 
     let result = if let Some(remote_url) = entry.remote_url.as_deref() {
+        let require_sha = crate::plugin::marketplace_require_sha();
         installer::install_from_remote_url(
             remote_url,
             entry.remote_ref.as_deref(),
@@ -1076,6 +1081,7 @@ fn install_marketplace_entry(
             &plugin_subdir,
             provenance,
             registry,
+            require_sha,
         )
     } else {
         installer::install_from_marketplace(marketplace_root, &plugin_subdir, provenance, registry)
@@ -1439,6 +1445,13 @@ mod tests {
             "sha_mismatch"
         );
         assert_eq!(
+            classify_install_error(&InstallError::UnpinnedRemoteRefused {
+                plugin: "p".into(),
+                url: "u".into()
+            }),
+            "unpinned_remote_refused"
+        );
+        assert_eq!(
             classify_install_error(&InstallError::InstallFailed { detail: "x".into() }),
             "install_failed"
         );
@@ -1471,7 +1484,7 @@ mod tests {
             plugins: HashMap::new(),
             marketplace: None,
         };
-        let status = git_install::update_repo("local", &repo).unwrap();
+        let status = git_install::update_repo("local", &repo, false).unwrap();
         assert!(matches!(status, UpdateStatus::LiveLocal));
     }
 
@@ -1572,9 +1585,9 @@ mod tests {
         assert_eq!(
             registered_source_label(&git_source(
                 "xAI Official",
-                "https://github.com/xai-org/plugin-marketplace.git"
+                "https://github.com/agent-tui-org/plugin-marketplace.git"
             )),
-            "xAI Official (xai-org/plugin-marketplace)"
+            "xAI Official (agent-tui-org/plugin-marketplace)"
         );
         assert_eq!(
             registered_source_label(&local_source("Local Dev", "/tmp/p")),
@@ -1596,11 +1609,11 @@ mod tests {
             candidate_label(
                 &git_source(
                     "xAI Official",
-                    "https://github.com/xai-org/plugin-marketplace.git"
+                    "https://github.com/agent-tui-org/plugin-marketplace.git"
                 ),
                 "sentry"
             ),
-            "xAI Official (pin: sentry@xai-org/plugin-marketplace)"
+            "xAI Official (pin: sentry@agent-tui-org/plugin-marketplace)"
         );
         assert_eq!(
             candidate_label(&local_source("Local Dev", "/tmp/p"), "sentry"),
@@ -1613,14 +1626,14 @@ mod tests {
         let err = MarketplaceInstallError::UnknownQualifier {
             qualifier: "acme/repo".into(),
             registered: vec![
-                "xAI Official (xai-org/plugin-marketplace)".into(),
+                "xAI Official (agent-tui-org/plugin-marketplace)".into(),
                 "Local Dev (local/local-dev)".into(),
             ],
         };
         let msg = err.to_string();
         assert!(msg.contains("Unknown marketplace \"acme/repo\""), "{msg}");
         assert!(
-            msg.contains("  - xAI Official (xai-org/plugin-marketplace)"),
+            msg.contains("  - xAI Official (agent-tui-org/plugin-marketplace)"),
             "{msg}"
         );
         assert!(msg.contains("  - Local Dev (local/local-dev)"), "{msg}");
@@ -1629,7 +1642,7 @@ mod tests {
     #[test]
     fn ambiguous_qualifier_error_lists_source_names() {
         let err = MarketplaceInstallError::AmbiguousQualifier {
-            qualifier: "xai-org/plugin-marketplace".into(),
+            qualifier: "agent-tui-org/plugin-marketplace".into(),
             sources: vec!["Mirror A".into(), "Mirror B".into()],
         };
         let msg = err.to_string();
@@ -1671,7 +1684,7 @@ mod tests {
     fn name_ambiguous_error_lists_candidates_and_pin_hint() {
         let err = MarketplaceInstallError::NameAmbiguous {
             name: "sentry".into(),
-            candidates: vec!["xAI Official (pin: sentry@xai-org/plugin-marketplace)".into()],
+            candidates: vec!["xAI Official (pin: sentry@agent-tui-org/plugin-marketplace)".into()],
         };
         let msg = err.to_string();
         assert!(
@@ -1679,7 +1692,7 @@ mod tests {
             "{msg}"
         );
         assert!(
-            msg.contains("  - xAI Official (pin: sentry@xai-org/plugin-marketplace)"),
+            msg.contains("  - xAI Official (pin: sentry@agent-tui-org/plugin-marketplace)"),
             "{msg}"
         );
         assert!(
@@ -1777,7 +1790,7 @@ mod tests {
         }
     }
 
-    const OFFICIAL_URL: &str = "https://github.com/xai-org/plugin-marketplace.git";
+    const OFFICIAL_URL: &str = "https://github.com/agent-tui-org/plugin-marketplace.git";
 
     #[test]
     fn plan_install_qualifier_unknown_lists_registered_labels() {
@@ -1796,7 +1809,7 @@ mod tests {
                 assert_eq!(
                     registered,
                     vec![
-                        "xAI Official (xai-org/plugin-marketplace)".to_string(),
+                        "xAI Official (agent-tui-org/plugin-marketplace)".to_string(),
                         "Local Dev (local/local-dev)".to_string(),
                     ]
                 );
@@ -1809,18 +1822,18 @@ mod tests {
     fn plan_install_qualifier_ambiguous_lists_source_names() {
         let sources = [
             git_source("Mirror A", OFFICIAL_URL),
-            git_source("Mirror B", "git@github.com:xai-org/plugin-marketplace.git"),
+            git_source("Mirror B", "git@github.com:agent-tui-org/plugin-marketplace.git"),
         ];
         let err = plan_install(
             &sources,
             "sentry",
-            Some("xai-org/plugin-marketplace"),
+            Some("agent-tui-org/plugin-marketplace"),
             |_| Ok(Vec::new()),
         )
         .expect_err("two sources share the owner/repo");
         match err {
             MarketplaceInstallError::AmbiguousQualifier { qualifier, sources } => {
-                assert_eq!(qualifier, "xai-org/plugin-marketplace");
+                assert_eq!(qualifier, "agent-tui-org/plugin-marketplace");
                 assert_eq!(
                     sources,
                     vec!["Mirror A".to_string(), "Mirror B".to_string()]
@@ -1836,7 +1849,7 @@ mod tests {
         let err = plan_install(
             &sources,
             "sentry",
-            Some("xai-org/plugin-marketplace"),
+            Some("agent-tui-org/plugin-marketplace"),
             |_| Ok(vec![mp_entry("other")]),
         )
         .expect_err("source has no plugin named sentry");
@@ -1858,7 +1871,7 @@ mod tests {
         let err = plan_install(
             &sources,
             "sentry",
-            Some("xai-org/plugin-marketplace"),
+            Some("agent-tui-org/plugin-marketplace"),
             |_| Err("network down".to_string()),
         )
         .expect_err("sync failed");
@@ -1883,7 +1896,7 @@ mod tests {
         let plan = plan_install(
             &sources,
             "SeNtRy",
-            Some("xai-org/plugin-marketplace"),
+            Some("agent-tui-org/plugin-marketplace"),
             |_| Ok(vec![mp_entry("sentry")]),
         )
         .expect("resolves the official source");
@@ -2182,14 +2195,14 @@ mod tests {
         let sources = vec![
             git_source(
                 "xAI Official",
-                "https://github.com/xai-org/plugin-marketplace.git",
+                "https://github.com/agent-tui-org/plugin-marketplace.git",
             ),
             git_source(
                 "Internal",
                 "https://github.com/example/plugin-marketplace-internal.git",
             ),
         ];
-        let name = resolve_qualified_source_name_with(&sources, "xai-org/plugin-marketplace")
+        let name = resolve_qualified_source_name_with(&sources, "agent-tui-org/plugin-marketplace")
             .expect("qualifier should match the official source");
         assert_eq!(name, "xAI Official");
     }
@@ -2209,7 +2222,7 @@ mod tests {
     fn resolve_qualified_source_name_with_unknown_qualifier_errors() {
         let sources = vec![git_source(
             "xAI Official",
-            "https://github.com/xai-org/plugin-marketplace.git",
+            "https://github.com/agent-tui-org/plugin-marketplace.git",
         )];
         let err = resolve_qualified_source_name_with(&sources, "bogus/repo")
             .expect_err("unknown qualifier should error");

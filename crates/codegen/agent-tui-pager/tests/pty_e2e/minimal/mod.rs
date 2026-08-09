@@ -5,19 +5,21 @@
 //! skip this whole subtree. These exercise the sibling `agent-tui-pager-minimal`
 //! crate end-to-end through the built binary (which installs the minimal hook),
 //! so they live with the rest of the pty suite rather than in a separate crate.
-//! Shared harness helpers are reached via `crate::common` (the `pty_e2e` root).
+//! Shared harness helpers are reached via `crate::common` (the family root).
 
+mod minimal_cli_screen_mode_does_not_persist;
 mod minimal_commits_response_to_scrollback;
+mod minimal_commits_thinking_body_to_scrollback;
 mod minimal_committed_content_survives_overlay_grow;
 mod minimal_continue_reprints_transcript;
 mod minimal_ctrl_c_arms_and_quits;
-mod minimal_ctrl_o_send_now_queued_apple_terminal;
 mod minimal_double_esc_committed_queued_prompt_single_render;
 mod minimal_esc_cancels_running_turn;
 mod minimal_external_editor_round_trip;
 mod minimal_feedback_session_gate_and_pane;
 mod minimal_flush_left_no_hpad;
 mod minimal_help_opens_command_palette;
+mod minimal_lookup_commits_one_line_summary;
 mod minimal_new_session_keeps_history_and_resets;
 mod minimal_parked_plan_commits_to_scrollback;
 mod minimal_parked_plan_survives_quit;

@@ -3,6 +3,25 @@
 use super::*;
 use crate::app::dispatch::{recap_unavailable_toast, scrollback_has_user_messages};
 
+fn send_minimal_btw(app: &mut AppView, question: &str) -> uuid::Uuid {
+    match dispatch(Action::SendBtw(question.into()), app).as_slice() {
+        [
+            Effect::SendBtw {
+                minimal_request_id: Some(id),
+                ..
+            },
+        ] => *id,
+        other => panic!("expected correlated minimal /btw effect, got {other:?}"),
+    }
+}
+
+fn esc() -> crossterm::event::Event {
+    crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Esc,
+        crossterm::event::KeyModifiers::NONE,
+    ))
+}
+
 #[test]
 fn recap_unavailable_toast_empty_vs_with_messages() {
     assert_eq!(recap_unavailable_toast(false), "No messages yet");

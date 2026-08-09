@@ -96,6 +96,11 @@ pub struct UiConfig {
     /// `[voice].language` for the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice_stt_language: Option<String>,
+    /// Whether the Ctrl+Space / F8 voice-dictation shortcut is active. Written
+    /// by the settings modal; unset defaults to `true` (shortcut on). When
+    /// `false` the chord is ignored — `/voice` still starts dictation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_keybind_enabled: Option<bool>,
     /// When `true`, registers `Ctrl+R` (while scrollback is focused) to toggle
     /// terminal mouse reporting (mouse capture) so users can hand selection back
     /// to the terminal for native click-drag copy/paste. Opt-in only; unset/false
@@ -149,12 +154,7 @@ pub struct UiConfig {
     /// steady block. Config-file-only knob (no /settings row).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor_blink: Option<bool>,
-    /// Sticky screen-mode preference (`"minimal"` | `"fullscreen"`). Written by
-    /// the pager when an explicit `--minimal`/`--fullscreen` flag or a
-    /// `/minimal`//`/fullscreen` command is used, and read at startup so plain
-    /// `grok` reopens in whatever mode was last explicitly chosen. Unset keeps
-    /// the legacy resolution (pager.toml `[terminal] minimal`, alt-screen
-    /// policy).
+    /// `"fullscreen"` | `"minimal"`; unset → product default fullscreen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_mode: Option<String>,
     /// Retired hidden opt-in for terminal-like double/triple-click word/line
@@ -169,6 +169,9 @@ pub struct UiConfig {
     /// only appears once a user toggles a tip.
     #[serde(default, skip_serializing_if = "ContextualHints::is_default")]
     pub contextual_hints: ContextualHints,
+    /// Combine consecutive queued follow-ups into one turn. `None` = off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combine_queued_prompts: Option<bool>,
     /// Display-refresh probe + auto-cadence (`[ui.display_refresh]`). Per-field
     /// `None` inherits remote/default; skipped when untouched.
     #[serde(default, skip_serializing_if = "DisplayRefreshSettings::is_default")]
@@ -200,6 +203,10 @@ pub struct ContextualHints {
     /// is still fold/nav (`flash` / `hold`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub word_select: Option<bool>,
+    /// SSH wrap session-load tip (recommend `grok wrap ssh` when the session
+    /// runs over SSH without an OSC 52 sink).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh_wrap: Option<bool>,
 }
 
 impl ContextualHints {
@@ -212,6 +219,7 @@ impl ContextualHints {
             && self.send_now.is_none()
             && self.small_screen.is_none()
             && self.word_select.is_none()
+            && self.ssh_wrap.is_none()
     }
 }
 
@@ -265,6 +273,7 @@ impl Default for UiConfig {
             hunk_tracker_mode: None,
             voice_capture_mode: None,
             voice_stt_language: None,
+            voice_keybind_enabled: None,
             mouse_reporting_toggle: None,
             remember_tool_approvals: None,
             cancel_subagents_on_turn_cancel: None,
@@ -278,6 +287,7 @@ impl Default for UiConfig {
             screen_mode: None,
             double_click_action: None,
             contextual_hints: ContextualHints::default(),
+            combine_queued_prompts: None,
             display_refresh: DisplayRefreshSettings::default(),
         }
     }

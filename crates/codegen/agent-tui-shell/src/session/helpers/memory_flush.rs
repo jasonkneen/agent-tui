@@ -25,7 +25,7 @@ use crate::sampling::{ChatRequestMessage, Role};
 use crate::session::memory::text_utils::{has_markdown_headers, is_no_reply};
 
 /// Memory log target — matches `agent_tui_telemetry::memory_log::TARGET`.
-const LOG: &str = "xai_memory";
+const LOG: &str = "agent_tui_memory";
 
 /// Check whether a memory flush should run before the next compaction.
 ///
@@ -481,7 +481,7 @@ mod tests {
             max_flush_write_chars: 50,
             ..default_flush_config()
         };
-        let content = "# Title\n\n".to_string() + &"x".repeat(100);
+        let content = format!("# Title\n\n{}", "x".repeat(100));
         let result = process_flush_response(&content, &config);
         if let FlushResult::Accepted(text) = result {
             assert!(text.chars().count() <= 50);

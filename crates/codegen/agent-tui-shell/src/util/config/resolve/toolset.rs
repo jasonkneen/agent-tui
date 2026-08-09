@@ -724,3 +724,42 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod shell_env_policy_tests {
+    use super::*;
+    use agent_tui_tools::util::{EnvironmentVariablePattern, ShellEnvironmentPolicyInherit};
+
+    #[test]
+    fn resolve_shell_env_policy_absent_parsed_typo_and_typed_error() {
+        // Absent table → None (child inherits the full environment).
+        let empty: TomlValue = toml::from_str("").unwrap();
+        assert!(resolve_shell_env_policy(Some(&empty)).is_none());
+        assert!(resolve_shell_env_policy(None).is_none());
+
+        // A well-formed table parses through.
+        let cfg: TomlValue =
+            toml::from_str("[shell_environment_policy]\ninherit = \"core\"\nexclude = [\"FOO\"]\n")
+                .unwrap();
+        let policy = resolve_shell_env_policy(Some(&cfg)).expect("policy parses");
+        assert_eq!(policy.inherit, ShellEnvironmentPolicyInherit::Core);
+        assert_eq!(
+            policy.exclude,
+            vec![EnvironmentVariablePattern::new_case_insensitive("FOO")]
+        );
+
+        // An unknown sub-key is ignored; the known keys still apply (the
+        // load-time scan warns on the typo).
+        let typo: TomlValue =
+            toml::from_str("[shell_environment_policy]\ninherit = \"none\"\ninhert = \"core\"\n")
+                .unwrap();
+        let policy = resolve_shell_env_policy(Some(&typo)).expect("known keys still parse");
+        assert_eq!(policy.inherit, ShellEnvironmentPolicyInherit::None);
+
+        // A wrong-typed known key fails to parse → None (full environment,
+        // logged), not a spawn abort.
+        let bad: TomlValue =
+            toml::from_str("[shell_environment_policy]\nexclude = \"not-an-array\"\n").unwrap();
+        assert!(resolve_shell_env_policy(Some(&bad)).is_none());
+    }
+}

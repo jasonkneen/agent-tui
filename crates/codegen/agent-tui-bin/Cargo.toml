@@ -79,9 +79,10 @@ default = [
 default-bazel = [
     "jemalloc",
     "sandbox-enforce",
-    "local-workspace",
+    # OSS tree lacks gateway_bridge; leave local-workspace off until that lands.
     ]
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys", "dep:tikv-jemalloc-ctl"]
 sandbox-enforce = ["agent-tui-pager/sandbox-enforce"]
 local-workspace = ["agent-tui-pager/local-workspace"]
 release-dist = ["agent-tui-pager/release-dist"]
+

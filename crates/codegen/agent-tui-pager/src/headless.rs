@@ -11,18 +11,20 @@ use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 
 use agent_client_protocol as acp;
-use agent_tui_acp_lib::{AcpAgentTx, AcpClientMessageBox, acp_send};
+use agent_tui_acp_lib::{AcpAgentTx, AcpClientMessageBox, AcpClientRx, acp_send};
 use agent_tui_shell::agent::auth_method::AuthMethodKind;
 use agent_tui_shell::agent::config::Config as AgentConfig;
 use agent_tui_shell::extensions::task::{CancelSubagentRequest, KillTaskRequest};
-use agent_tui_shell::sampling::error::{RATE_LIMITED_ERROR_CODE, rate_limited_user_message};
+use agent_tui_shell::sampling::error::{
+    RATE_LIMITED_ERROR_CODE, error_detail_from_data, format_rate_limited_user_message,
+};
 use agent_tui_shell::sampling::types::{
     REASONING_EFFORT_META_KEY, parse_canonical_effort_token, reasoning_effort_meta_value,
 };
 use agent_tui_shell::util::config as cli_config;
 
 use crate::acp::model_state::{EffortTokenError, ModelState};
-use crate::acp::spawn::spawn_grok_shell;
+use crate::acp::spawn::{AgentShutdownGuard, spawn_grok_shell};
 use crate::client_identity::{HEADLESS_CLIENT_TYPE, PAGER_CLIENT_VERSION};
 use crate::headless::reducer::{
     Lifecycle, McpServer, Reducer, SessionContext, StreamEvent, TurnEnd, map_session_update,
@@ -514,20 +516,6 @@ fn build_headless_init_request(
         .meta(meta.as_object().cloned())
 }
 
-/// Extract the body of a compiled-in SKILL.md (strip YAML frontmatter).
-fn skill_body(raw: &str) -> &str {
-    let trimmed = raw.trim_start();
-    if !trimmed.starts_with("---") {
-        return trimmed;
-    }
-    if let Some(rest) = trimmed.get(3..)
-        && let Some(end) = rest.find("\n---")
-    {
-        return rest[end + 4..].trim_start();
-    }
-    trimmed
-}
-
 struct OpenedSession {
     session_id: acp::SessionId,
     models: ModelState,
@@ -799,7 +787,6 @@ pub async fn run_single_turn(
     agent_config.resolve_runtime_fields(&agent_tui_shell::agent::config::RuntimeResolutionContext {
         raw_config: &raw_config,
         remote_settings: None,
-        cwd: Some(&cwd),
         is_headless: true,
         cli_subagents: None,
         cli_web_search_model: None,
@@ -1271,13 +1258,11 @@ pub async fn run_single_turn(
         }
         Some(Err(err)) => {
             let msg = if i32::from(err.code) == RATE_LIMITED_ERROR_CODE {
-                // The -32003 data is the flattened server message; a
-                // free-usage 429 carries the well-known code inline there.
-                if crate::app::acp_error_is_free_usage_exhausted(&err) {
-                    crate::app::FREE_USAGE_USER_MESSAGE.to_string()
-                } else {
-                    rate_limited_user_message(is_api_key_auth).to_string()
-                }
+                let detail = err.data.as_ref().and_then(error_detail_from_data);
+                crate::app::sanitize_user_error(&format_rate_limited_user_message(
+                    detail.as_deref(),
+                    is_api_key_auth,
+                ))
             } else {
                 err.to_string()
             };

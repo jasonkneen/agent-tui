@@ -67,7 +67,6 @@ fn ok_result(text: &str) -> Result<ToolRunResult, agent_tui_tool_runtime::ToolEr
     Ok(ToolRunResult {
         output: ToolOutput::Text(text.to_owned().into()),
         prompt_text: text.to_owned(),
-        reminder_starts: Vec::new(),
         effective_tool_name: None,
     })
 }

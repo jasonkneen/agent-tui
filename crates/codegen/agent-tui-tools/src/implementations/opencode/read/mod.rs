@@ -146,16 +146,20 @@ impl agent_tui_tool_runtime::Tool for ReadTool {
         ctx: agent_tui_tool_runtime::ToolCallContext,
         input: ReadInput,
     ) -> Result<ReadFileOutput, agent_tui_tool_runtime::ToolError> {
-        use crate::types::tool_metadata::{resolve_cwd, shared_resources};
+        use crate::types::tool_metadata::{invoking_param_names, resolve_cwd, shared_resources};
         let resources = shared_resources(&ctx)?;
+        // Client-facing `offset` name for runtime "read beyond…" hints; a
+        // rename must not tell the model to pass a key its schema lacks.
+        let invoking = invoking_param_names(&ctx);
+        let offset_param = invoking.resolve("offset");
 
         // ── Validate offset ─────────────────────────────────────────
         if let Some(offset) = input.offset
             && offset < 1
         {
-            return Ok(ReadFileOutput::FileReadError(
-                "offset must be >= 1".to_string(),
-            ));
+            return Ok(ReadFileOutput::FileReadError(format!(
+                "{offset_param} must be >= 1"
+            )));
         }
 
         // ── Resolve path (single lock acquisition) ─────────────────
@@ -187,7 +191,7 @@ impl agent_tui_tool_runtime::Tool for ReadTool {
         // BRANCH A: DIRECTORY
         // ═══════════════════════════════════════════════════════════
         if metadata.is_dir() {
-            return Ok(read_directory(&path, input.offset, input.limit).await);
+            return Ok(read_directory(&path, input.offset, input.limit, offset_param).await);
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -264,8 +268,7 @@ impl agent_tui_tool_runtime::Tool for ReadTool {
         // Validate offset against file size.
         if total_lines > 0 && start >= total_lines {
             return Ok(ReadFileOutput::FileReadError(format!(
-                "Offset {} is out of range for this file ({} lines)",
-                offset, total_lines,
+                "{offset_param} {offset} is out of range for this file ({total_lines} lines)"
             )));
         }
 
@@ -328,16 +331,14 @@ impl agent_tui_tool_runtime::Tool for ReadTool {
 
         let footer = if truncated_by_bytes {
             format!(
-                "\n\n(Output capped at 50 KB. Showing lines {}-{}. Use offset={} to continue.)",
-                offset, last_read_line, next_offset,
+                "\n\n(Output capped at 50 KB. Showing lines {offset}-{last_read_line}. Use {offset_param}={next_offset} to continue.)"
             )
         } else if has_more_lines {
             format!(
-                "\n\n(Showing lines {}-{} of {}. Use offset={} to continue.)",
-                offset, last_read_line, total_lines, next_offset,
+                "\n\n(Showing lines {offset}-{last_read_line} of {total_lines}. Use {offset_param}={next_offset} to continue.)"
             )
         } else {
-            format!("\n\n(End of file - total {} lines)", total_lines)
+            format!("\n\n(End of file - total {total_lines} lines)")
         };
 
         let formatted = format!(
@@ -369,6 +370,8 @@ async fn read_directory(
     path: &std::path::Path,
     offset: Option<u32>,
     limit: Option<u32>,
+    // Client-facing `offset` param name for the "read beyond…" hint.
+    offset_param: &str,
 ) -> ReadFileOutput {
     let mut entries = Vec::new();
 
@@ -422,11 +425,9 @@ async fn read_directory(
     let truncated = (start + shown) < total;
 
     let entries_footer = if truncated {
+        let beyond = offset_val + shown;
         format!(
-            "\n(Showing {} of {} entries. Use 'offset' parameter to read beyond entry {})",
-            shown,
-            total,
-            offset_val + shown,
+            "\n(Showing {shown} of {total} entries. Use the {offset_param} parameter to read beyond entry {beyond})"
         )
     } else {
         format!("\n({} entries)", total)

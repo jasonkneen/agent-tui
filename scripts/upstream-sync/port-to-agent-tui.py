@@ -76,7 +76,12 @@ def git_show(rev, path):
 
 
 def bulk_sync() -> None:
-    """Copy every xai-* crate → agent-tui-* (skip fork-only)."""
+    """Copy every xai-* crate → agent-tui-* (skip fork-only).
+
+    Always rmtree the destination first so stale files from older layouts
+    (e.g. foo.rs + foo/mod.rs dual modules) cannot survive.
+    Never map xai-grok-pager-bin → agent-tui-bin (product packaging is fork-only).
+    """
     n = 0
     for area in ("crates/codegen", "crates/common", "crates/build"):
         area_p = ROOT / area
@@ -85,10 +90,15 @@ def bulk_sync() -> None:
         for src in sorted(area_p.iterdir()):
             if not src.is_dir() or not src.name.startswith("xai"):
                 continue
+            if src.name == "xai-grok-pager-bin":
+                print("SKIP xai-grok-pager-bin (product bin is fork-only)")
+                continue
             mapped = map_crate_name(src.name)
             if not mapped or mapped in FORK_ONLY_CRATES:
                 print(f"SKIP {src.name}")
                 continue
+            # Update crate identity is mostly upstream logic but ships fork URLs —
+            # still bulk-copy; apply.sh re-stamps version.rs / install hints.
             dst = area_p / mapped
             if dst.exists():
                 shutil.rmtree(dst)

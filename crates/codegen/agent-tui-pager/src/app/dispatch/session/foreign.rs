@@ -9,6 +9,8 @@ use crate::views::session_picker::{
     capture_picker_selection, effective_filter_query, repo_name_from_cwd, restore_picker_selection,
 };
 
+use agent_tui_shell::session::unified_list::ListScope;
+
 type SearchHit = agent_tui_shell::extensions::session_search::SearchSessionHit;
 
 struct PickerSurface<'a> {
@@ -30,7 +32,7 @@ impl PickerSurface<'_> {
             self.entries.as_deref(),
             self.content_results.as_deref(),
             self.state,
-            effective_filter_query(&self.state.query, self.entries_query.as_deref()),
+            effective_filter_query(self.state.query(), self.entries_query.as_deref()),
             self.grouped,
             *self.content_loading,
             self.source_filter,
@@ -40,7 +42,7 @@ impl PickerSurface<'_> {
 
     fn restore_selection(&mut self, anchor: PickerSelectionAnchor) {
         let filter_query =
-            effective_filter_query(&self.state.query, self.entries_query.as_deref()).to_owned();
+            effective_filter_query(self.state.query(), self.entries_query.as_deref()).to_owned();
         restore_picker_selection(
             anchor,
             self.entries.as_deref(),
@@ -158,8 +160,7 @@ pub(in crate::app::dispatch) fn dispatch_fetch_session_list(app: &mut AppView) -
     app.session_picker_loading = true;
     app.session_picker_entries = None;
     app.session_picker_state.selected = 0;
-    app.session_picker_state.query.clear();
-    app.session_picker_state.query_cursor = 0;
+    app.session_picker_state.set_query("");
     app.session_picker_state.search_active = false;
     app.session_picker_state.expanded.clear();
     app.session_picker_content_results = None;
@@ -215,6 +216,7 @@ pub(in crate::app::dispatch) fn handle_session_list_loaded(
     app: &mut AppView,
     sessions: Vec<SessionPickerEntry>,
     partial: Option<ConversationsPartial>,
+    scope: ListScope,
     seq: u64,
     query: Option<String>,
 ) -> Vec<Effect> {
@@ -235,6 +237,7 @@ pub(in crate::app::dispatch) fn handle_session_list_loaded(
     );
     let partial_notice = partial.map(ConversationsPartial::picker_notice);
     let chat_mode = app.chat_mode;
+    let is_browse = query.is_none();
     let mut sessions = Some(sessions);
     let mut notice = None;
     if let Some(agent) = get_active_agent_mut(app) {

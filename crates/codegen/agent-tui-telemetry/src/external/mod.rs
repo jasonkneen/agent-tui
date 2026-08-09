@@ -73,7 +73,7 @@ impl IdentityAttrs {
 /// reach init).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ExternalOtelRemotePolicy {
-    /// Fleet kill switch: flush, then drop subsequent emissions in-process.
+    /// Remote-policy force-disable: flush, then drop subsequent emissions in-process.
     pub force_disable: bool,
     /// Force the content gates off regardless of local env/config.
     pub lock_content_gates: bool,
@@ -303,16 +303,23 @@ fn settings_gate_window_expired() -> bool {
 }
 
 /// Cheap check used by the fan-out hook and the split-sink call sites:
-/// registry present AND the runtime emission gate set. A stale `true` read
-/// only costs a wasted mapping, never an export ([`emit`] re-checks).
+/// registry present AND the runtime emission gate set AND the settings gate
+/// open. A stale `true` read only costs a wasted mapping, never an export
+/// ([`emit`] re-checks).
 pub fn is_active() -> bool {
-    matches!(EXTERNAL.get(), Some(Some(ext)) if ext.active.load(Ordering::Relaxed))
+    is_settings_gate_open()
+        && matches!(EXTERNAL.get(), Some(Some(ext)) if ext.active.load(Ordering::Relaxed))
 }
 
 /// Map and emit one typed telemetry event. No-op unless the stream is active
 /// and the event has an `external = …` mapping. Synchronous and cheap (the
 /// batch processor queues; nothing blocks on I/O).
 pub fn emit<T: crate::events::TelemetryEvent>(data: &T) {
+    // Fail-closed: suppress until the leader confirms the remote policy; open by
+    // default for everyone else.
+    if !is_settings_gate_open() {
+        return;
+    }
     let Some(ext) = active_handle() else {
         return;
     };
@@ -350,8 +357,8 @@ pub(crate) fn set_identity_on(ext: &ExternalTelemetry, attrs: IdentityAttrs) {
 }
 
 /// Apply remote policy when `RemoteSettings` arrive (post-auth, alongside
-/// [`set_identity`]). **TIGHTEN-ONLY**: may clear `active` (fleet kill switch
-/// — flushes, then drops subsequent emissions) and may force content gates
+/// [`set_identity`]). **TIGHTEN-ONLY**: may clear `active` (remote-policy
+/// force-disable, flushes then drops subsequent emissions) and may force content gates
 /// off; it can never enable a stream that env/config left off, and never
 /// loosens gates mid-run.
 pub fn apply_remote_policy(policy: ExternalOtelRemotePolicy) {

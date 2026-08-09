@@ -60,6 +60,38 @@ fn bash_completed_notification(task_id: &str) -> PendingNotification {
         },
     }
 }
+fn monitor_completed_notification(task_id: &str) -> PendingNotification {
+    PendingNotification {
+        prompt_id: format!("monitor-completed-{task_id}"),
+        prompt_blocks: vec![],
+        priority: NotificationPriority::Later,
+        source: NotificationSource::MonitorCompleted {
+            task_id: task_id.to_string(),
+        },
+    }
+}
+fn task_wake_admission(
+    task_id: &str,
+    source: NotificationSource,
+) -> (
+    crate::session::commands::TaskWakeAdmission,
+    oneshot::Receiver<bool>,
+) {
+    let (respond_to, response_rx) = oneshot::channel();
+    (
+        crate::session::commands::TaskWakeAdmission {
+            respond_to,
+            fallback: crate::session::commands::TaskWakeFallback {
+                prompt_id: format!("deferred-{task_id}"),
+                prompt_blocks: vec![acp::ContentBlock::Text(acp::TextContent::new(format!(
+                    "completion {task_id}"
+                )))],
+                source,
+            },
+        },
+        response_rx,
+    )
+}
 fn monitor_event_notification(task_id: &str) -> PendingNotification {
     PendingNotification {
         prompt_id: format!("monitor-{task_id}"),
@@ -114,24 +146,27 @@ async fn drain_batches_monitor_notifications_into_formatted_block() {
                 .await;
             let monitor_notif = |task: &str, line: &str| PendingNotification {
                 prompt_id: format!("monitor-{task}"),
-                prompt_blocks: vec![
-                    agent_client_protocol::ContentBlock::Text(agent_client_protocol::TextContent::new(format!("<monitor-event description=\"watch\" task_id=\"{task}\">\n{line}\n</monitor-event>")),)
-                ],
+                prompt_blocks: vec![agent_client_protocol::ContentBlock::Text(
+                    agent_client_protocol::TextContent::new(format!(
+                            "<monitor-event description=\"watch\" task_id=\"{task}\">\n{line}\n</monitor-event>"
+                        )),
+                )],
                 priority: NotificationPriority::Next,
                 source: NotificationSource::MonitorEvent {
                     task_id: task.to_string(),
                 },
             };
             let mut bash = bash_completed_notification("bg-1");
-            bash.prompt_blocks = vec![
-                agent_client_protocol::ContentBlock::Text(agent_client_protocol::TextContent::new("Background task \"bg-1\" completed."),)
-            ];
+            bash.prompt_blocks = vec![agent_client_protocol::ContentBlock::Text(
+                agent_client_protocol::TextContent::new("Background task \"bg-1\" completed."),
+            )];
             let mut state = actor.state.lock().await;
             let drained = SessionActor::drain_notifications_into_turn(
                 &mut state,
                 vec![
-                    monitor_notif("mon-1", "tick 1"), bash, monitor_notif("mon-1",
-                    "tick 2"),
+                    monitor_notif("mon-1", "tick 1"),
+                    bash,
+                    monitor_notif("mon-1", "tick 2"),
                 ],
                 "get_task_output",
             );
@@ -151,12 +186,14 @@ async fn drain_batches_monitor_notifications_into_formatted_block() {
                 "monitor entries must collapse into one formatted batch: {text}"
             );
             assert!(
-                text
-                .contains("<monitor description=\"watch\" task_id=\"mon-1\">\n[1] tick 1\n[2] tick 2"),
+                text.contains(
+                    "<monitor description=\"watch\" task_id=\"mon-1\">\n[1] tick 1\n[2] tick 2"
+                ),
                 "batch must group + label the ticks: {text}"
             );
             assert_eq!(
-                text.matches("<monitor-event").count(), 0,
+                text.matches("<monitor-event").count(),
+                0,
                 "raw per-event wrappers must not survive the drain: {text}"
             );
             assert!(
@@ -164,7 +201,8 @@ async fn drain_batches_monitor_notifications_into_formatted_block() {
                 "non-monitor notification keeps its raw block: {text}"
             );
             assert_eq!(
-                text.matches("---").count(), 1,
+                text.matches("---").count(),
+                1,
                 "one separator between the batch and the bash block: {text}"
             );
         })
@@ -841,6 +879,12 @@ async fn user_prompt_preempt_keeps_running_synthetic_slot() {
                 tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            let reservations = actor
+                .tool_context
+                .task_completion_reservations
+                .as_ref()
+                .expect("completion reservations");
+            reservations.reserve("bg-other".to_string());
             {
                 let mut state = actor.state.lock().await;
                 state.running_task = Some(running_task_stub("task-completed-bg-target"));
@@ -866,6 +910,10 @@ async fn user_prompt_preempt_keeps_running_synthetic_slot() {
                 vec!["task-completed-bg-target", "user-clarify"],
                 "the running synthetic turn's slot must survive the user-priority \
                  preempt; only the queued non-running synthetic is dropped"
+            );
+            assert!(
+                !reservations.contains("bg-other"),
+                "ordinary user-priority preemption releases ownership immediately"
             );
         })
         .await;
@@ -1268,7 +1316,6 @@ async fn handle_bridge_tool_success_runs_consumed_completion_sweep() {
             let result = ToolRunResult {
                 output,
                 prompt_text: "ok".into(),
-                reminder_starts: Vec::new(),
                 effective_tool_name: None,
             };
             let parsed_args = serde_json::json!({});
@@ -1296,127 +1343,6 @@ async fn handle_bridge_tool_success_runs_consumed_completion_sweep() {
                 "handle_bridge_tool_success must run the Fix 1 sweep — the matching \
                      synthetic prompt for bg-foo should be gone"
             );
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn oversized_bridge_result_is_bounded_with_structural_reminders_and_exact_spill() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (gateway_tx, _) =
-                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
-            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
-            let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
-            actor.session_info.id =
-                acp::SessionId::new(format!("tool-bound-test-{}", uuid::Uuid::now_v7()));
-
-            let body = format!(
-                "ordinary output\n\n<not-a-reminder>tool data</not-a-reminder>\n{}",
-                "body".repeat(8_000)
-            );
-            let reminder = concat!(
-                "\n\n<system-reminder>\nIMPORTANT FIRST REMINDER\n",
-                "real reminder body\nLATE TASK REMINDER\n</system-reminder>"
-            );
-            let full = format!("{body}{reminder}");
-            let result = ToolRunResult {
-                output: ToolOutput::Text(TextOutput::from("clean output")),
-                prompt_text: full.clone(),
-                reminder_starts: vec![body.len()],
-                effective_tool_name: None,
-            };
-            actor
-                .handle_bridge_tool_success(
-                    &acp::ToolCallId::new("bounded-success"),
-                    "bounded-success",
-                    "test_tool",
-                    "test_tool",
-                    result,
-                    0,
-                    "test-model",
-                    &serde_json::json!({}),
-                )
-                .await
-                .unwrap();
-
-            let conversation = actor.chat_state_handle.get_conversation().await;
-            let text = conversation
-                .iter()
-                .rev()
-                .find_map(|item| match item {
-                    ConversationItem::ToolResult(result)
-                        if result.tool_call_id == "bounded-success" =>
-                    {
-                        Some(result.content.to_string())
-                    }
-                    _ => None,
-                })
-                .expect("bounded tool result");
-            assert!(text.len() <= 10_000);
-            assert!(text.contains("IMPORTANT FIRST REMINDER"));
-            assert!(text.contains("LATE TASK REMINDER"));
-
-            let output_dir =
-                crate::session::persistence::session_dir(&actor.session_info).join("tool-results");
-            let artifacts = std::fs::read_dir(&output_dir)
-                .unwrap()
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap();
-            assert_eq!(artifacts.len(), 1);
-            assert_eq!(std::fs::read_to_string(artifacts[0].path()).unwrap(), full);
-            std::fs::remove_dir_all(crate::session::persistence::session_dir(
-                &actor.session_info,
-            ))
-            .unwrap();
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn oversized_denial_stays_bounded_when_spill_persistence_fails() {
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let (gateway_tx, _) =
-                tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
-            let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
-            let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
-            actor.session_info.id =
-                acp::SessionId::new(format!("tool-bound-failure-test-{}", uuid::Uuid::now_v7()));
-            let session_dir = crate::session::persistence::session_dir(&actor.session_info);
-            std::fs::create_dir_all(&session_dir).unwrap();
-            std::fs::write(
-                session_dir.join("tool-results"),
-                "blocks directory creation",
-            )
-            .unwrap();
-
-            actor
-                .handle_tool_not_executed(
-                    "bounded-denial",
-                    &acp::ToolCallId::new("bounded-denial"),
-                    "denied".repeat(4_000),
-                )
-                .await
-                .unwrap();
-            let conversation = actor.chat_state_handle.get_conversation().await;
-            let text = conversation
-                .iter()
-                .rev()
-                .find_map(|item| match item {
-                    ConversationItem::ToolResult(result)
-                        if result.tool_call_id == "bounded-denial" =>
-                    {
-                        Some(result.content.to_string())
-                    }
-                    _ => None,
-                })
-                .expect("bounded denial result");
-            assert!(text.len() <= 10_000);
-            assert!(text.contains("full output could not be persisted"));
-            std::fs::remove_dir_all(session_dir).unwrap();
         })
         .await;
 }
@@ -1603,16 +1529,15 @@ async fn reparented_record_is_noop_without_goal_harness() {
 }
 /// Regression: the between-turn completion drain must suppress subagent
 /// completions already delivered to the model via auto-wake synthetic
-/// prompts. Without `auto_wake_delivered` feeding `suppress_ids`, the same
+/// prompts. Without completion reservations feeding `suppress_ids`, the same
 /// completion is reported twice — once as the auto-wake "Background subagent
 /// … completed" prompt and again as the "While you were idle, N background
 /// subagent(s) completed" reminder.
 #[tokio::test(flavor = "current_thread")]
-async fn between_turn_drain_suppresses_auto_wake_delivered_subagents() {
+async fn between_turn_drain_suppresses_reserved_subagents() {
     use agent_tui_tools::implementations::grok_build::task::types::{
         SubagentCompletionSummary, SubagentEvent,
     };
-    use agent_tui_tools::reminders::task_completion::AutoWakeDeliveredIds;
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -1620,9 +1545,12 @@ async fn between_turn_drain_suppresses_auto_wake_delivered_subagents() {
                 tokio::sync::mpsc::unbounded_channel::<agent_tui_acp_lib::AcpClientMessage>();
             let (persistence_tx, _) = tokio::sync::mpsc::unbounded_channel::<PersistenceMsg>();
             let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
-            let auto_wake = AutoWakeDeliveredIds::default();
-            auto_wake.insert("sa-autowake".to_string());
-            actor.tool_context.auto_wake_delivered = Some(auto_wake);
+            actor
+                .tool_context
+                .task_completion_reservations
+                .as_ref()
+                .expect("completion reservations")
+                .reserve("sa-autowake".to_string());
             let captured: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
                 std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<SubagentEvent>();
@@ -1652,7 +1580,7 @@ async fn between_turn_drain_suppresses_auto_wake_delivered_subagents() {
             let suppress = captured.lock().unwrap().clone();
             assert!(
                 suppress.contains(&"sa-autowake".to_string()),
-                "between-turn drain must pass auto-wake-delivered ids as suppress_ids: \
+                "between-turn drain must pass reserved ids as suppress_ids: \
                  {suppress:?}",
             );
             let conversation = actor.chat_state_handle.get_conversation().await;
@@ -1667,7 +1595,14 @@ async fn between_turn_drain_suppresses_auto_wake_delivered_subagents() {
             );
             assert!(
                 !texts.contains("sa-autowake"),
-                "auto-wake-delivered completion must NOT be re-surfaced: {texts}",
+                "reserved completion must NOT be re-surfaced: {texts}",
+            );
+            assert!(
+                actor
+                    .tool_context
+                    .task_completion_reservations
+                    .as_ref()
+                    .is_some_and(|ids| ids.contains("sa-autowake"))
             );
         })
         .await;

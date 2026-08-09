@@ -1,6 +1,7 @@
 //! Tests for credit-limit upsells, paywall gating, and auto-topup.
 
 use super::*;
+use agent_tui_shell::sampling::error::is_free_usage_exhausted_error;
 
 // ── Credit-limit upsell / max-tier tests ───────────────────────────
 
@@ -81,6 +82,7 @@ fn credit_limit_retry_preserves_image_submission_state() {
         text: "retry [Image #1]".into(),
         images: vec![image],
         scrollback_entry: crate::scrollback::EntryId::new(0),
+        combined_scrollback_entries: Vec::new(),
         chip_elements: vec![crate::app::agent::ChipElement {
             range: 6..16,
             kind: crate::views::prompt_widget::KIND_IMAGE,
@@ -535,7 +537,7 @@ fn fail_session_usage(app: &mut AppView, session_id: &str, error: &str) -> Vec<E
 }
 
 #[test]
-fn show_usage_returns_fetch_billing_effect() {
+fn show_usage_schedules_session_fetch_only() {
     let mut app = test_app_with_agent();
     // Scrollback flow is minimal-only.
     app.screen_mode = crate::app::ScreenMode::Minimal;

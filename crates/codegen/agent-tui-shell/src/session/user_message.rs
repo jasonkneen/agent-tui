@@ -46,20 +46,20 @@ pub(crate) fn construct_user_message_minimal(
             )
         }
     };
-    // Local-timezone date, captured when the prefix is built. Re-stamped on
-    // compaction and on resume (build_user_message_prefix), so it stays current
-    // across long sessions.
     let today = chrono::Local::now().format("%Y-%m-%d");
     format!(
         r#"<user_info>
 OS Version: {os}
 Shell: {shell}
 Workspace Path: {cwd}
-Today's date: {today}
+{USER_INFO_DATE_MARKER} {today}
 Note: Prefer using relative paths over absolute paths as tool call args when possible.
 </user_info>"#,
     )
 }
+
+/// Date label in the `<user_info>` prefix; `spawn::resumed_prefix_carries_fallback_date` scans for it.
+pub(crate) const USER_INFO_DATE_MARKER: &str = "Today's date:";
 
 /// Resolve a display string for the user's shell.
 ///
@@ -96,8 +96,6 @@ pub(crate) fn format_vcs_status_block(status: &str, vcs_kind: VcsKind) -> String
              is a snapshot in time, and will not update during the conversation.",
         )
     };
-    let status =
-        agent_tui_agent::prompt::user_message::normalize_git_status(status).unwrap_or_default();
     format!("\n\n<{tag}>\n{description}\n{status}\n</{tag}>\n")
 }
 
@@ -106,26 +104,49 @@ pub(crate) async fn compute_vcs_status_block(
     working_directory: &Path,
     vcs_kind: VcsKind,
 ) -> Option<String> {
-    use agent_tui_workspace::file_system::{git_status, jj_status};
+    use agent_tui_workspace::file_system::{git_status_short, jj_status};
 
     if matches!(vcs_kind, VcsKind::None) {
         return None;
     }
-    let _timer = crate::instrumentation_timer!("session.user_prefix.vcs_status");
-    let timeout = std::time::Duration::from_secs(2);
+    let mut timer = crate::instrumentation_timer!("session.user_prefix.vcs_status");
+    timer.with_field("vcs", if vcs_kind.is_jj() { "jj" } else { "git" });
+    timer.with_field(
+        "status_mode",
+        if vcs_kind.is_jj() {
+            "jj"
+        } else {
+            "short_untracked_normal"
+        },
+    );
+    timer.with_field("timeout_ms", 5_000_u64);
+    let timeout = std::time::Duration::from_secs(5);
     let result = if vcs_kind.is_jj() {
         tokio::time::timeout(timeout, jj_status(working_directory)).await
     } else {
-        tokio::time::timeout(timeout, git_status(working_directory)).await
+        tokio::time::timeout(timeout, git_status_short(working_directory)).await
     };
     match result {
-        Ok(Ok(status)) => Some(format_vcs_status_block(&status, vcs_kind)),
+        Ok(Ok(status)) => {
+            timer.with_field("outcome", "success");
+            timer.with_field("output_bytes", status.len() as u64);
+            let status = if vcs_kind.is_jj() {
+                Some(status)
+            } else {
+                agent_tui_agent::prompt::user_message::normalize_git_status(&status)
+            };
+            status.map(|status| format_vcs_status_block(&status, vcs_kind))
+        }
         Ok(Err(e)) => {
+            timer.with_field("outcome", "error");
+            timer.with_field("output_bytes", 0_u64);
             tracing::warn!("user prefix VCS status failed: {e}");
             None
         }
         Err(_) => {
-            tracing::warn!(vcs = ?vcs_kind, "user prefix VCS status timed out after 2s");
+            timer.with_field("outcome", "timeout");
+            timer.with_field("output_bytes", 0_u64);
+            tracing::warn!(vcs = ?vcs_kind, "user prefix VCS status timed out after 5s");
             None
         }
     }
@@ -158,10 +179,7 @@ pub(crate) async fn construct_user_message(
     if let Some(vcs) = vcs_block {
         user_info.push_str(&vcs);
     }
-    agent_tui_sampling_types::bound_model_item_text(
-        user_info,
-        agent_tui_sampling_types::MAX_MODEL_ITEM_BYTES,
-    )
+    user_info
 }
 
 // Tests for extract_user_query now live in agent_tui_chat_state::compaction_utils.
@@ -171,7 +189,6 @@ mod tests {
     use super::*;
     use agent_tui_workspace::file_system::FsError;
 
-    /// Verify that construct_user_message completes within the 2s git_status
     /// timeout even when pointed at a non-existent directory (git commands
     /// fail instantly → no timeout path exercised, but validates the happy
     /// path doesn't regress).

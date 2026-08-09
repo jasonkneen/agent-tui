@@ -325,14 +325,14 @@ async fn download_silent_writes_body_to_dest() {
     let server = MockServer::start().await;
     let body = b"binary contents \x00\x01\x02".to_vec();
     Mock::given(method("GET"))
-        .and(path("/agent-tui-0.1.181-macos-aarch64"))
+        .and(path("/grok-0.1.181-macos-aarch64"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
         .mount(&server)
         .await;
 
     let tmp = tempfile::tempdir().unwrap();
-    let dest = tmp.path().join("agent-tui");
-    let url = format!("{}/agent-tui-0.1.181-macos-aarch64", server.uri());
+    let dest = tmp.path().join("grok");
+    let url = format!("{}/grok-0.1.181-macos-aarch64", server.uri());
     download_silent(&url, &dest).await.unwrap();
 
     let written = std::fs::read(&dest).unwrap();
@@ -371,7 +371,7 @@ async fn download_silent_atomically_renames_via_tmp_file() {
         .await;
 
     let tmp = tempfile::tempdir().unwrap();
-    let dest = tmp.path().join("agent-tui");
+    let dest = tmp.path().join("grok");
     download_silent(&format!("{}/bin", server.uri()), &dest)
         .await
         .unwrap();
@@ -399,7 +399,7 @@ async fn download_silent_publishes_executable() {
         .await;
 
     let tmp = tempfile::tempdir().unwrap();
-    let dest = tmp.path().join("agent-tui-0.1.181-linux-x86_64");
+    let dest = tmp.path().join("grok-0.1.181-linux-x86_64");
     download_silent(&format!("{}/bin", server.uri()), &dest)
         .await
         .unwrap();
@@ -422,7 +422,7 @@ async fn download_silent_fails_on_4xx() {
         .await;
 
     let tmp = tempfile::tempdir().unwrap();
-    let dest = tmp.path().join("agent-tui");
+    let dest = tmp.path().join("grok");
     let err = download_silent(&format!("{}/missing", server.uri()), &dest)
         .await
         .unwrap_err();
@@ -443,7 +443,7 @@ async fn download_silent_fails_on_5xx() {
         .await;
 
     let tmp = tempfile::tempdir().unwrap();
-    let dest = tmp.path().join("agent-tui");
+    let dest = tmp.path().join("grok");
     let err = download_silent(&format!("{}/x", server.uri()), &dest)
         .await
         .unwrap_err();
@@ -460,7 +460,7 @@ async fn download_silent_overwrites_existing_dest() {
         .await;
 
     let tmp = tempfile::tempdir().unwrap();
-    let dest = tmp.path().join("agent-tui");
+    let dest = tmp.path().join("grok");
     std::fs::write(&dest, "old content").unwrap();
 
     download_silent(&format!("{}/x", server.uri()), &dest)
@@ -481,7 +481,7 @@ async fn download_silent_handles_empty_body() {
         .await;
 
     let tmp = tempfile::tempdir().unwrap();
-    let dest = tmp.path().join("agent-tui");
+    let dest = tmp.path().join("grok");
     download_silent(&format!("{}/x", server.uri()), &dest)
         .await
         .unwrap();
@@ -503,7 +503,7 @@ async fn download_silent_streams_large_body() {
         .await;
 
     let tmp = tempfile::tempdir().unwrap();
-    let dest = tmp.path().join("agent-tui");
+    let dest = tmp.path().join("grok");
     download_silent(&format!("{}/big", server.uri()), &dest)
         .await
         .unwrap();
@@ -524,7 +524,7 @@ async fn download_silent_to_nonexistent_parent_dir_fails() {
 
     let tmp = tempfile::tempdir().unwrap();
     // Parent directory does NOT exist — should fail at file create.
-    let dest = tmp.path().join("missing-subdir").join("agent-tui");
+    let dest = tmp.path().join("missing-subdir").join("grok");
     let err = download_silent(&format!("{}/x", server.uri()), &dest)
         .await
         .unwrap_err();
@@ -553,7 +553,7 @@ async fn download_with_progress_writes_body_with_content_length() {
         .await;
 
     let tmp = tempfile::tempdir().unwrap();
-    let dest = tmp.path().join("agent-tui");
+    let dest = tmp.path().join("grok");
     download_with_progress(&format!("{}/grok", server.uri()), &dest)
         .await
         .unwrap();
@@ -571,7 +571,7 @@ async fn download_with_progress_fails_on_http_error() {
         .await;
 
     let tmp = tempfile::tempdir().unwrap();
-    let dest = tmp.path().join("agent-tui");
+    let dest = tmp.path().join("grok");
     let err = download_with_progress(&format!("{}/x", server.uri()), &dest)
         .await
         .unwrap_err();
@@ -590,7 +590,7 @@ async fn download_with_progress_atomic_rename() {
         .await;
 
     let tmp = tempfile::tempdir().unwrap();
-    let dest = tmp.path().join("agent-tui");
+    let dest = tmp.path().join("grok");
     download_with_progress(&format!("{}/x", server.uri()), &dest)
         .await
         .unwrap();

@@ -36,7 +36,7 @@ impl Listener {
         let signals = proxy.receive_signal("PrepareForSleep").ok()?;
 
         thread::Builder::new()
-            .name("xai-power-listener".into())
+            .name("agent-tui-power-listener".into())
             .spawn(move || run_thread(proxy, signals, callback))
             .ok()?;
 

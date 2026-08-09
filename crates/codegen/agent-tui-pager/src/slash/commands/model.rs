@@ -23,7 +23,7 @@ impl SlashCommand for ModelCommand {
     }
 
     fn description(&self) -> &str {
-        "Switch model (Grok / Codex / Claude / Lazar — depends on /runtime)"
+        "Switch the active model"
     }
 
     fn session_scoped(&self) -> bool {
@@ -54,17 +54,6 @@ impl SlashCommand for ModelCommand {
 
     fn suggest_args(&self, ctx: &AppCtx, args_query: &str) -> Option<Vec<ArgItem>> {
         if ctx.models.is_empty() {
-            // Codex selected but catalog not loaded yet — nudge refresh.
-            if crate::runtime_backend::active()
-                == crate::runtime_backend::RuntimeBackend::Codex
-            {
-                return Some(vec![ArgItem {
-                    display: "(loading Codex models…)".into(),
-                    match_text: "refresh".into(),
-                    insert_text: String::new(),
-                    description: "Run /runtime codex again if this stays empty".into(),
-                }]);
-            }
             return None;
         }
 
@@ -78,12 +67,6 @@ impl SlashCommand for ModelCommand {
     fn run(&self, ctx: &mut CommandExecCtx, args: &str) -> CommandResult {
         let trimmed = args.trim();
         if trimmed.is_empty() {
-            if crate::runtime_backend::active()
-                == crate::runtime_backend::RuntimeBackend::Codex
-                && ctx.models.is_empty()
-            {
-                return CommandResult::Action(Action::RefreshCodexModels);
-            }
             return CommandResult::Error("Usage: /model <name> [effort]".into());
         }
 

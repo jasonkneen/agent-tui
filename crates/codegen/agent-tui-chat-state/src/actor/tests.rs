@@ -3,9 +3,10 @@
 use std::num::NonZeroU64;
 use std::time::Duration;
 
-use agent_tui_sampling_types::{ConversationItem, SamplingConfig};
 use tokio::sync::mpsc;
+use agent_tui_sampling_types::{ConversationItem, SamplingConfig};
 
+use crate::StrictAppendAck;
 use crate::actor::ChatStateActor;
 use crate::events::ChatStateEvent;
 use crate::persistence::{MockChatPersistence, MockPersistenceReceiver, PersistenceRecord};
@@ -24,6 +25,8 @@ fn test_config_with_window(context_window: u64) -> SamplingConfig {
         top_p: None,
         api_backend: Default::default(),
         extra_headers: Default::default(),
+        query_params: Default::default(),
+        env_http_headers: Default::default(),
         context_window: NonZeroU64::new(context_window)
             .expect("test context_window must be non-zero"),
         reasoning_effort: None,
@@ -54,11 +57,23 @@ impl TestHarness {
 
     fn with_config(items: Vec<ConversationItem>, config: SamplingConfig) -> Self {
         let (mock, persistence_rx) = MockChatPersistence::new();
+        Self::with_persistence(items, config, mock, persistence_rx)
+    }
+
+    fn with_manual_persistence_ack(items: Vec<ConversationItem>) -> Self {
+        let (mock, persistence_rx) = MockChatPersistence::new_with_manual_persistence_ack();
+        Self::with_persistence(items, test_config(), mock, persistence_rx)
+    }
+
+    fn with_persistence(
+        items: Vec<ConversationItem>,
+        config: SamplingConfig,
+        mock: MockChatPersistence,
+        persistence_rx: MockPersistenceReceiver,
+    ) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let token = tokio_util::sync::CancellationToken::new();
-
         let handle = ChatStateActor::spawn(items, config, Box::new(mock), event_tx, token.clone());
-
         Self {
             handle,
             event_rx,
@@ -153,6 +168,249 @@ async fn push_user_message_and_ack_waits_for_actor_acceptance() {
     let records = h.drain_persistence();
     assert_eq!(records.len(), 1);
     assert!(matches!(&records[0], PersistenceRecord::Message(_)));
+}
+
+#[tokio::test]
+async fn strict_switch_append_preserves_prefix_and_deduplicates_generation() {
+    let prefix = vec![
+        ConversationItem::system("sys"),
+        ConversationItem::assistant("assistant"),
+        ConversationItem::tool_result("dangling", "must remain"),
+    ];
+    let prefix_json: Vec<Vec<u8>> = prefix
+        .iter()
+        .map(|item| serde_json::to_vec(item).unwrap())
+        .collect();
+    let mut h = TestHarness::with_conversation(prefix);
+    let reminder = ConversationItem::working_directory_switch("moved", 3);
+
+    assert!(matches!(
+        h.handle
+            .append_working_directory_switch_and_ack(
+                "moved".into(),
+                std::num::NonZeroU64::new(3).unwrap(),
+            )
+            .await
+            .unwrap(),
+        StrictAppendAck::Appended
+    ));
+    let conversation = h.handle.get_conversation().await;
+    assert_eq!(conversation.len(), 4);
+    for (actual, expected) in conversation.iter().zip(&prefix_json) {
+        assert_eq!(serde_json::to_vec(actual).unwrap(), *expected);
+    }
+    assert_eq!(
+        serde_json::to_vec(&conversation[3]).unwrap(),
+        serde_json::to_vec(&reminder).unwrap()
+    );
+    assert!(matches!(
+        h.drain_persistence().as_slice(),
+        [PersistenceRecord::AcknowledgedMessage(_)]
+    ));
+
+    assert!(matches!(
+        h.handle
+            .append_working_directory_switch_and_ack(
+                "different text".into(),
+                std::num::NonZeroU64::new(3).unwrap(),
+            )
+            .await
+            .unwrap(),
+        StrictAppendAck::AlreadyPresent(_)
+    ));
+    assert_eq!(h.handle.get_conversation().await.len(), 4);
+    assert!(matches!(
+        h.drain_persistence().as_slice(),
+        [PersistenceRecord::AcknowledgedMessage(_)]
+    ));
+
+    assert!(matches!(
+        h.handle
+            .append_working_directory_switch_and_ack(
+                "next move".into(),
+                std::num::NonZeroU64::new(4).unwrap(),
+            )
+            .await
+            .unwrap(),
+        StrictAppendAck::Appended
+    ));
+    assert_eq!(h.handle.get_conversation().await.len(), 5);
+}
+
+#[tokio::test]
+async fn strict_switch_append_ack_waits_for_persistence() {
+    let mut h = TestHarness::with_manual_persistence_ack(vec![]);
+    let handle = h.handle.clone();
+    let task = tokio::spawn(async move {
+        handle
+            .append_working_directory_switch_and_ack(
+                "moved".into(),
+                std::num::NonZeroU64::new(1).unwrap(),
+            )
+            .await
+    });
+    let persistence_ack = h
+        .persistence_rx
+        .next_persistence_ack()
+        .await
+        .expect("acknowledged append requested");
+    assert!(matches!(
+        h.drain_persistence().as_slice(),
+        [PersistenceRecord::AcknowledgedMessage(_)]
+    ));
+    assert!(!task.is_finished(), "actor ack must wait for persistence");
+    persistence_ack.send(Ok(StrictAppendAck::Appended)).unwrap();
+    assert!(matches!(
+        task.await.unwrap().unwrap(),
+        StrictAppendAck::Appended
+    ));
+}
+
+#[tokio::test]
+async fn committed_storage_result_converges_actor_memory() {
+    let mut h = TestHarness::with_manual_persistence_ack(vec![]);
+    let handle = h.handle.clone();
+    let task = tokio::spawn(async move {
+        handle
+            .append_working_directory_switch_and_ack(
+                "moved".into(),
+                std::num::NonZeroU64::new(2).unwrap(),
+            )
+            .await
+    });
+    let persistence_ack = h.persistence_rx.next_persistence_ack().await.unwrap();
+    persistence_ack
+        .send(Err(crate::StrictAppendError::Committed {
+            acknowledgement: StrictAppendAck::Appended,
+            source: std::io::Error::other("summary failed"),
+        }))
+        .unwrap();
+    let result = task.await.unwrap();
+    assert!(matches!(
+        result,
+        Err(crate::StrictAppendError::Committed {
+            acknowledgement: StrictAppendAck::Appended,
+            ..
+        })
+    ));
+    let conversation = h.handle.get_conversation().await;
+    assert_eq!(conversation.len(), 1);
+    assert_eq!(
+        conversation[0].working_directory_switch_generation(),
+        Some(2)
+    );
+}
+
+#[tokio::test]
+async fn already_present_replaces_stale_switch_in_actor_memory() {
+    let generation = NonZeroU64::new(3).unwrap();
+    let mut h =
+        TestHarness::with_manual_persistence_ack(vec![ConversationItem::working_directory_switch(
+            "stale",
+            generation.get(),
+        )]);
+    let handle = h.handle.clone();
+    let task = tokio::spawn(async move {
+        handle
+            .append_working_directory_switch_and_ack("candidate".into(), generation)
+            .await
+    });
+    h.persistence_rx
+        .next_persistence_ack()
+        .await
+        .unwrap()
+        .send(Ok(StrictAppendAck::AlreadyPresent(
+            ConversationItem::working_directory_switch("authoritative", generation.get()),
+        )))
+        .unwrap();
+
+    assert!(matches!(
+        task.await.unwrap().unwrap(),
+        StrictAppendAck::AlreadyPresent(item) if item.text_content() == "authoritative"
+    ));
+    let conversation = h.handle.get_conversation().await;
+    assert_eq!(conversation.len(), 1);
+    assert_eq!(conversation[0].text_content(), "authoritative");
+}
+
+#[tokio::test]
+async fn committed_already_present_replaces_retry_candidate_in_actor_memory() {
+    let generation = NonZeroU64::new(4).unwrap();
+    let mut h =
+        TestHarness::with_manual_persistence_ack(vec![ConversationItem::working_directory_switch(
+            "retry candidate",
+            generation.get(),
+        )]);
+    let handle = h.handle.clone();
+    let task = tokio::spawn(async move {
+        handle
+            .append_working_directory_switch_and_ack("another retry".into(), generation)
+            .await
+    });
+    h.persistence_rx
+        .next_persistence_ack()
+        .await
+        .unwrap()
+        .send(Err(crate::StrictAppendError::Committed {
+            acknowledgement: StrictAppendAck::AlreadyPresent(
+                ConversationItem::working_directory_switch("authoritative", generation.get()),
+            ),
+            source: std::io::Error::other("summary failed"),
+        }))
+        .unwrap();
+
+    assert!(matches!(
+        task.await.unwrap(),
+        Err(crate::StrictAppendError::Committed {
+            acknowledgement: StrictAppendAck::AlreadyPresent(item),
+            ..
+        }) if item.text_content() == "authoritative"
+    ));
+    let conversation = h.handle.get_conversation().await;
+    assert_eq!(conversation.len(), 1);
+    assert_eq!(conversation[0].text_content(), "authoritative");
+}
+
+#[tokio::test]
+async fn dropped_storage_reply_is_indeterminate_and_leaves_memory_unchanged() {
+    let mut h = TestHarness::with_manual_persistence_ack(vec![]);
+    let handle = h.handle.clone();
+    let task = tokio::spawn(async move {
+        handle
+            .append_working_directory_switch_and_ack(
+                "moved".into(),
+                std::num::NonZeroU64::new(2).unwrap(),
+            )
+            .await
+    });
+    drop(h.persistence_rx.next_persistence_ack().await.unwrap());
+    assert!(matches!(
+        task.await.unwrap(),
+        Err(crate::StrictAppendError::Indeterminate(_))
+    ));
+    assert!(h.handle.get_conversation().await.is_empty());
+}
+
+#[tokio::test]
+async fn uncommitted_storage_error_leaves_actor_memory_unchanged() {
+    let mut h = TestHarness::with_manual_persistence_ack(vec![]);
+    let handle = h.handle.clone();
+    let task = tokio::spawn(async move {
+        handle
+            .append_working_directory_switch_and_ack(
+                "moved".into(),
+                std::num::NonZeroU64::new(2).unwrap(),
+            )
+            .await
+    });
+    let persistence_ack = h.persistence_rx.next_persistence_ack().await.unwrap();
+    persistence_ack
+        .send(Err(crate::StrictAppendError::NotCommitted(
+            std::io::Error::other("append failed"),
+        )))
+        .unwrap();
+    assert!(task.await.unwrap().is_err());
+    assert!(h.handle.get_conversation().await.is_empty());
 }
 
 #[tokio::test]
@@ -783,19 +1041,6 @@ async fn replace_system_head_noop_when_head_matches_modulo_newline() {
 }
 
 #[tokio::test]
-async fn guarded_system_head_replace_is_atomic_with_inference_history_check() {
-    let h = TestHarness::with_conversation(vec![
-        ConversationItem::system("old"),
-        ConversationItem::user("hi"),
-        ConversationItem::assistant("already inferred"),
-    ]);
-    let result = h.handle.replace_system_head_before_inference("new").await;
-    assert_eq!(result, Some(None));
-    let conv = h.handle.get_conversation().await;
-    assert!(matches!(&conv[0], ConversationItem::System(s) if s.content.as_ref() == "old"));
-}
-
-#[tokio::test]
 async fn replace_system_head_inserts_when_absent() {
     let h = TestHarness::with_conversation(vec![ConversationItem::user("hi")]);
     let changed = h.handle.replace_system_head("sys").await;
@@ -930,6 +1175,8 @@ async fn update_sampling_config_is_queryable() {
         top_p: None,
         api_backend: Default::default(),
         extra_headers: Default::default(),
+        query_params: Default::default(),
+        env_http_headers: Default::default(),
         context_window: NonZeroU64::new(200_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
@@ -1224,15 +1471,12 @@ async fn build_request_injects_memory_reminder() {
         .await
         .unwrap();
 
-    assert_eq!(request.items.len(), 3);
-    assert!(matches!(
-        &request.items[0],
-        ConversationItem::System(sys) if sys.content.as_ref() == "You are helpful."
-    ));
-    assert_eq!(
-        request.items.last().unwrap().text_content(),
-        "Remember: user prefers Rust"
-    );
+    if let ConversationItem::System(ref sys) = request.items[0] {
+        assert!(sys.content.contains("Remember: user prefers Rust"));
+        assert!(sys.content.starts_with("You are helpful."));
+    } else {
+        panic!("expected System item");
+    }
 }
 
 #[tokio::test]
@@ -1251,9 +1495,8 @@ async fn build_request_injects_memory_when_no_system() {
         .await
         .unwrap();
 
-    assert_eq!(request.items.len(), 2); // original User + synthetic reminder
-    assert_eq!(request.items[0].text_content(), "hi");
-    assert_eq!(request.items[1].text_content(), "Remember this");
+    assert_eq!(request.items.len(), 2); // new System + original User
+    assert!(matches!(&request.items[0], ConversationItem::System(_)));
 }
 
 #[tokio::test]
@@ -1319,6 +1562,8 @@ async fn build_request_uses_sampling_config() {
         top_p: Some(0.9),
         api_backend: Default::default(),
         extra_headers: Default::default(),
+        query_params: Default::default(),
+        env_http_headers: Default::default(),
         context_window: NonZeroU64::new(128_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
@@ -1386,30 +1631,24 @@ async fn build_request_can_persist_memory_into_actor_state() {
         .await
         .unwrap();
 
-    assert_eq!(request.items[0].text_content(), "sys");
-    assert!(
-        request
-            .items
-            .last()
-            .unwrap()
-            .text_content()
-            .contains("Remember this")
-    );
+    if let ConversationItem::System(ref sys) = request.items[0] {
+        assert!(sys.content.contains("Remember this"));
+    } else {
+        panic!("expected System item in request");
+    }
 
     let conv = h.handle.get_conversation().await;
-    assert_eq!(conv[0].text_content(), "sys");
-    assert!(
-        conv.last()
-            .unwrap()
-            .text_content()
-            .contains("Remember this")
-    );
+    if let ConversationItem::System(ref sys) = conv[0] {
+        assert!(sys.content.contains("Remember this"));
+    } else {
+        panic!("expected persisted System item");
+    }
 
     let records = h.drain_persistence();
     assert!(
         records
             .iter()
-            .any(|r| matches!(r, PersistenceRecord::ReplaceHistory(items) if items.last().is_some_and(|item| item.text_content().contains("Remember this"))))
+            .any(|r| matches!(r, PersistenceRecord::ReplaceHistory(items) if matches!(items.first(), Some(ConversationItem::System(sys)) if sys.content.contains("Remember this"))))
     );
 }
 
@@ -2618,9 +2857,9 @@ async fn integrity_repair_does_not_flag_compaction() {
 }
 
 #[tokio::test]
-async fn turn_capture_survives_persisted_memory_reminder_append() {
-    // No leading System item: persisted memory must append a synthetic item
-    // without changing the already-captured turn boundary.
+async fn turn_capture_survives_persisted_memory_reminder_prepend() {
+    // No leading System item, so the persisted memory inject prepends one via
+    // `items.insert(0, ..)`, shifting every index by one under an active capture.
     let h = TestHarness::with_conversation(vec![ConversationItem::user("hi")]);
 
     h.handle.begin_turn_capture();
@@ -2628,8 +2867,9 @@ async fn turn_capture_survives_persisted_memory_reminder_append() {
     h.handle
         .push_assistant_response(ConversationItem::assistant("turn-a"));
 
-    // Persist path injects into the LIVE conversation. The capture must remain
-    // the exact user/assistant slice and exclude the synthetic reminder.
+    // Persist path injects into the LIVE conversation; without the snapshot +
+    // rebase the prepend shifts every index but not the offset, so the off-by-one
+    // tail over-reads past the turn boundary (the len check below catches it).
     let request = h
         .handle
         .build_request(
@@ -2642,11 +2882,7 @@ async fn turn_capture_survives_persisted_memory_reminder_append() {
         )
         .await
         .unwrap();
-    assert_eq!(request.items[0].text_content(), "hi");
-    assert_eq!(
-        request.items.last().unwrap().text_content(),
-        "Remember this"
-    );
+    assert!(matches!(&request.items[0], ConversationItem::System(_)));
 
     let capture = h
         .handle
@@ -2743,6 +2979,43 @@ async fn get_last_assistant_text_skips_whitespace_only() {
     let text = h.handle.get_last_assistant_text().await;
     // Must skip the whitespace-only entry and return the previous one
     assert_eq!(text.as_deref(), Some("real answer"));
+}
+
+#[tokio::test]
+async fn get_last_assistant_text_in_turn_stops_at_boundary() {
+    let h = TestHarness::new();
+    h.handle.push_user_message(ConversationItem::user("q1"));
+    h.handle
+        .push_assistant_response(ConversationItem::assistant("previous turn answer"));
+    h.handle.push_user_message(ConversationItem::user("q2"));
+
+    assert!(h.handle.get_last_assistant_text_in_turn().await.is_none());
+    assert_eq!(
+        h.handle.get_last_assistant_text().await.as_deref(),
+        Some("previous turn answer"),
+        "the unbounded sibling still sees prior turns"
+    );
+}
+
+#[tokio::test]
+async fn get_last_assistant_text_in_turn_walks_past_synthetic_injections() {
+    let h = TestHarness::new();
+    h.handle.push_user_message(ConversationItem::user("q"));
+    h.handle
+        .push_assistant_response(ConversationItem::assistant("turn answer"));
+    h.handle
+        .push_user_message(ConversationItem::stop_hook_feedback("keep working"));
+
+    assert_eq!(
+        h.handle.get_last_assistant_text_in_turn().await.as_deref(),
+        Some("turn answer"),
+        "synthetic mid-turn items must not act as turn boundaries"
+    );
+
+    // A turn-starting synthetic item (auto-wake) IS a boundary.
+    h.handle
+        .push_user_message(ConversationItem::task_completed("task done"));
+    assert!(h.handle.get_last_assistant_text_in_turn().await.is_none());
 }
 
 #[tokio::test]
@@ -3432,6 +3705,8 @@ async fn sampling_config_survives_compaction_replacement() {
         top_p: Some(0.95),
         api_backend: ApiBackend::Responses,
         extra_headers: Default::default(),
+        query_params: Default::default(),
+        env_http_headers: Default::default(),
         context_window: NonZeroU64::new(500_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
@@ -3515,6 +3790,8 @@ async fn model_metadata_lost_after_compaction_then_recovered_on_next_turn() {
         top_p: Some(0.95),
         api_backend: Default::default(),
         extra_headers: Default::default(),
+        query_params: Default::default(),
+        env_http_headers: Default::default(),
         context_window: NonZeroU64::new(500_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
@@ -3603,6 +3880,8 @@ async fn context_window_downgrade_triggers_auto_compact() {
         top_p: Some(0.95),
         api_backend: ApiBackend::Responses,
         extra_headers: Default::default(),
+        query_params: Default::default(),
+        env_http_headers: Default::default(),
         context_window: NonZeroU64::new(500_000).unwrap(),
         reasoning_effort: None,
         stream_tool_calls: None,
@@ -3796,10 +4075,9 @@ async fn prefix_stable_across_user_assistant_turns() {
     assert_prefix_stable_pair(&req2, &req3, "turn 2 -> turn 3");
 }
 
-/// Memory reminders preserve every pre-existing request item byte-for-byte.
-/// A non-persisted reminder is an immutable tail delta, so later conversation
-/// items may precede it on later requests; the canonical history must never be
-/// rewritten to make the reminder appear stable.
+/// Prefix stability when memory reminders are injected.
+/// Once a memory reminder is established, subsequent requests with the
+/// SAME reminder must produce stable prefixes.
 #[tokio::test]
 async fn prefix_stable_with_consistent_memory_injection() {
     let h = TestHarness::with_conversation(vec![
@@ -3807,11 +4085,6 @@ async fn prefix_stable_with_consistent_memory_injection() {
         ConversationItem::user("Hello"),
     ]);
 
-    let base1 = h
-        .handle
-        .build_request(vec![], None, false, None, "c".into(), "base1".into())
-        .await
-        .unwrap();
     let req1 = h
         .handle
         .build_request(
@@ -3825,26 +4098,11 @@ async fn prefix_stable_with_consistent_memory_injection() {
         .await
         .unwrap();
 
-    let base1_wire = serialize_via_public_api(&base1);
-    let req1_wire = serialize_via_public_api(&req1);
-    let base1_input = base1_wire["input"].as_array().unwrap();
-    let req1_input = req1_wire["input"].as_array().unwrap();
-    assert_eq!(
-        &req1_input[..base1_input.len()],
-        base1_input.as_slice(),
-        "first reminder injection rewrote canonical history"
-    );
-
     h.handle
         .push_assistant_response(ConversationItem::assistant("Hi!"));
     h.handle
         .push_user_message(ConversationItem::user("Tell me more"));
 
-    let base2 = h
-        .handle
-        .build_request(vec![], None, false, None, "c".into(), "base2".into())
-        .await
-        .unwrap();
     let req2 = h
         .handle
         .build_request(
@@ -3858,19 +4116,7 @@ async fn prefix_stable_with_consistent_memory_injection() {
         .await
         .unwrap();
 
-    let base2_wire = serialize_via_public_api(&base2);
-    let req2_wire = serialize_via_public_api(&req2);
-    let base2_input = base2_wire["input"].as_array().unwrap();
-    let req2_input = req2_wire["input"].as_array().unwrap();
-    assert_eq!(
-        &req2_input[..base2_input.len()],
-        base2_input.as_slice(),
-        "second reminder injection rewrote canonical history"
-    );
-    assert_eq!(
-        req1.items.last().unwrap().text_content(),
-        req2.items.last().unwrap().text_content()
-    );
+    assert_prefix_stable_pair(&req1, &req2, "memory-injected turn 1 -> turn 2");
 }
 
 /// Prefix stability with Reasoning siblings (encrypted reasoning) through

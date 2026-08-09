@@ -35,6 +35,7 @@ pub struct BashToolConfig {
     /// Whether to allow a background `&` operator in foreground commands
     /// (default: `true`). Resolution: config.toml (this) > remote settings > `true`.
     pub allow_background_operator: Option<bool>,
+    pub login_shell_capture: Option<bool>,
 }
 
 impl BashToolConfig {
@@ -110,6 +111,10 @@ pub struct WebFetchToolConfig {
     /// default allowlist. An explicit empty list blocks all fetches.
     /// Resolution: TOML > remote settings > built-in defaults.
     pub allowed_domains: Option<Vec<String>>,
+    /// Allow fetches to explicit loopback hosts only (`localhost` / `127.0.0.0/8`
+    /// / `::1`). Private and metadata ranges stay blocked. Default off.
+    /// Resolution: TOML > `GROK_WEB_FETCH_ALLOW_LOCAL` env > false.
+    pub allow_local: Option<bool>,
 }
 
 impl WebFetchToolConfig {
@@ -139,10 +144,15 @@ impl WebFetchToolConfig {
             .cloned()
             .or_else(|| remote_domains.map(|d| d.to_vec()));
 
+        let allow_local = self
+            .allow_local
+            .or_else(|| agent_tui_config::env_bool("GROK_WEB_FETCH_ALLOW_LOCAL"));
+
         agent_tui_tools::implementations::grok_build::web_fetch::WebFetchParams {
             proxy_endpoint,
             allowed_domains,
             context_window_tokens,
+            allow_local,
             ..Default::default()
         }
     }
@@ -210,6 +220,8 @@ impl ShellToolsetConfig {
             api_backend: Default::default(),
             auth_scheme: Default::default(),
             extra_headers: indexmap::IndexMap::new(),
+            query_params: indexmap::IndexMap::new(),
+            env_http_headers: indexmap::IndexMap::new(),
             context_window: 256_000,
             client_version: None,
             reasoning_effort: None,
@@ -571,6 +583,7 @@ mod tests {
         let local = WebFetchToolConfig {
             proxy_endpoint: Some("https://toml-proxy.example.com".to_owned()),
             allowed_domains: Some(vec!["toml.example.com".to_owned()]),
+            allow_local: Some(true),
         };
         let params = local.resolve_params(
             Some("https://remote-proxy.example.com"),
@@ -585,6 +598,8 @@ mod tests {
             params.allowed_domains,
             Some(vec!["toml.example.com".to_owned()])
         );
+        assert_eq!(params.allow_local, Some(true));
+        assert!(params.allow_local());
     }
 
     #[test]
@@ -603,6 +618,7 @@ mod tests {
             params.allowed_domains,
             Some(vec!["remote.example.com".to_owned()])
         );
+        assert!(!params.allow_local());
     }
 
     #[test]
@@ -611,6 +627,7 @@ mod tests {
         let params = local.resolve_params(None, None, None);
         assert!(params.proxy_endpoint.is_none());
         assert!(params.allowed_domains.is_none());
+        assert!(!params.allow_local());
     }
 
     #[test]
@@ -618,6 +635,7 @@ mod tests {
         let local = WebFetchToolConfig {
             proxy_endpoint: None,
             allowed_domains: Some(vec![]),
+            allow_local: None,
         };
         let params = local.resolve_params(None, Some(&["remote.example.com".to_owned()]), None);
         assert_eq!(params.allowed_domains, Some(vec![]));

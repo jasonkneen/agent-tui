@@ -9,6 +9,7 @@ use crate::permission::{
 use agent_client_protocol::{self as acp, Client as _};
 use agent_tui_acp_lib::AcpAgentGatewaySender as GatewaySender;
 use agent_tui_file_utils::events::{Event, EventWriter, PermissionDecision};
+use agent_tui_mcp::servers::parse_mcp_qualified_name;
 use agent_tui_tools::implementations::grok_build::web_fetch::domain_from_url;
 
 const REJECT_ONCE_LABEL: &str = "No, and tell Grok what to do differently";
@@ -166,9 +167,8 @@ pub struct BashCommandSelectedTerms {
 /// depend on it without dragging the full workspace or rmcp into each
 /// other). Re-exported here for backward-compat with callers that historically
 /// reached `agent_tui_workspace::permission::MCP_TOOL_NAME_DELIMITER`.
-/// Validation in `into_registration` rejects MCP tools whose qualified name
-/// contains more than one occurrence of this delimiter, so stripping it given
-/// a trusted `server_prefix` is always unambiguous.
+/// Model-callable MCP registration validates this delimiter before permission
+/// handling, so stripping it given a trusted `server_prefix` is unambiguous.
 pub use agent_tui_workspace_types::MCP_TOOL_NAME_DELIMITER;
 
 /// Extract the action segment of a qualified MCP tool name using a
@@ -226,15 +226,13 @@ pub fn mcp_tool_display_name(tool_name: &str, server_prefix: Option<&str>) -> St
 
 /// Display variant for callers that have only a qualified-or-raw tool
 /// name string (e.g. activity titles from ACP `tool_call.fields.title`
-/// or scrollback blocks that store the wire name verbatim). Splits on
-/// the (validated-at-construction) `MCP_TOOL_NAME_DELIMITER`: if the
-/// split succeeds the name is formatted as `"(Server) Action"` with
-/// each segment title-cased; otherwise the input is returned unchanged
-/// (no title-casing — the input may be a bash command, file path, or
-/// other non-MCP text that the caller mustn't mangle).
+/// or scrollback blocks that store the wire name verbatim). Valid qualified
+/// names are formatted as `"(Server) Action"` with each segment title-cased;
+/// otherwise the input is returned unchanged (no title-casing — the input may
+/// be a bash command, file path, or other non-MCP text).
 pub fn mcp_pretty_name_if_qualified(name: &str) -> String {
-    match name.split_once(MCP_TOOL_NAME_DELIMITER) {
-        Some((server, action)) => format!(
+    match parse_mcp_qualified_name(name) {
+        Some((_, server, action)) => format!(
             "({}) {}",
             mcp_titleize_segment(server),
             mcp_titleize_segment(action)
@@ -254,10 +252,9 @@ pub struct McpToolPermission {
     /// Full tool name as the agent called it
     /// (e.g. `"grok_com_notion__notion-fetch"`).
     pub tool_name: String,
-    /// Server segment (everything before the single `__` separator,
-    /// e.g. `"grok_com_notion"`). `None` if the tool name has no `__`,
-    /// in which case the view hides the scope toggle and only offers
-    /// tool-scope.
+    /// Server component of a valid qualified MCP ID (e.g. `"grok_com_notion"`).
+    /// `None` for malformed or unqualified names, in which case the view hides
+    /// the scope toggle and only offers tool-scope.
     pub server_prefix: Option<String>,
 }
 
@@ -281,7 +278,7 @@ impl McpToolPermission {
 pub enum McpScopeSelection {
     /// Whitelist exactly this tool name.
     Tool { tool_name: String },
-    /// Whitelist every tool whose name starts with `<server>__`.
+    /// Whitelist the server component of the current valid qualified MCP ID.
     Server { server: String },
 }
 
@@ -300,8 +297,8 @@ pub enum PromptOutcome {
     AllowAlwaysDomain(String),
     /// Persist this exact MCP tool name in `allowed_mcp_tools`.
     AllowAlwaysMcpTool(String),
-    /// Persist this MCP server prefix (no trailing `__`) in
-    /// `allowed_mcp_servers`. An empty string is rejected by the manager.
+    /// Persist the current valid qualified MCP ID's server component in
+    /// `allowed_mcp_servers`; the manager rejects mismatched or malformed input.
     AllowAlwaysMcpServer(String),
     RejectOnce,
     RejectAlwaysBashCommand(String),
@@ -623,6 +620,22 @@ impl AcpPrompter {
         }
     }
 
+    /// Request `_meta`: bash selection scope, or protected-edit description for Edit.
+    fn permission_request_meta(
+        &self,
+        access: &AccessKind,
+        protected_edit: Option<crate::permission::ProtectedEditReason>,
+    ) -> Option<acp::Meta> {
+        if let Some(bash) = self.bash_selection_meta(access) {
+            return Some(bash);
+        }
+        let reason = protected_edit?;
+        let payload = crate::permission::ProtectedEditPermission::from_reason(reason);
+        serde_json::to_value(payload)
+            .ok()
+            .and_then(|v| v.as_object().cloned())
+    }
+
     /// Build the per-access-kind option map WITHOUT the
     /// "enable always-approve mode" prepend. Kept as a separate inner
     /// fn so `build_options` can wrap the result with one prepend call
@@ -726,7 +739,8 @@ impl AcpPrompter {
                     ClientType::GrokTUI | ClientType::GrokPager | ClientType::Desktop => {
                         let mut options: IndexMap<acp::PermissionOptionId, acp::PermissionOption> =
                             IndexMap::new();
-                        let server_prefix = tool_name.split_once("__").map(|(s, _)| s.to_owned());
+                        let server_prefix = parse_mcp_qualified_name(tool_name)
+                            .map(|(_, server, _)| server.to_owned());
                         options.insert(
                             acp::PermissionOptionId::new("allow-always-mcp"),
                             acp::PermissionOption::new(
@@ -776,6 +790,7 @@ impl AcpPrompter {
         &self,
         access: &AccessKind,
         tool_call_update: &acp::ToolCallUpdate,
+        protected_edit: Option<crate::permission::ProtectedEditReason>,
     ) -> PromptOutcome {
         let tool_name = tool_name_for_access(access);
         // events.jsonl: `PermissionRequested` at prompt-start. The `Instant`
@@ -786,6 +801,11 @@ impl AcpPrompter {
             tool_name: tool_name.clone(),
         });
         let prompt_start = Instant::now();
+        let mut resolved_guard = ResolvedOnDrop {
+            event_writer: &self.event_writer,
+            tool_name: Some(tool_name),
+            prompt_start,
+        };
 
         let outcome = match &self.hub_permission {
             // Route the prompt to chat over the server (see
@@ -805,7 +825,7 @@ impl AcpPrompter {
                     tool_call_update.clone(),
                     permission_options.values().cloned().collect(),
                 )
-                .meta(self.bash_selection_meta(access));
+                .meta(self.permission_request_meta(access, protected_edit));
                 match self.gateway.request_permission(req).await {
                     Ok(resp) => match resp.outcome {
                         acp::RequestPermissionOutcome::Cancelled => PromptOutcome::Cancelled,
@@ -828,6 +848,10 @@ impl AcpPrompter {
 
         // events.jsonl: `PermissionResolved` at decision-time, with the truthful
         // user-facing wait derived from the prompt-start `Instant` above.
+        let tool_name = resolved_guard
+            .tool_name
+            .take()
+            .expect("guard is armed until normal completion");
         self.event_writer.emit(Event::PermissionResolved {
             tool_name,
             decision: permission_decision_for_outcome(&outcome),
@@ -835,6 +859,24 @@ impl AcpPrompter {
         });
 
         outcome
+    }
+}
+
+struct ResolvedOnDrop<'a> {
+    event_writer: &'a EventWriter,
+    tool_name: Option<String>,
+    prompt_start: Instant,
+}
+
+impl Drop for ResolvedOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Some(tool_name) = self.tool_name.take() {
+            self.event_writer.emit(Event::PermissionResolved {
+                tool_name,
+                decision: PermissionDecision::Cancelled,
+                wait_ms: self.prompt_start.elapsed().as_millis() as u64,
+            });
+        }
     }
 }
 
@@ -1359,37 +1401,46 @@ mod tests {
     #[test]
     fn mcp_prompt_includes_allow_always_with_meta() {
         let p = prompter(ClientType::GrokTUI);
-        let access = AccessKind::MCPTool {
-            name: "linear__list".to_owned(),
-            input: serde_json::Value::Null,
-        };
-        let opts = p.build_options(&access);
-        let opt = opts
-            .get(&acp::PermissionOptionId::new("allow-always-mcp"))
-            .expect("allow-always-mcp option missing");
-        let meta = opt.meta.clone().expect("meta missing");
-        let perm: McpToolPermission =
-            serde_json::from_value(serde_json::Value::Object(meta)).unwrap();
-        assert_eq!(perm.tool_name, "linear__list");
-        assert_eq!(perm.server_prefix.as_deref(), Some("linear"));
-        assert_eq!(perm.prompt_prefix, "Always allow:");
+        for (name, server) in [
+            ("linear__list", "linear"),
+            ("123__lookup", "123"),
+            ("server:scope__tool", "server:scope"),
+        ] {
+            let access = AccessKind::MCPTool {
+                name: name.to_owned(),
+                input: serde_json::Value::Null,
+            };
+            let opts = p.build_options(&access);
+            let opt = opts
+                .get(&acp::PermissionOptionId::new("allow-always-mcp"))
+                .expect("allow-always-mcp option missing");
+            let meta = opt.meta.clone().expect("meta missing");
+            let perm: McpToolPermission =
+                serde_json::from_value(serde_json::Value::Object(meta)).unwrap();
+            assert_eq!(perm.tool_name, name);
+            assert_eq!(perm.server_prefix.as_deref(), Some(server));
+            assert_eq!(perm.prompt_prefix, "Always allow:");
+        }
     }
 
     #[test]
-    fn mcp_prompt_no_separator_hides_server_scope() {
+    fn mcp_prompt_malformed_name_hides_server_scope() {
         let p = prompter(ClientType::GrokPager);
-        let access = AccessKind::MCPTool {
-            name: "standalone".to_owned(),
-            input: serde_json::Value::Null,
-        };
-        let opts = p.build_options(&access);
-        let opt = opts
-            .get(&acp::PermissionOptionId::new("allow-always-mcp"))
-            .unwrap();
-        let perm: McpToolPermission =
-            serde_json::from_value(serde_json::Value::Object(opt.meta.clone().unwrap())).unwrap();
-        assert_eq!(perm.tool_name, "standalone");
-        assert_eq!(perm.server_prefix, None);
+        for name in ["standalone", "linear__shadow__exfil", "linear__"] {
+            let access = AccessKind::MCPTool {
+                name: name.to_owned(),
+                input: serde_json::Value::Null,
+            };
+            let opts = p.build_options(&access);
+            let opt = opts
+                .get(&acp::PermissionOptionId::new("allow-always-mcp"))
+                .unwrap();
+            let perm: McpToolPermission =
+                serde_json::from_value(serde_json::Value::Object(opt.meta.clone().unwrap()))
+                    .unwrap();
+            assert_eq!(perm.tool_name, name);
+            assert_eq!(perm.server_prefix, None);
+        }
     }
 
     #[test]
@@ -1507,11 +1558,20 @@ mod tests {
             mcp_pretty_name_if_qualified("linear__list_issues"),
             "(Linear) List Issues"
         );
+        assert_eq!(mcp_pretty_name_if_qualified("123__lookup"), "(123) Lookup");
+        assert_eq!(
+            mcp_pretty_name_if_qualified("server:scope__tool"),
+            "(Server:scope) Tool"
+        );
         // Non-qualified input (e.g. a bash command, file path, or any
         // string without `__`) is returned UNCHANGED — must not
         // title-case or mangle non-MCP strings.
         assert_eq!(mcp_pretty_name_if_qualified("read_file"), "read_file");
         assert_eq!(mcp_pretty_name_if_qualified("cargo test"), "cargo test");
+        assert_eq!(
+            mcp_pretty_name_if_qualified("linear__shadow__exfil"),
+            "linear__shadow__exfil"
+        );
         assert_eq!(mcp_pretty_name_if_qualified(""), "");
     }
 
@@ -1799,7 +1859,7 @@ mod tests {
             acp::ToolCallUpdateFields::default(),
         );
 
-        let outcome = prompter.request(&access, &tool_call_update).await;
+        let outcome = prompter.request(&access, &tool_call_update, None).await;
         assert!(
             matches!(outcome, PromptOutcome::Error(_)),
             "dropped gateway receiver should yield PromptOutcome::Error"
@@ -1849,7 +1909,7 @@ mod tests {
             acp::ToolCallId::new(Arc::from("tc-2")),
             acp::ToolCallUpdateFields::default(),
         );
-        let outcome = prompter.request(&access, &tool_call_update).await;
+        let outcome = prompter.request(&access, &tool_call_update, None).await;
         assert!(matches!(outcome, PromptOutcome::Error(_)));
     }
 }

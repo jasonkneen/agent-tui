@@ -1,5 +1,5 @@
-/// Truncation threshold, matching the shell's universal model-item limit.
-pub const LARGE_PROMPT_THRESHOLD: usize = 10_000;
+/// Truncation threshold, matching the shell's large-prompt limit.
+pub const LARGE_PROMPT_THRESHOLD: usize = 25_000;
 
 /// Wrap a user message in the canonical `<user_query>` envelope.
 pub fn user_query(user_message: &str) -> String {

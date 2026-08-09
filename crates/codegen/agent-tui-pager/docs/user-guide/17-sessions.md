@@ -1,6 +1,6 @@
 # Session Management
 
-Agent TUI saves every conversation to disk automatically. Whether you work in the TUI, in headless mode, or over agent stdio, Agent TUI records the exchange as a session. You can resume, rewind, or compact it. This document describes how to manage sessions.
+Grok saves every conversation to disk automatically. Whether you work in the TUI, in headless mode, or over agent stdio, Grok records the exchange as a session. You can resume, rewind, or compact it. This document describes how to manage sessions.
 
 ---
 
@@ -15,16 +15,16 @@ A session is a persistent conversation with full history. It includes:
 - Token usage and turn counts
 - Subagent sessions (when enabled)
 
-Sessions are identified by a unique session ID (a UUIDv7 when Agent TUI generates it; a client may supply its own ID with `-s`) and stored on disk under `~/.agent-tui/sessions/`. Set `GROK_HOME` to override the base directory; when it is unset, Agent TUI uses `~/.agent-tui`.
+Sessions are identified by a unique session ID (a UUIDv7 when Grok generates it; a client may supply its own ID with `-s`) and stored on disk under `~/.grok/sessions/`. Set `GROK_HOME` to override the base directory; when it is unset, Grok uses `~/.grok`.
 
 ---
 
 ## Storage Layout
 
-Agent TUI stores each session in its own directory, grouped by working directory. It URL-encodes the working directory to name the group. When the encoded name exceeds 255 bytes, it instead uses a slug plus a hash and records the original path in a `.cwd` file inside the group.
+Grok stores each session in its own directory, grouped by working directory. It URL-encodes the working directory to name the group. When the encoded name exceeds 255 bytes, it instead uses a slug plus a hash and records the original path in a `.cwd` file inside the group.
 
 ```
-~/.agent-tui/sessions/<encoded-cwd>/<session-id>/
+~/.grok/sessions/<encoded-cwd>/<session-id>/
   summary.json            # metadata: summary/title, timestamps, model ID, message counts
   updates.jsonl           # ACP session update stream (conversation + tool calls)
   chat_history.jsonl      # raw chat messages sent to the model
@@ -54,13 +54,13 @@ This clears the current context and begins a new conversation. Alias: `/clear`.
 
 ### Exit
 
-End the session and quit Agent TUI:
+End the session and quit Grok:
 
 ```
 /quit
 ```
 
-Alias: `/exit`. To leave the current session but stay in Agent TUI, use `/home` to return to the welcome screen.
+Alias: `/exit`. To leave the current session but stay in Grok, use `/home` to return to the welcome screen.
 
 ### Delete the current session
 
@@ -90,17 +90,19 @@ For the live top-level sessions in this pager (parent and forks) — switch, ren
 
 ### From the Command Line
 
-Resume a specific session by ID:
+Resume a specific session by ID or title:
 
 ```bash
-agent-tui --resume <session-id>
+grok --resume <session-id-or-title>
 ```
 
-Run `agent-tui --resume` without an ID to resume the most recent session for the current directory.
+A value that is not a session ID is matched against session titles for the current directory, ignoring letter case (a simple lowercase comparison) — handy after `/rename`. If several sessions share the title, a single manually renamed session wins over auto-generated duplicates; otherwise the command errors and lists the matching IDs. UUID-shaped values are always treated as session IDs, never titles. Scripts should prefer IDs.
+
+Run `grok --resume` without a value to resume the most recent session for the current directory.
 
 ### From the Welcome Screen
 
-When you launch `agent-tui`, the welcome screen lists recent sessions for the current directory. Select one to resume it.
+When you launch `grok`, the welcome screen lists recent sessions for the current directory. Select one to resume it.
 
 ---
 
@@ -162,7 +164,7 @@ The optional `context` argument lets you provide additional instructions about w
 
 ### Auto-Compact
 
-Agent TUI automatically compacts the conversation when the context window approaches its limit. You will see a notification when auto-compact triggers. The `context_window` setting on your model configuration controls when this threshold is reached.
+Grok automatically compacts the conversation when the context window approaches its limit. You will see a notification when auto-compact triggers. The `context_window` setting on your model configuration controls when this threshold is reached.
 
 ---
 
@@ -193,23 +195,23 @@ In headless mode, you manage sessions through command-line flags:
 
 ```bash
 # New session each time (default)
-agent-tui -p "Hello"
+grok -p "Hello"
 
-# Resume an existing session by ID (errors if it does not exist)
-agent-tui -p "Continue where we left off" -r <session-id>
+# Resume an existing session by ID or title (errors if it does not exist)
+grok -p "Continue where we left off" -r <session-id-or-title>
 
 # Continue the most recent session in the current directory
-agent-tui -p "What were we doing?" -c
+grok -p "What were we doing?" -c
 ```
 
-In headless mode, resume an existing session with `-r`/`--resume`, which errors if the session does not exist, or continue the most recent session in the current directory with `-c`/`--continue`. Pass the session ID from JSON output (see below) to `-r`.
+In headless mode, resume an existing session with `-r`/`--resume`, which errors if the session does not exist, or continue the most recent session in the current directory with `-c`/`--continue`. A non-ID value is matched against session titles for the current directory, ignoring letter case (a sole manually renamed match wins among duplicates; remaining duplicates error with their IDs; UUID-shaped values always take the ID path) — scripts should pass the session ID from JSON output (see below) to `-r`.
 
 Use `-s`/`--session-id` only to **create** a new session with a **UUID** (errors if the value is not a UUID, or if that ID already has a session under the target session directory). It does **not** resume an existing session — that was the old hidden upsert behavior; use `-r`/`-c` instead. Combine `-s` with `-r`/`-c` only when also passing `--fork-session` (forks history into a new ID; optional `-s` names the child UUID). This matches Claude Code’s anti-overwrite model (client preflight under the write cwd; sequential use is reliable, concurrent same-ID is best-effort).
 
 To read the session ID back, request JSON output:
 
 ```bash
-agent-tui -p "Hello" --output-format json | jq -r '.sessionId'
+grok -p "Hello" --output-format json | jq -r '.sessionId'
 ```
 
 ---
@@ -239,26 +241,26 @@ The agent persists all session updates automatically. Clients can reconnect and 
 
 ## The grok sessions Subcommand
 
-List or search sessions from the command line. `agent-tui sessions` requires a subcommand:
+List or search sessions from the command line. `grok sessions` requires a subcommand:
 
 ```bash
 # List recent sessions for the current directory
-agent-tui sessions list
+grok sessions list
 
 # Limit the number of results (default 20)
-agent-tui sessions list --limit 50
+grok sessions list --limit 50
 
 # Search sessions by keyword (matches titles and prompts)
-agent-tui sessions search "rate limit"
+grok sessions search "rate limit"
 ```
 
-`agent-tui sessions list` shows sessions for the current working directory, grouped by worktree label. Each row lists the session ID, the creation and update dates, the source status, and the summary. `agent-tui sessions search` combines a local SQLite index with remote results.
+`grok sessions list` shows sessions for the current working directory, grouped by worktree label. Each row lists the session ID, the creation and update dates, the source status, and the summary. `grok sessions search` combines a local SQLite index with remote results.
 
 ---
 
 ## Worktree Sessions
 
-When working with subagents or session forks, Agent TUI can create isolated git worktrees per session. Each worktree gets its own copy of the working directory, so file changes in one session do not affect another.
+When working with subagents or session forks, Grok can create isolated git worktrees per session. Each worktree gets its own copy of the working directory, so file changes in one session do not affect another.
 
 Worktree sessions are managed internally through the `x.ai/git/worktree/*` extension methods. Key operations:
 
@@ -266,7 +268,7 @@ Worktree sessions are managed internally through the `x.ai/git/worktree/*` exten
 - **Apply**: Merge worktree changes back into the main working directory
 - **Remove**: Clean up a worktree when the session is done
 
-Resume a session in a fresh worktree with `agent-tui -w -r <session-id>`.
+Resume a session in a fresh worktree with `grok -w -r <session-id>`.
 
 ### Checking Disk Usage
 
@@ -307,13 +309,13 @@ To reclaim space, run `grok worktree gc --max-age 7d`, which removes tracked wor
 
 ### Persistence Format
 
-Agent TUI stores the conversation as newline-delimited JSON (JSONL). Each line in `updates.jsonl` is a self-contained ACP session update event. This format supports:
+Grok stores the conversation as newline-delimited JSON (JSONL). Each line in `updates.jsonl` is a self-contained ACP session update event. This format supports:
 
 - Incremental writes (append-only during a session)
 - Efficient streaming reads (for session restore)
 - Easy debugging (each line is valid JSON)
 
-The smaller state files -- `summary.json`, `plan.json`, and `signals.json` -- are plain JSON rather than JSONL. JSONL is the source of truth for session content; `agent-tui sessions search` additionally maintains a local SQLite FTS5 index over session titles and prompts for fast keyword search.
+The smaller state files -- `summary.json`, `plan.json`, and `signals.json` -- are plain JSON rather than JSONL. JSONL is the source of truth for session content; `grok sessions search` additionally maintains a local SQLite FTS5 index over session titles and prompts for fast keyword search.
 
 ### Session Metadata
 

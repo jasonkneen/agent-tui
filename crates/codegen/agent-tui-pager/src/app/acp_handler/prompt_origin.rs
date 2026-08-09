@@ -24,15 +24,17 @@ pub(crate) fn is_scheduler_fired_prompt(prompt_id: &str) -> bool {
 /// Returns true for the auto-wake turn families (`task-completed-…`,
 /// `subagent-completed-…`, `workflow-completed-…`, `notifications-…`). These run non-adopted — no
 /// `PromptResponse`, no viewer finalize — so their durable `TurnCompleted` is
-/// the only signal marking the back-to-idle point, and it pushes the turn-end
-/// marker directly. Deliberately narrower than "non-adopted synthetic": goal
-/// turns render through the goal chip/loop chrome and `plan-resume-…` keeps
-/// its current markerless shape.
+/// the only signal marking the back-to-idle point (see [`finish_wake_turn`];
+/// a chatty wake closes with a marker, a silent one stays markerless).
+/// Deliberately narrower than "non-adopted
+/// synthetic": goal turns render through the goal chip/loop chrome and
+/// `plan-resume-…` keeps its own markerless shape.
 pub(crate) fn is_wake_prompt(prompt_id: &str) -> bool {
     matches!(
         agent_tui_shell::session::PromptOrigin::from_prompt_id(prompt_id),
         agent_tui_shell::session::PromptOrigin::TaskCompleted { .. }
             | agent_tui_shell::session::PromptOrigin::SubagentCompleted { .. }
+            | agent_tui_shell::session::PromptOrigin::WorkflowCompleted { .. }
             | agent_tui_shell::session::PromptOrigin::NotificationDrain
     )
 }
@@ -104,17 +106,7 @@ pub(super) fn finish_wake_turn(
 ) {
     use crate::scrollback::blocks::SessionEvent;
 
-/// Push a wake turn's end marker via the shared terminal-marker helper so the
-/// wake turn's OWN stop hooks (pid-matched stash) render inline on the marker
-/// instead of as a stray block. A REAL turn's leftover stash (pid mismatch)
-/// must stay pending for its own marker rail — never fold into, nor flush
-/// standalone on, an unrelated wake — hence `preserve_mismatched_stash`.
-pub(super) fn push_wake_end_marker(
-    agent: &mut AgentView,
-    prompt_id: &str,
-    elapsed: Option<std::time::Duration>,
-) {
-    // Wake turns skip PromptResponse; finish streaming so a trailing ` is flushed.
+    let had_output = agent.session.tracker.output_since_last_finish();
     agent.session.tracker.finish_turn(&mut agent.scrollback);
     // The stored `turn_start_ms` may belong to an earlier turn (a silent wake
     // streamed no deltas of its own; interleaved deltas can re-stamp it) —

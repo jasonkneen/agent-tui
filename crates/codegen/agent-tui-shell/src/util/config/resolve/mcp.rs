@@ -427,8 +427,8 @@ mod max_mcp_output_bytes_tests {
     ///
     /// Uses the pure chain logic via tempdirs + `find_project_configs`
     /// ordering (repo root → cwd), mirroring `project_max_mcp_output_bytes`
-    /// without the trust gate, which is exercised separately and enforced in
-    /// all builds, including source-built development binaries.
+    /// without the trust gate (exercised separately — trust is inert in
+    /// dev/test builds, see `folder_trust_inert`).
     #[test]
     fn project_chain_deepest_file_wins() {
         let tmp = tempfile::tempdir().unwrap();

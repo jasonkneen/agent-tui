@@ -165,9 +165,9 @@ pub fn to_theme_kind(
 ///
 /// In test builds, a shorter interval (50ms) is used so polling tests
 /// complete quickly.
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(test))]
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Watches for system appearance changes via polling.

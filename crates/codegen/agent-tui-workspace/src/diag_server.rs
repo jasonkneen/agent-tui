@@ -25,8 +25,7 @@ use tokio::net::TcpListener;
 use tokio::net::UnixListener;
 use tokio::task::JoinHandle;
 
-/// Default Unix socket path (resolves host-visibly under the production
-/// launcher's `/tmp` bind mount, next to the ready/pid files).
+/// Default Unix socket path (next to the log/pid files).
 #[cfg(unix)]
 pub const DEFAULT_DIAG_SOCKET_PATH: &str = "/tmp/workspace-server.sock";
 
@@ -52,7 +51,20 @@ pub enum DiagState {
     Starting,
     Connected,
     Disconnected,
+    Failed,
 }
+
+/// `/ready` `error_class` when [`DiagState::Failed`] (`hub_auth` / `hub_connect` / `unknown`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorClass {
+    HubAuth,
+    HubConnect,
+    Unknown,
+}
+
+/// Soft cap on `/ready` `error_detail` so guest-local messages stay short.
+const MAX_ERROR_DETAIL_BYTES: usize = 256;
 
 /// Response body for `/ready`. The field set is a frozen contract with the
 /// sandbox readiness gate: never rename or remove fields; additions are
@@ -147,6 +159,9 @@ impl DiagHandle {
     /// close, and the sandbox gate still needs the code.
     pub fn set_disconnected(&self) {
         let mut inner = self.lock();
+        if inner.is_failed() {
+            return;
+        }
         inner.state = DiagState::Disconnected;
         inner.state_changed_at = now_ms();
     }
@@ -169,6 +184,9 @@ impl DiagHandle {
     /// after hub CLEANUP still reports 4103 to the reconnect gate.
     pub fn set_shutting_down(&self) {
         let mut inner = self.lock();
+        if inner.is_failed() {
+            return;
+        }
         inner.shutting_down = true;
         inner.state = DiagState::Disconnected;
         inner.state_changed_at = now_ms();
@@ -191,6 +209,7 @@ impl DiagHandle {
 
     fn ready_body(&self) -> ReadyBody {
         let inner = self.lock();
+        let failed = inner.is_failed();
         ReadyBody {
             launch_id: self.launch_id.clone(),
             state: inner.state,
@@ -216,6 +235,17 @@ impl DiagHandle {
             os: env::consts::OS,
         }
     }
+}
+
+fn truncate_error_detail(detail: String) -> String {
+    if detail.len() <= MAX_ERROR_DETAIL_BYTES {
+        return detail;
+    }
+    let mut end = MAX_ERROR_DETAIL_BYTES;
+    while end > 0 && !detail.is_char_boundary(end) {
+        end -= 1;
+    }
+    detail[..end].to_owned()
 }
 
 fn now_ms() -> u64 {

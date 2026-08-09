@@ -10,37 +10,39 @@ ensure_upstream
 REF="${1:-$UPSTREAM_REF}"
 
 echo "Checking out monorepo surfaces from $REF …"
+echo "(delete-then-checkout so stale files from older layouts cannot survive)"
 
-# Paths the monorepo sync bot owns (upstream naming).
-paths=(
-  SOURCE_REV
-  rust-toolchain.toml
-  clippy.toml
-  crates/codegen/ptyctl
-  crates/codegen/ptyctl-cli
-  crates/build/xai-proto-build
-  crates/common/xai-circuit-breaker
-  crates/common/xai-computer-hub-core
-  crates/common/xai-computer-hub-mcp-adapter
-  crates/common/xai-computer-hub-sdk
-  crates/common/xai-grok-compaction
-  crates/common/xai-interjection-core
-  crates/common/xai-test-utils
-  crates/common/xai-tool-protocol
-  crates/common/xai-tool-runtime
-  crates/common/xai-tool-types
-  crates/common/xai-tracing
-  prod/mc/cli-chat-proxy-types
-)
+checkout_clean() {
+  local path="$1"
+  # Remove working tree path first so untracked leftovers (dual modules) die.
+  if [[ -e "$path" || -L "$path" ]]; then
+    rm -rf "$path"
+  fi
+  git checkout "$REF" -- "$path"
+}
 
-# All xai-* codegen crates present on REF
-while IFS= read -r name; do
-  [[ "$name" == xai* ]] || continue
-  paths+=("crates/codegen/$name")
-done < <(git ls-tree --name-only "$REF:crates/codegen")
+checkout_clean SOURCE_REV
+checkout_clean rust-toolchain.toml
+checkout_clean clippy.toml
+checkout_clean crates/codegen/ptyctl
+checkout_clean crates/codegen/ptyctl-cli
+checkout_clean prod/mc/cli-chat-proxy-types
 
-git checkout "$REF" -- "${paths[@]}"
+for area in crates/codegen crates/common crates/build; do
+  while IFS= read -r name; do
+    [[ "$name" == xai* ]] || continue
+    checkout_clean "$area/$name"
+  done < <(git ls-tree --name-only "$REF:$area" 2>/dev/null || true)
+done
+
+# Clippy reasons should name agent_tui_* helpers in this fork.
+if [[ -f clippy.toml ]]; then
+  sed -i.bak \
+    -e 's/xai_grok_tools/agent_tui_tools/g' \
+    -e 's/xai_tty_utils/agent_tui_tty_utils/g' \
+    clippy.toml && rm -f clippy.toml.bak
+fi
 
 echo "SOURCE_REV → $(tr -d '[:space:]' < SOURCE_REV)"
 echo "rust-toolchain → $(grep '^channel' rust-toolchain.toml || true)"
-echo "Staged/unstaged xai paths ready. Next: scripts/upstream-sync/port-to-agent-tui.py"
+echo "xai paths ready. Next: scripts/upstream-sync/port-to-agent-tui.py --bulk"

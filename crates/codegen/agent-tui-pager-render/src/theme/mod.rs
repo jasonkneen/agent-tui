@@ -15,18 +15,13 @@ pub mod color_support;
 pub mod env_appearance;
 mod grokday;
 mod groknight;
-mod gruvbox;
 pub mod md_style;
-mod nerv;
-mod nord;
-mod opencode;
 pub mod osc11;
 mod oscura;
 mod rosepine;
 pub mod system_appearance;
 mod terminal_default;
 pub mod tokyonight;
-mod vercel;
 
 pub use color_support::quantize;
 pub use tokyonight::{Theme, pulse_brightness, wave_brightness};
@@ -39,14 +34,6 @@ pub enum ThemeKind {
     TokyoNight = 2,
     RosePineMoon = 3,
     OscuraMidnight = 5,
-    OpenCode = 6,
-    Vercel = 7,
-    Copilot = 8,
-    Nerv = 9,
-    Catppuccin = 10,
-    Nord = 11,
-    Gruvbox = 12,
-    Dracula = 13,
     /// Meta-variant: follow system dark/light appearance.
     ///
     /// Never stored in `cache::CURRENT` — resolved to a concrete
@@ -65,14 +52,6 @@ impl ThemeKind {
         ThemeKind::TokyoNight,
         ThemeKind::RosePineMoon,
         ThemeKind::OscuraMidnight,
-        ThemeKind::OpenCode,
-        ThemeKind::Vercel,
-        ThemeKind::Copilot,
-        ThemeKind::Nerv,
-        ThemeKind::Catppuccin,
-        ThemeKind::Nord,
-        ThemeKind::Gruvbox,
-        ThemeKind::Dracula,
     ];
 
     /// Theme kinds available on the current terminal.
@@ -100,14 +79,6 @@ impl ThemeKind {
             Self::GrokDay => "grokday",
             Self::RosePineMoon => "rosepine-moon",
             Self::OscuraMidnight => "oscura-midnight",
-            Self::OpenCode => "opencode",
-            Self::Vercel => "vercel",
-            Self::Copilot => "copilot",
-            Self::Nerv => "nerv",
-            Self::Catppuccin => "catppuccin",
-            Self::Nord => "nord",
-            Self::Gruvbox => "gruvbox",
-            Self::Dracula => "dracula",
             Self::Auto => "auto",
         }
     }
@@ -119,19 +90,13 @@ impl ThemeKind {
     /// that survive quantization cleanly.
     pub fn requires_truecolor(self) -> bool {
         match self {
-            Self::GrokNight | Self::GrokDay | Self::Auto => false,
-            // Distinctive tinted / brand palettes need 24-bit color.
-            Self::TokyoNight
-            | Self::RosePineMoon
-            | Self::OscuraMidnight
-            | Self::OpenCode
-            | Self::Vercel
-            | Self::Copilot
-            | Self::Nerv
-            | Self::Catppuccin
-            | Self::Nord
-            | Self::Gruvbox
-            | Self::Dracula => true,
+            Self::GrokNight => false,
+            Self::TokyoNight => true,
+            Self::GrokDay => false,
+            Self::RosePineMoon => true,
+            Self::OscuraMidnight => true,
+            // Auto is resolved to a concrete theme before rendering.
+            Self::Auto => false,
         }
     }
 
@@ -148,37 +113,7 @@ impl ThemeKind {
                 Some(Self::RosePineMoon)
             }
             "oscura" | "oscura-midnight" => Some(Self::OscuraMidnight),
-            "opencode" | "open-code" => Some(Self::OpenCode),
-            "vercel" | "geist" => Some(Self::Vercel),
-            "copilot" | "github-copilot" | "github" => Some(Self::Copilot),
-            "nerv" | "evangelion" | "eva" | "unit-01" => Some(Self::Nerv),
-            "catppuccin" | "catppuccin-mocha" | "mocha" => Some(Self::Catppuccin),
-            "nord" => Some(Self::Nord),
-            "gruvbox" | "gruvbox-dark" => Some(Self::Gruvbox),
-            "dracula" => Some(Self::Dracula),
             _ => None,
-        }
-    }
-
-    /// Build the unquantized [`Theme`] for this kind.
-    ///
-    /// `Auto` falls back to GrokNight (callers should resolve auto first).
-    #[must_use]
-    pub const fn build(self) -> Theme {
-        match self {
-            Self::GrokNight | Self::Auto => Theme::groknight(),
-            Self::GrokDay => Theme::grokday(),
-            Self::TokyoNight => Theme::tokyonight(),
-            Self::RosePineMoon => Theme::rosepine_moon(),
-            Self::OscuraMidnight => Theme::oscura_midnight(),
-            Self::OpenCode => Theme::opencode(),
-            Self::Vercel => Theme::vercel(),
-            Self::Copilot => Theme::copilot(),
-            Self::Nerv => Theme::nerv(),
-            Self::Catppuccin => Theme::catppuccin(),
-            Self::Nord => Theme::nord(),
-            Self::Gruvbox => Theme::gruvbox(),
-            Self::Dracula => Theme::dracula(),
         }
     }
 
@@ -213,15 +148,6 @@ pub fn display_name_for_canonical(value: &str) -> &str {
         "grokday" => "Grok Day",
         "tokyonight" => "Tokyo Night",
         "rosepine-moon" => "Rose Pine Moon",
-        "oscura-midnight" => "Oscura Midnight",
-        "opencode" => "OpenCode",
-        "vercel" => "Vercel",
-        "copilot" => "Copilot",
-        "nerv" => "NERV",
-        "catppuccin" => "Catppuccin",
-        "nord" => "Nord",
-        "gruvbox" => "Gruvbox",
-        "dracula" => "Dracula",
         other => other,
     }
 }
@@ -342,7 +268,16 @@ impl Theme {
         if cache::terminal_native_locked() {
             return Self::terminal_default().quantized(level);
         }
-        let base = cache::current_kind().build();
+        let base = match cache::current_kind() {
+            ThemeKind::GrokNight => Self::groknight(),
+            ThemeKind::TokyoNight => Self::tokyonight(),
+            ThemeKind::GrokDay => Self::grokday(),
+            ThemeKind::RosePineMoon => Self::rosepine_moon(),
+            ThemeKind::OscuraMidnight => Self::oscura_midnight(),
+            // Auto is resolved to a concrete theme before being stored;
+            // if reached, fall back to GrokNight.
+            ThemeKind::Auto => Self::groknight(),
+        };
         // Sample polarity pre-quantization — post-quantize `bg_base` may
         // land on a named/indexed entry whose luminance is host-palette-
         // dependent.
@@ -786,14 +721,11 @@ mod tests {
     #[test]
     fn is_dark_classifies_built_in_themes() {
         // Sanity-check the polarity sampler against the theme catalog.
-        for &kind in ThemeKind::ALL {
-            let theme = kind.build();
-            if kind == ThemeKind::GrokDay {
-                assert!(!theme.is_dark(), "{kind:?} should be light");
-            } else {
-                assert!(theme.is_dark(), "{kind:?} should be dark");
-            }
-        }
+        assert!(Theme::groknight().is_dark());
+        assert!(Theme::tokyonight().is_dark());
+        assert!(Theme::rosepine_moon().is_dark());
+        assert!(Theme::oscura_midnight().is_dark());
+        assert!(!Theme::grokday().is_dark());
     }
 
     #[test]
@@ -1125,7 +1057,14 @@ mod tests {
             r as i32 + g as i32 + b as i32
         };
         for &kind in ThemeKind::ALL {
-            let theme = kind.build();
+            let theme = match kind {
+                ThemeKind::GrokNight => Theme::groknight(),
+                ThemeKind::GrokDay => Theme::grokday(),
+                ThemeKind::TokyoNight => Theme::tokyonight(),
+                ThemeKind::RosePineMoon => Theme::rosepine_moon(),
+                ThemeKind::OscuraMidnight => Theme::oscura_midnight(),
+                ThemeKind::Auto => unreachable!("ALL excludes Auto"),
+            };
             let track = lum(theme.scrollbar_bg, "scrollbar_bg", kind);
             let thumb = lum(theme.scrollbar_fg, "scrollbar_fg", kind);
             let delta = thumb - track;
@@ -1272,20 +1211,6 @@ mod tests {
             ThemeKind::from_name("oscura-midnight"),
             Some(ThemeKind::OscuraMidnight)
         );
-        assert_eq!(ThemeKind::from_name("opencode"), Some(ThemeKind::OpenCode));
-        assert_eq!(ThemeKind::from_name("vercel"), Some(ThemeKind::Vercel));
-        assert_eq!(ThemeKind::from_name("geist"), Some(ThemeKind::Vercel));
-        assert_eq!(ThemeKind::from_name("copilot"), Some(ThemeKind::Copilot));
-        assert_eq!(ThemeKind::from_name("github"), Some(ThemeKind::Copilot));
-        assert_eq!(ThemeKind::from_name("nerv"), Some(ThemeKind::Nerv));
-        assert_eq!(ThemeKind::from_name("evangelion"), Some(ThemeKind::Nerv));
-        assert_eq!(
-            ThemeKind::from_name("catppuccin"),
-            Some(ThemeKind::Catppuccin)
-        );
-        assert_eq!(ThemeKind::from_name("nord"), Some(ThemeKind::Nord));
-        assert_eq!(ThemeKind::from_name("gruvbox"), Some(ThemeKind::Gruvbox));
-        assert_eq!(ThemeKind::from_name("dracula"), Some(ThemeKind::Dracula));
     }
 
     /// `FromStr` agrees with `from_name` for all canonicals + aliases.
@@ -1309,26 +1234,6 @@ mod tests {
             ("rose-pine", ThemeKind::RosePineMoon),
             ("rosepine-moon", ThemeKind::RosePineMoon),
             ("rose-pine-moon", ThemeKind::RosePineMoon),
-            ("oscura", ThemeKind::OscuraMidnight),
-            ("oscura-midnight", ThemeKind::OscuraMidnight),
-            ("opencode", ThemeKind::OpenCode),
-            ("open-code", ThemeKind::OpenCode),
-            ("vercel", ThemeKind::Vercel),
-            ("geist", ThemeKind::Vercel),
-            ("copilot", ThemeKind::Copilot),
-            ("github-copilot", ThemeKind::Copilot),
-            ("github", ThemeKind::Copilot),
-            ("nerv", ThemeKind::Nerv),
-            ("evangelion", ThemeKind::Nerv),
-            ("eva", ThemeKind::Nerv),
-            ("unit-01", ThemeKind::Nerv),
-            ("catppuccin", ThemeKind::Catppuccin),
-            ("catppuccin-mocha", ThemeKind::Catppuccin),
-            ("mocha", ThemeKind::Catppuccin),
-            ("nord", ThemeKind::Nord),
-            ("gruvbox", ThemeKind::Gruvbox),
-            ("gruvbox-dark", ThemeKind::Gruvbox),
-            ("dracula", ThemeKind::Dracula),
         ];
         for (name, expected) in cases {
             assert_eq!(

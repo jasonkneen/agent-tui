@@ -79,8 +79,9 @@ pub(super) fn dispatch_enter_plan_mode(
             .session
             .enqueue_prompt_with_skill_tokens(desc, skill_token_ranges);
         let drain = maybe_drain_queue(agent);
+        note_peek_page_flip(app, id, drain.page_flip_entry);
         let mut effects = Vec::with_capacity(1);
-        for eff in drain {
+        for eff in drain.effects {
             match eff {
                 Effect::SendPrompt {
                     agent_id,
@@ -325,10 +326,7 @@ pub(super) fn set_yolo_mode_inner(app: &mut AppView, new: bool) {
                     .ok();
             }
         }
-        // Restore stashed prompt since queue is now empty.
-        if let Some(stashed) = agent.permission_stashed_prompt.take() {
-            agent.prompt.restore(stashed);
-        }
+        super::permissions::restore_permission_stashes(agent);
     }
 
     // Telemetry + tracing guarded on real state change only.

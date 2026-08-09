@@ -1,7 +1,7 @@
 //! GrokBuildEnvironment configuration for the shell crate family.
 //!
 //! The environment presets (per-environment endpoint URLs, the staging
-//! trust check) live in the [`agent_tui_env`] leaf crate so
+//! trust check, `EnvVarGuard`) live in the [`agent_tui_env`] leaf crate so
 //! sibling crates (telemetry, tools, workspace) can share them without
 //! depending on this crate. This module re-exports them and hosts the
 //! shell-specific gateway-bridge env vars.
@@ -31,85 +31,62 @@ pub const GROK_GATEWAY_URL_ENV: &str = "GROK_GATEWAY_URL";
 /// capability — an instant revert without a redeploy if the channel
 /// misbehaves. Unset/`0`/`false` → normal routing.
 pub const GROK_DISABLE_CUSTOM_BRIDGE_ENV: &str = "GROK_DISABLE_CUSTOM_BRIDGE";
-fn custom_bridge_disabled_value(value: Option<&str>) -> bool {
-    value
-        .map(|value| {
-            let value = value.trim();
-            value == "1" || value.eq_ignore_ascii_case("true")
-        })
-        .unwrap_or(false)
-}
 /// `true` when the custom-method bridge passthrough is force-disabled via
 /// [`GROK_DISABLE_CUSTOM_BRIDGE_ENV`]. Accepts `1`/`true` (case-insensitive).
 pub fn custom_bridge_disabled() -> bool {
-    let value = std::env::var(GROK_DISABLE_CUSTOM_BRIDGE_ENV).ok();
-    custom_bridge_disabled_value(value.as_deref())
+    std::env::var(GROK_DISABLE_CUSTOM_BRIDGE_ENV)
+        .map(|v| {
+            let v = v.trim();
+            v == "1" || v.eq_ignore_ascii_case("true")
+        })
+        .unwrap_or(false)
 }
-/// Parse `GROK_GATEWAY_URL` into a [`url::Url`]. Unset, empty, or
-/// malformed → `None` (malformed is warned and falls back to local
-/// mode so the shell doesn't refuse to start).
+/// Parse `GROK_GATEWAY_URL` into a [`url::Url`].
 ///
-/// The malformed-URL warning intentionally does **not** log the raw
-/// env-var value — a mistyped credential URL of the form
-/// `wss://user:pass@host` would leak `pass` if the parse failed. The
-/// operator can inspect their own env var directly.
-///
-/// Hard-off (always `None`) without the `chat` feature so release
-/// builds can't activate the bridge via env.
-fn parse_gateway_url_value(raw: Option<&str>) -> Option<url::Url> {
-    let raw = raw?;
+/// This build ignores the variable and stays in local mode (warns if set).
+pub fn parse_gateway_url() -> Option<url::Url> {
+    let raw = std::env::var(GROK_GATEWAY_URL_ENV).ok()?;
     if raw.is_empty() {
         return None;
     }
-    if true {
-        tracing::warn!(
-            env = GROK_GATEWAY_URL_ENV,
-            "GROK_GATEWAY_URL is set but this build lacks the `chat` feature; staying in local mode"
-        );
-        return None;
-    }
-    match url::Url::parse(&raw) {
-        Ok(url) => Some(url),
-        Err(err) => {
-            tracing::warn!(
-                env = GROK_GATEWAY_URL_ENV, error = % err,
-                "GROK_GATEWAY_URL is not a valid URL; falling back to local mode (raw value omitted to avoid leaking userinfo)"
-            );
-            None
-        }
-    }
-}
-pub fn parse_gateway_url() -> Option<url::Url> {
-    let raw = std::env::var(GROK_GATEWAY_URL_ENV).ok();
-    parse_gateway_url_value(raw.as_deref())
+    tracing::warn!(
+        env = GROK_GATEWAY_URL_ENV,
+        "GROK_GATEWAY_URL is set but this build does not support gateway-bridge mode; staying in local mode"
+    );
+    None
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn parse_gateway_url_returns_none_when_unset() {
-        assert!(parse_gateway_url_value(None).is_none());
+        let _env = EnvVarGuard::remove(GROK_GATEWAY_URL_ENV);
+        assert!(parse_gateway_url().is_none());
     }
     #[test]
     fn parse_gateway_url_returns_none_when_empty() {
-        assert!(parse_gateway_url_value(Some("")).is_none());
+        let _env = EnvVarGuard::set(GROK_GATEWAY_URL_ENV, "");
+        assert!(parse_gateway_url().is_none());
     }
     #[test]
-    fn parse_gateway_url_returns_none_for_malformed_url() {
+    fn parse_gateway_url_hard_off_without_gateway_bridge() {
+        let _env = EnvVarGuard::set(GROK_GATEWAY_URL_ENV, "wss://gateway.example.com/ws");
         assert!(
-            parse_gateway_url_value(Some("not a url")).is_none(),
-            "malformed URL falls back to None"
+            parse_gateway_url().is_none(),
+            "valid URL must still be ignored in this build"
         );
     }
     #[test]
     fn custom_bridge_disabled_defaults_false_when_unset() {
-        assert!(!custom_bridge_disabled_value(None));
+        let _env = EnvVarGuard::remove(GROK_DISABLE_CUSTOM_BRIDGE_ENV);
+        assert!(!custom_bridge_disabled());
     }
     #[test]
     fn custom_bridge_disabled_true_for_one_and_true() {
         for v in ["1", "true", "TRUE", " true "] {
+            let _env = EnvVarGuard::set(GROK_DISABLE_CUSTOM_BRIDGE_ENV, v);
             assert!(
-                custom_bridge_disabled_value(Some(v)),
+                custom_bridge_disabled(),
                 "{v:?} must disable the custom bridge"
             );
         }
@@ -117,8 +94,9 @@ mod tests {
     #[test]
     fn custom_bridge_disabled_false_for_zero_and_garbage() {
         for v in ["0", "false", "", "no"] {
+            let _env = EnvVarGuard::set(GROK_DISABLE_CUSTOM_BRIDGE_ENV, v);
             assert!(
-                !custom_bridge_disabled_value(Some(v)),
+                !custom_bridge_disabled(),
                 "{v:?} must leave the custom bridge enabled"
             );
         }

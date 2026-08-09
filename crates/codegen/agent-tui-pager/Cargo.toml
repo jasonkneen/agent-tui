@@ -6,6 +6,7 @@ license = "Apache-2.0"
 authors = ["xAI"]
 
 [dependencies]
+which = { workspace = true }
 agent-tui-hermes-runtime = { workspace = true }
 agent-tui-lazar-runtime = { workspace = true }
 agent-tui-claude-runtime = { workspace = true }
@@ -77,7 +78,7 @@ tracing-subscriber = { workspace = true }
 
 # Binary hardening: compile-time string obfuscation.
 # (cryptify / rustls / semver / tikv-jemallocator moved to the composition-root
-# binary `agent-tui-pager-bin` with `main.rs`; this lib no longer references them.)
+# binary `agent-tui-bin` with `main.rs`; this lib no longer references them.)
 obfstr = { workspace = true }
 
 # Fuzzy matching (history search daemon)
@@ -181,7 +182,7 @@ agent-tui-test-support = { workspace = true, features = [] }
 # Ring CryptoProvider install for the in-process leader-cluster tests. Explicit
 # spec mirroring the shell's, NOT `workspace = true`: the workspace pin enables
 # aws-lc-rs, under which `rustls::crypto::ring` does not exist. Dev-only — the
-# production lib deliberately dropped rustls (moved to agent-tui-pager-bin).
+# production lib deliberately dropped rustls (moved to agent-tui-bin).
 rustls = { version = "0.23", default-features = false, features = [
     "ring",
     "logging",
@@ -300,7 +301,7 @@ default-bazel = [
 local-workspace = ["agent-tui-shell/local-workspace"]
 # No-op on this crate: the actual `#[global_allocator]` (and the
 # `tikv-jemallocator` dep) live on the composition-root binary
-# `agent-tui-pager-bin`, which owns `main.rs`. Kept as an empty feature so the
+# `agent-tui-bin`, which owns `main.rs`. Kept as an empty feature so the
 # workspace-uniform `[jemalloc, sandbox-enforce]` default set resolves
 # here too and the generated `crate_features` stay valid.
 jemalloc = []

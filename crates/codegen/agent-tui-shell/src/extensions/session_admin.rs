@@ -47,14 +47,6 @@ pub(crate) async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResul
         #[cfg(feature = "local-workspace")]
         "x.ai/session/add_local_workspace" => handle_add_local_workspace(agent, args).await,
         "x.ai/session/fork" => handle_session_fork(agent, args).await,
-        "x.ai/internal/reload_all_mcp_servers" => handle_reload_all_mcp_servers(agent).await,
-        "x.ai/internal/reload_project_mcp_servers" => {
-            handle_reload_project_mcp_servers(agent, args).await
-        }
-        "x.ai/internal/reload_skills" => handle_reload_skills(agent),
-        "x.ai/internal/reload_models" => handle_reload_models(agent),
-        "x.ai/internal/reload_models_cache" => handle_reload_models_cache(agent),
-        "x.ai/internal/auth_cleared" => handle_auth_cleared(agent),
         "x.ai/plugins/reload" => handle_plugins_reload(agent).await,
         "x.ai/commands/list" => handle_commands_list(agent, args).await,
         _ => Err(acp::Error::method_not_found()),
@@ -438,15 +430,16 @@ async fn handle_add_local_workspace(agent: &MvpAgent, args: &acp::ExtRequest) ->
 // internal/reload_skills
 
 /// Reload skills for ALL active sessions. Called by the skills file watcher
-/// (via ACP injection from `app.rs`) when `SKILL.md` files change.
 fn handle_reload_skills(agent: &MvpAgent) -> ExtResult {
-    let session_ids: Vec<acp::SessionId> = agent.sessions.borrow().keys().cloned().collect();
-    for sid in &session_ids {
-        if let Some(handle) = agent.sessions.borrow().get(sid).cloned() {
-            let _ = handle.cmd_tx.send(SessionCommand::ReloadSkills);
-        }
-    }
-    ExtMethodResult::success(serde_json::json!({ "reloaded": session_ids.len() }))
+    let reloaded = agent.reload_skills_all_sessions();
+    ExtMethodResult::success(serde_json::json!({ "reloaded": reloaded }))
+        .to_ext_response()
+        .map_err(|e| acp::Error::internal_error().data(e.to_string()))
+}
+
+fn handle_reload_workflows(agent: &MvpAgent) -> ExtResult {
+    let reloaded = agent.advertise_commands_all_sessions();
+    ExtMethodResult::success(serde_json::json!({ "reloaded": reloaded }))
         .to_ext_response()
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))
 }
@@ -480,23 +473,14 @@ async fn handle_reload_all_mcp_servers(agent: &MvpAgent) -> ExtResult {
         // `load_mcp_servers()` output here was redundant — and silently
         // dropped client servers that exist in no on-disk config, tearing
         // them down on every config hot-reload.
-        let merged = crate::session::managed_mcp::merge_managed_mcp_servers(
-            handle.initial_client_mcp_servers.clone(),
+        if crate::session::managed_mcp::merge_and_send_managed_mcp_update(
+            &handle.cmd_tx,
             &cwd,
+            handle.initial_client_mcp_servers.clone(),
             &managed,
             agent.plugin_registry_handle().snapshot().as_deref(),
             &compat,
-        );
-
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-        if handle
-            .cmd_tx
-            .send(SessionCommand::UpdateMcpServers {
-                mcp_servers: merged,
-                respond_to: tx,
-            })
-            .is_ok()
-        {
+        ) {
             updated += 1;
         }
     }
@@ -649,6 +633,7 @@ fn handle_reload_models(agent: &MvpAgent) -> ExtResult {
     let merged_config = agent.cfg.borrow().clone();
 
     agent.models_manager.apply_config(merged_config);
+    agent.sync_process_static_api_key(None);
 
     let count = agent.models_manager.models().len();
     tracing::info!(count, "model list reloaded from config.toml");
@@ -671,6 +656,7 @@ fn handle_reload_models(agent: &MvpAgent) -> ExtResult {
 /// rather than rebuilding the catalog and notifying clients mid-flight.
 fn handle_reload_models_cache(agent: &MvpAgent) -> ExtResult {
     agent.models_manager.reload_from_disk_cache();
+    agent.sync_process_static_api_key(None);
     ExtMethodResult::success(serde_json::json!({ "reloaded": true }))
         .to_ext_response()
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))

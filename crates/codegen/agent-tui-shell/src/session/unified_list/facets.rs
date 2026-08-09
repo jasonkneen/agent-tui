@@ -691,7 +691,7 @@ mod tests {
         ));
         assert!(matches!(
             f.get(SOURCE_WORKSPACE_FACET_KEY),
-            Some(FacetValue::One(serde_json::Value::String(s))) if s == "/Users/me/xai-main"
+            Some(FacetValue::One(serde_json::Value::String(s))) if s == "/Users/me/agent-tui-main"
         ));
 
         // Conversations carry no local git enrichment.

@@ -69,10 +69,12 @@ pub fn fork_session_params(
     let parent_cwd_str = parent_cwd.to_string_lossy().into_owned();
     let source_cwd = agent_tui_shell::session::resolve_local_session_any_cwd(parent_session_id)
         .unwrap_or_else(|| parent_cwd_str.clone());
-    let mut payload = serde_json::json!(
-        { "sourceSessionId" : parent_session_id, "sourceCwd" : source_cwd, "newCwd" :
-        parent_cwd_str.clone(), "sessionKind" : "fork", }
-    );
+    let mut payload = serde_json::json!({
+        "sourceSessionId": parent_session_id,
+        "sourceCwd": source_cwd,
+        "newCwd": parent_cwd_str.clone(),
+        "sessionKind": "fork",
+    });
     if let Some(nid) = new_session_id {
         payload["newSessionId"] = serde_json::Value::String(nid.to_string());
     }
@@ -696,6 +698,19 @@ pub enum MaterializedStartup {
         suppress_code_restore: bool,
     },
 }
+/// Whether materialization may resolve a non-id resume arg by title locally.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitleResolution {
+    /// No pre-sandbox pin ran (direct callers, tests): materialization owns
+    /// title selection.
+    Allowed,
+    /// The composition root already pinned — or definitively missed — the
+    /// target before the irreversible OS sandbox. Re-selecting by title here
+    /// would race a concurrent rename/create and resume a session whose
+    /// persisted profile was never checked; a pinned id that vanished must
+    /// also never be reinterpreted as a title.
+    PinnedPreSandbox,
+}
 /// Context for [`materialize_startup`] (interactive vs headless share this).
 #[derive(Debug, Clone, Copy)]
 pub struct MaterializeCtx {
@@ -718,10 +733,14 @@ pub struct MaterializeCtx {
     pub restore_progress_on_stdout: bool,
 }
 impl MaterializeCtx {
+    /// `--resume` miss bails fast.
+    pub const fn default_allow_remote_restore() -> bool {
+        false
+    }
     pub fn from_pager_args(args: &PagerArgs) -> Self {
         Self {
             has_worktree: args.worktree.is_some(),
-            allow_remote_restore: false,
+            allow_remote_restore: Self::default_allow_remote_restore(),
             chat_mode: args.chat(),
             title_resolution: if args.resume_target_pinned {
                 TitleResolution::PinnedPreSandbox
@@ -948,7 +967,8 @@ async fn resolve_existing_session(
     }
     if let Some(original_cwd) = agent_tui_shell::session::resolve_local_session_any_cwd(session_id) {
         tracing::info!(
-            session_id = % session_id, original_cwd = % original_cwd,
+            session_id = %session_id,
+            original_cwd = %original_cwd,
             "Session found locally under different CWD"
         );
         eprintln!(
@@ -1107,8 +1127,6 @@ async fn restore_session_from_remote(
             session_id
         ),
     );
-    let raw_config = agent_tui_shell::config::load_effective_config()
-        .map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?;
     let agent_config = agent_tui_shell::agent::config::Config::new_from_toml_cfg(&raw_config)
         .map_err(|e| anyhow::anyhow!("Failed to create agent config: {}", e))?;
     use agent_tui_shell::agent::session_registry_client::SessionRegistryClient;
@@ -1808,6 +1826,7 @@ mod tests {
                 session_id,
                 original_cwd,
                 title,
+                ..
             } => {
                 assert_eq!(session_id, "conv-e2f1");
                 assert!(original_cwd.is_none());

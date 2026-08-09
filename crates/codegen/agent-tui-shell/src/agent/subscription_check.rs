@@ -3,8 +3,8 @@
 //! Provides `single_check()` which queries `GET /user?include=subscription`
 //! for the live subscription tier from the backend, independent of the JWT.
 //! If a qualifying tier is detected, does a best-effort JWT refresh and
-//! settings re-fetch, then returns an `UnblockResult` so the agent can
-//! lift the gate.
+//! returns an `UnblockResult` so the agent can re-fetch settings and lift
+//! the gate through its own settings seam.
 //!
 //! The pager drives the polling via `x.ai/auth/check_subscription`: the 5s
 //! paywall chain, the free-tier watch, the refocus check, and
@@ -28,7 +28,6 @@ fn is_qualifying_tier(tier: &str) -> bool {
 /// Successful subscription check result: a confirmed qualifying tier.
 pub(crate) struct UnblockResult {
     pub(crate) new_tier: String,
-    pub(crate) settings: Option<crate::util::config::RemoteSettings>,
 }
 /// Fetch `/user?include=subscription` and return the parsed `UserInfo`.
 async fn fetch_user_info(
@@ -65,9 +64,9 @@ async fn fetch_user_info(
 /// the paywall is shown (`x.ai/auth/check_subscription`).
 ///
 /// Queries `/user?include=subscription` for the live tier. If a qualifying
-/// tier is found, does a best-effort JWT refresh + settings re-fetch and
-/// returns `Some(UnblockResult)`. Returns `None` if no qualifying
-/// subscription exists or the request fails.
+/// tier is found, does a best-effort JWT refresh and returns
+/// `Some(UnblockResult)`. Returns `None` if no qualifying subscription
+/// exists or the request fails.
 #[tracing::instrument(name = "paywall_check", skip_all, fields(user_id = %user_id))]
 pub(crate) async fn single_check(
     auth_manager: Arc<AuthManager>,
@@ -92,7 +91,7 @@ pub(crate) async fn single_check(
             agent_tui_telemetry::unified_log::warn(
                 "paywall_check_error",
                 None,
-                Some(serde_json::json!({ "user_id" : user_id, "kind" : kind })),
+                Some(serde_json::json!({ "user_id": user_id, "kind": kind })),
             );
             return None;
         }
@@ -100,10 +99,10 @@ pub(crate) async fn single_check(
     agent_tui_telemetry::unified_log::info(
         "paywall_check_result",
         None,
-        Some(serde_json::json!(
-            { "user_id" : user_id, "subscription_tier" : user_info.subscription_tier,
-            }
-        )),
+        Some(serde_json::json!({
+            "user_id": user_id,
+            "subscription_tier": user_info.subscription_tier,
+        })),
     );
     let new_tier = match &user_info.subscription_tier {
         Some(tier) if !tier.is_empty() => tier.clone(),
@@ -115,7 +114,10 @@ pub(crate) async fn single_check(
     agent_tui_telemetry::unified_log::info(
         "paywall_check_subscription_detected",
         None,
-        Some(serde_json::json!({ "user_id" : user_id, "new_tier" : new_tier, })),
+        Some(serde_json::json!({
+            "user_id": user_id,
+            "new_tier": new_tier,
+        })),
     );
     if let Err(e) = auth_manager
         .refresh_chain(TokenType::OidcSession, RefreshReason::ServerRejected)
@@ -124,31 +126,19 @@ pub(crate) async fn single_check(
         agent_tui_telemetry::unified_log::warn(
             "paywall_check_error",
             None,
-            Some(serde_json::json!(
-                { "user_id" : user_id, "kind" : "refresh_failed", "detail" : e
-                .to_string(), }
-            )),
+            Some(serde_json::json!({
+                "user_id": user_id,
+                "kind": "refresh_failed",
+                "detail": e.to_string(),
+            })),
         );
     }
-    let settings = if crate::util::config::resolve_remote_fetch_enabled() {
-        let base_url = proxy_base_url.to_string();
-        let auth_for_settings = auth_manager.current().unwrap_or(auth);
-        let atk = alpha_test_key.map(str::to_string);
-        tokio::task::spawn_blocking(move || {
-            crate::remote::fetch_settings_blocking(&base_url, &auth_for_settings, atk.as_deref())
-        })
-        .await
-        .ok()
-        .flatten()
-    } else {
-        None
-    };
     agent_tui_telemetry::unified_log::info(
         "paywall_check_unblocked",
         None,
-        Some(serde_json::json!({ "user_id" : user_id, "new_tier" : new_tier })),
+        Some(serde_json::json!({ "user_id": user_id, "new_tier": new_tier })),
     );
-    Some(UnblockResult { new_tier, settings })
+    Some(UnblockResult { new_tier })
 }
 #[cfg(test)]
 mod tests {

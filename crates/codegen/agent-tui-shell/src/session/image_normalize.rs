@@ -470,7 +470,9 @@ fn compute_normalized_blocking(
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(
-                index, bytes = original_bytes, error = % e,
+                index,
+                bytes = original_bytes,
+                error = %e,
                 "image re-encode failed; keeping original attachment"
             );
             return Ok(NormalizedEntry::ReEncodingOversized {

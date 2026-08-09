@@ -48,14 +48,6 @@ fn theme_kind_from_u8(byte: u8) -> ThemeKind {
         x if x == ThemeKind::TokyoNight as u8 => ThemeKind::TokyoNight,
         x if x == ThemeKind::RosePineMoon as u8 => ThemeKind::RosePineMoon,
         x if x == ThemeKind::OscuraMidnight as u8 => ThemeKind::OscuraMidnight,
-        x if x == ThemeKind::OpenCode as u8 => ThemeKind::OpenCode,
-        x if x == ThemeKind::Vercel as u8 => ThemeKind::Vercel,
-        x if x == ThemeKind::Copilot as u8 => ThemeKind::Copilot,
-        x if x == ThemeKind::Nerv as u8 => ThemeKind::Nerv,
-        x if x == ThemeKind::Catppuccin as u8 => ThemeKind::Catppuccin,
-        x if x == ThemeKind::Nord as u8 => ThemeKind::Nord,
-        x if x == ThemeKind::Gruvbox as u8 => ThemeKind::Gruvbox,
-        x if x == ThemeKind::Dracula as u8 => ThemeKind::Dracula,
         x if x == ThemeKind::Auto as u8 => ThemeKind::Auto,
         _ => ThemeKind::GrokNight,
     }
@@ -122,11 +114,16 @@ pub fn terminal_native_locked() -> bool {
 /// Engage or clear the terminal-native theme lock.
 pub fn set_terminal_native_lock(locked: bool) {
     TERMINAL_NATIVE_LOCK.store(locked, Ordering::Relaxed);
+    // Cap quantization at ANSI-16 and switch syntax tokens to the dual-
+    // polarity accent map (default-fg grays + base ANSI hues). Without the
+    // polarity-safe remap, night-theme pastels collapse to White and vanish
+    // on light terminal profiles in minimal mode.
     agent_tui_markdown::set_color_level_cap(if locked {
         agent_tui_markdown::ColorLevel::Basic
     } else {
         agent_tui_markdown::ColorLevel::TrueColor
     });
+    agent_tui_markdown::set_polarity_safe_syntax(locked);
 }
 
 // -- Auto-mode ---------------------------------------------------------------
@@ -418,6 +415,20 @@ mod tests {
             set_terminal_native_lock(true);
             reset_for_test();
             assert!(!terminal_native_locked());
+        });
+    }
+
+    #[test]
+    fn terminal_native_lock_enables_polarity_safe_syntax() {
+        with_test_env(|| {
+            assert!(!agent_tui_markdown::polarity_safe_syntax());
+            set_terminal_native_lock(true);
+            assert!(
+                agent_tui_markdown::polarity_safe_syntax(),
+                "minimal must engage polarity-safe syntax remapping"
+            );
+            set_terminal_native_lock(false);
+            assert!(!agent_tui_markdown::polarity_safe_syntax());
         });
     }
 

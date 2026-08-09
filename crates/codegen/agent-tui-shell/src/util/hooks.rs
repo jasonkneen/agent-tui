@@ -2,7 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
+use agent_tui_config::resolve_global_hook_sources;
 use agent_tui_hooks::discovery::HookSource;
+use agent_tui_hooks::error::HookError;
 
 /// Owned paths for hook sources. Callers borrow via `as_sources()`.
 pub(crate) struct HookSourcePaths {
@@ -49,59 +51,53 @@ pub(crate) fn discover_hook_source_paths(
     git_root: Option<&Path>,
     compat: &agent_tui_tools::types::compat::CompatConfig,
 ) -> HookSourcePaths {
-    // Compat gate: skip .claude hook sources when disabled.
-    let skip_claude_compat = !compat.claude.hooks;
-    // Phase 2 cutoff: if the user has imported, skip .claude/settings.json
-    // sources. Native .grok/hooks/ directories are still scanned (they hold
-    // any hooks that were imported by /import-claude).
-    let skip_claude = skip_claude_compat
-        || crate::claude_import::is_claude_import_marked_with_log("discover_hook_source_paths");
-
-    // Compat gate: skip Cursor hook sources when disabled.
-    let skip_cursor = !compat.cursor.hooks;
-
-    let home = dirs::home_dir();
-    // user_grok_home() is None when no home resolves, so inspect lists the same
-    // sources a live session loads, instead of a cwd-relative .grok.
     let grok = agent_tui_config::user_grok_home();
-    let mut global = Vec::new();
+    let home = dirs::home_dir();
+    let include_claude = include_claude_hooks(compat);
+    let include_cursor = include_cursor_hooks(compat);
 
-    if !skip_claude && let Some(ref h) = home {
-        global.push(h.join(".claude").join("settings.json"));
-        global.push(h.join(".claude").join("settings.local.json"));
-    }
-    if let Some(ref grok) = grok {
-        global.push(grok.join("hooks"));
-    }
+    // Soft hooks-paths I/O keeps fixed slots; hard resolve omits Grok globals.
+    let mut global: Vec<PathBuf> =
+        match resolve_global_hook_sources(grok.as_deref(), /* reject_symlinks */ false) {
+            Ok(resolved) => {
+                if let Some(e) = &resolved.configured_error {
+                    tracing::warn!(
+                        error = %e,
+                        "hooks-paths unreadable; retaining fixed Grok hook discovery sources only"
+                    );
+                }
+                resolved
+                    .discovery_sources()
+                    .map(|s| s.path.clone())
+                    .collect()
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "global hook source resolve hard-failed; omitting Grok global sources"
+                );
+                Vec::new()
+            }
+        };
 
-    let custom_paths: Vec<PathBuf> = grok
-        .as_ref()
-        .and_then(|g| std::fs::read_to_string(g.join("hooks-paths")).ok())
-        .map(|content| {
-            content
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .map(|l| PathBuf::from(l.trim()))
-                .collect()
-        })
-        .unwrap_or_default();
-    global.extend(custom_paths);
-
-    if let Some(ref h) = home
-        && !skip_cursor
-    {
-        global.push(h.join(".cursor").join("hooks.json"));
+    if let Some(h) = home.as_deref() {
+        if include_claude {
+            global.push(h.join(".claude").join("settings.json"));
+            global.push(h.join(".claude").join("settings.local.json"));
+        }
+        if include_cursor {
+            global.push(h.join(".cursor").join("hooks.json"));
+        }
     }
 
     let mut project = Vec::new();
-
     if let Some(root) = git_root {
-        if !skip_claude {
+        if include_claude {
             project.push(root.join(".claude").join("settings.json"));
             project.push(root.join(".claude").join("settings.local.json"));
         }
         project.push(root.join(".grok").join("hooks"));
-        if !skip_cursor {
+        if include_cursor {
             project.push(root.join(".cursor").join("hooks.json"));
         }
     }
@@ -141,5 +137,13 @@ pub(crate) fn assemble_hooks(
 
     let source_paths = discover_hook_source_paths(git_root, compat);
     let (global_sources, project_sources) = source_paths.as_sources(trusted);
-    agent_tui_hooks::discovery::load_hooks_from_sources(&global_sources, &project_sources)
+    let (file_specs, file_errors) =
+        agent_tui_hooks::discovery::collect_specs_from_sources(&global_sources, &project_sources);
+    specs.extend(file_specs);
+    errors.extend(file_errors);
+
+    (
+        agent_tui_hooks::discovery::registry_from_specs_deduped(specs),
+        errors,
+    )
 }

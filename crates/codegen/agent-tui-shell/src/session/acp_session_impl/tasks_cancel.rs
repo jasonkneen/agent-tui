@@ -215,6 +215,7 @@ impl SessionActor {
                 SubagentCancelRequest, SubagentCancelTarget, SubagentEvent,
             };
             let _ = event_tx.send(SubagentEvent::Cancel(SubagentCancelRequest {
+                parent_session_id: Some(self.session_id_string()),
                 target: SubagentCancelTarget::ParentPromptId(parent_prompt_id.to_string()),
                 respond_to: tokio::sync::oneshot::channel().0,
             }));
@@ -249,7 +250,15 @@ impl SessionActor {
             })
             .await;
         // Re-enable notification drains: unlike Ctrl+C, a send-now means the user is re-engaged.
+        if let Some(gate) = &self.tool_context.task_wake_suppressed {
+            gate.set(false);
+        }
         self.state.lock().await.notifications_suppressed = false;
+        agent_tui_telemetry::unified_log::info(
+            "shell.task_wake.gate_cleared",
+            Some(self.session_info.id.0.as_ref()),
+            Some(serde_json::json!({ "reason": "send_now" })),
+        );
     }
 
     pub(super) async fn cancel_running_task(
@@ -422,7 +431,15 @@ impl SessionActor {
                 if let Some(task) = state.running_task.take() {
                     task.abort();
                 }
+                if let Some(gate) = &self.tool_context.task_wake_suppressed {
+                    gate.set(false);
+                }
                 state.notifications_suppressed = false;
+                agent_tui_telemetry::unified_log::info(
+                    "shell.task_wake.gate_cleared",
+                    Some(self.session_info.id.0.as_ref()),
+                    Some(serde_json::json!({ "reason": "rewind" })),
+                );
                 state.rewindable = false;
                 state.pending_inputs.pop_front()
             } else {
@@ -431,9 +448,7 @@ impl SessionActor {
             let running_task = if rewound_input.is_some() {
                 None
             } else {
-                let running_task = state.running_task.take();
-                state.notifications_suppressed = true;
-                running_task
+                state.running_task.take()
             };
 
             // Decide which queued inputs get resolved with `Cancelled` now vs.
@@ -481,6 +496,17 @@ impl SessionActor {
                     let is_running_turn = idx == 0;
                     if is_running_turn {
                         cancelled.push_back(item);
+                    } else if suppress_task_wakes
+                        && matches!(
+                            &item.origin,
+                            super::PromptOrigin::TaskCompleted { .. }
+                                | super::PromptOrigin::WorkflowCompleted { .. }
+                        )
+                    {
+                        if let Some(fallback) = item.task_wake_fallback {
+                            Self::push_task_wake_fallback(&mut state, fallback);
+                        }
+                        Self::respond_removed_prompt(item.respond_to);
                     } else {
                         kept.push_back(item);
                     }
@@ -582,15 +608,13 @@ impl SessionActor {
         if let Some(running_task) = running_task {
             running_task.abort();
         }
+        if let Some(is_turn_active) = &self.tool_context.is_turn_active {
+            is_turn_active.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
         // The aborted turn's `BlockingWaitGuard`s drop asynchronously (they
         // live in tool futures owned by the drainer task / subagent spawn
         // task). Until they do, `queue_input` would read a stale depth > 0 and
-        // auto-send-now-cancel the NEXT turn — dropping its user prompt. Zero
-        // the window here; late guard drops saturate at 0 (see the guard's
-        // `Drop`).
-        self.tool_context
-            .blocking_wait_depth
-            .store(0, std::sync::atomic::Ordering::SeqCst);
+        self.tool_context.blocking_wait_depth.reset();
         self.flush_pending_skill_reminders().await;
 
         // No multi-second drain here (actor loop would block RecordSubagentUsage).
@@ -601,8 +625,10 @@ impl SessionActor {
                 let outcome =
                     super::turn::UsageDrainOutcome::from_outstanding_reply(reply.as_ref());
                 self.finalize_usage_from_outcome(prompt_id, outcome).await
-            } else {
+            } else if !pending_inputs.is_empty() {
                 self.snapshot_prompt_usage().await
+            } else {
+                None
             }
         } else {
             None
@@ -652,24 +678,20 @@ impl SessionActor {
                 completion_kind: PromptCompletionKind::Rewound,
                 structured_output: None,
                 usage: None,
+                tool_overrides: self.effective_tool_overrides(),
             }));
             // The rewound branch cleared the barrier above; wakes flow again.
             return WakeBarrier::Clear;
         }
 
-        // Un-mark cancelled synthetic IDs so TaskCompletionReminder can
-        // report them on the next pass instead of permanently suppressing them.
-        if let Some(ref auto_wake) = self.tool_context.auto_wake_delivered {
-            for input in pending_inputs.iter() {
-                if let Some(id) = input.origin.completion_id() {
-                    auto_wake.remove(id);
-                }
-            }
-        }
-
         for (idx, input) in pending_inputs.into_iter().enumerate() {
             // Running turn is idx 0; queued prompts never spent tokens.
             let is_running_turn = idx == 0;
+            if let Some(task_id) = input.origin.completion_id()
+                && let Some(reservations) = &self.tool_context.task_completion_reservations
+            {
+                reservations.release(task_id);
+            }
             let _ = input
                 .respond_to
                 .send(Ok(PromptTurnOk {
@@ -699,6 +721,13 @@ impl SessionActor {
                     structured_output: None,
                     usage: if is_running_turn {
                         cancelled_usage.clone()
+                    } else {
+                        None
+                    },
+                    // Only the running turn (idx 0) ran, so only it echoes a bound; a queued prompt
+                    // that never promoted attests nothing (like respond_removed_prompt).
+                    tool_overrides: if is_running_turn {
+                        self.effective_tool_overrides()
                     } else {
                         None
                     },

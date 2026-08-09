@@ -4,6 +4,8 @@
 //! code path (keyboard navigation, mouse click, action dispatch) can
 //! open a link safely without duplicating platform-specific logic.
 
+use std::collections::HashMap;
+
 use crate::terminal::hyperlinks::SchemeFilter;
 
 /// Outcome of attempting to open a URL in the system browser/handler.
@@ -90,8 +92,17 @@ pub fn open_url(url: &str) -> bool {
             .and_then(|mut f| writeln!(f, "{url}"))
         {
             tracing::warn!(error = %e, path, "GROK_TEST_OPEN_URL_FILE write failed");
+            return false;
         }
-        return;
+        return true;
+    }
+
+    // Skip the doomed spawn on headless Linux VMs (no DISPLAY / Wayland)
+    // so billing Upgrade / Buy-credits clicks can fall back to showing the
+    // URL instead of silently no-op'ing.
+    if !browser_open_likely_available() {
+        tracing::info!("skipping browser open: no display server / BROWSER");
+        return false;
     }
 
     #[cfg(target_os = "macos")]
@@ -110,16 +121,20 @@ pub fn open_url(url: &str) -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     agent_tui_tools::util::detach_std_command(&mut command);
-    if let Err(e) = command.spawn() {
-        // Redact URL to avoid leaking sensitive query params to logs.
-        let redacted = url::Url::parse(url)
-            .map(|mut u| {
-                u.set_query(None);
-                u.set_fragment(None);
-                u.to_string()
-            })
-            .unwrap_or_else(|_| "<unparseable>".to_string());
-        tracing::warn!(url = %redacted, error = %e, "failed to open URL");
+    match command.spawn() {
+        Ok(_) => true,
+        Err(e) => {
+            // Redact URL to avoid leaking sensitive query params to logs.
+            let redacted = url::Url::parse(url)
+                .map(|mut u| {
+                    u.set_query(None);
+                    u.set_fragment(None);
+                    u.to_string()
+                })
+                .unwrap_or_else(|_| "<unparseable>".to_string());
+            tracing::warn!(url = %redacted, error = %e, "failed to open URL");
+            false
+        }
     }
 }
 
@@ -263,14 +278,26 @@ pub fn is_safe_to_open(url: &str, filter: SchemeFilter) -> bool {
     false
 }
 
-/// Validate scheme and open a URL if permitted. Returns `true` if opened.
+/// Validate scheme and open a URL if permitted.
+///
+/// Returns `true` only when the scheme is allowed **and** the opener was
+/// launched. Distinguishes scheme rejection from browser unavailability
+/// via [`try_open_url`].
 pub fn open_url_if_safe(url: &str, filter: SchemeFilter) -> bool {
-    if is_safe_to_open(url, filter) {
-        open_url(url);
-        true
-    } else {
+    matches!(try_open_url(url, filter), OpenUrlResult::Opened)
+}
+
+/// Validate scheme and attempt to open. Prefer this when the caller needs
+/// to show a manual-URL fallback on [`OpenUrlResult::BrowserUnavailable`].
+pub fn try_open_url(url: &str, filter: SchemeFilter) -> OpenUrlResult {
+    if !is_safe_to_open(url, filter) {
         tracing::debug!(url, "URL scheme not permitted");
-        false
+        return OpenUrlResult::RejectedScheme;
+    }
+    if open_url(url) {
+        OpenUrlResult::Opened
+    } else {
+        OpenUrlResult::BrowserUnavailable
     }
 }
 

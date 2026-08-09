@@ -3,8 +3,10 @@
 //! Simplified to only support GrokShell (in-process) mode.
 //! Subprocess and remote modes can be added later if needed.
 
+use std::io::IsTerminal;
 use std::rc::Rc;
 use std::thread;
+use std::time::Duration;
 
 use anyhow::Result;
 use tokio_util::sync::CancellationToken;
@@ -15,7 +17,10 @@ use agent_tui_acp_lib::{
     acp_channels,
 };
 use agent_tui_shell::{
-    agent::{MvpAgent, config::Config as AgentConfig, models::RefreshStrategy},
+    agent::{
+        MvpAgent, activity::SESSION_FLUSH_GRACE, config::Config as AgentConfig,
+        models::RefreshStrategy,
+    },
     auth::AuthManager,
     util::grok_home::grok_home,
 };
@@ -199,14 +204,16 @@ pub async fn spawn_grok_shell(
     agent_tui_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
 
     // Run the full bootstrap sequence: config resolution, process-level
-    // singletons (including `extract_bundled_files` which writes compiled-in
-    // skills to ~/.grok/skills/), and model catalog construction.
+    // singletons, and model catalog construction.
     let (agent_config, models_manager) =
         agent_tui_shell::agent::init::bootstrap(&agent_config, &auth_manager, None)
             .map_err(|e| anyhow::anyhow!(e))?;
     models_manager
         .list_models(RefreshStrategy::OnlineIfUncached)
         .await;
+    // Self-heal a cold-cache/failed boot fetch once the backend recovers,
+    // matching the leader and stdio paths.
+    models_manager.spawn_background_refresh();
 
     let agent_cancel = cancel.child_token();
     let (acp_client, acp_agent) = acp_channels();
@@ -214,6 +221,8 @@ pub async fn spawn_grok_shell(
     // Clone before `auth_manager` is moved into the agent closure below, so the
     // pager (voice channel) can share the same refreshing bearer.
     let auth_manager_for_pager = auth_manager.clone();
+
+    let skills_paths = agent_config.skills.paths.clone();
 
     let spawn_fn: Box<dyn FnOnce(AcpClientTx) -> Result<Rc<MvpAgent>> + Send + 'static> = {
         Box::new(move |client_tx| {
@@ -234,7 +243,7 @@ pub async fn spawn_grok_shell(
         spawn_agent_thread_direct(spawn_fn, acp_agent, agent_cancel.clone(), skills_paths)?;
 
     Ok(SpawnedAgent {
-        _thread_handle: handle,
+        thread_handle: handle,
         channel: acp_client,
         cancel: agent_cancel,
         auth_manager: auth_manager_for_pager,
@@ -249,6 +258,7 @@ fn spawn_agent_thread_direct(
     spawn_agent: Box<dyn FnOnce(AcpClientTx) -> Result<Rc<MvpAgent>> + Send + 'static>,
     channel: AcpAgentChannel,
     cancel: CancellationToken,
+    skills_paths: Vec<String>,
 ) -> Result<thread::JoinHandle<Result<()>>> {
     Ok(thread::Builder::new()
         .name("acp-agent-worker".into())
@@ -262,13 +272,115 @@ fn spawn_agent_thread_direct(
                 let agent_rc = spawn_agent(client_tx)?;
 
                 // Direct dispatch: RPC requests go straight to the agent
-                let gw_rx = AcpGatewayReceiver::new(channel.rx, agent_rc).with_tracing(true);
+                let gw_rx =
+                    AcpGatewayReceiver::new(channel.rx, agent_rc.clone()).with_tracing(true);
                 tokio::task::spawn_local(gw_rx.run());
+
+                let _skills_watcher = {
+                    let cwd = std::env::current_dir().unwrap_or_default();
+                    let workspace_user_dir =
+                        agent_tui_agent::prompt::workspace_user::optional_workspace_user_dir();
+                    agent_tui_shell::config::watcher::SkillsFileWatcher::start(
+                        Some(cwd.as_path()),
+                        workspace_user_dir.as_deref(),
+                        &skills_paths,
+                    )
+                    .map(|(mut watcher, mut skills_rx)| {
+                        let agent = agent_rc.clone();
+                        tokio::task::spawn_local(async move {
+                            while let Some(change) = skills_rx.recv().await {
+                                let created_discovery_dir = watcher.refresh_new_discovery_dirs();
+                                match change {
+                                    agent_tui_shell::config::watcher::DiscoveryChange::Skills => {
+                                        tracing::info!(
+                                            "skill directory changed on disk; reloading skills for all sessions"
+                                        );
+                                        agent.reload_skills_all_sessions();
+                                        if created_discovery_dir {
+                                            agent.advertise_commands_all_sessions();
+                                        }
+                                    }
+                                    agent_tui_shell::config::watcher::DiscoveryChange::Workflows => {
+                                        tracing::info!(
+                                            "workflow directory changed on disk; re-advertising commands for all sessions"
+                                        );
+                                        agent.advertise_commands_all_sessions();
+                                    }
+                                }
+                            }
+                        })
+                    })
+                };
                 tokio::task::yield_now().await;
 
-                // Keep running until cancelled
+                // Keep running until cancelled, then flush every live session
+                // actor (SessionEnd hooks + memory save) before the LocalSet /
+                // agent drop. Session actors live on dedicated OS threads and
+                // only exit cleanly on SessionCommand::Shutdown; without this
+                // flush, /exit and headless quit race process death and skip
+                // SessionEnd. Mirrors leader auto-update / relaunch.
                 cancel.cancelled().await;
+                agent_rc.flush_all_sessions(SESSION_FLUSH_GRACE).await;
                 anyhow::Result::Ok(())
             })
         })?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn join_reports_clean_worker_exit() {
+        let handle = thread::spawn(|| Ok(()));
+        assert_eq!(
+            join_agent_thread(handle, Duration::from_secs(5)),
+            JoinOutcome::Joined
+        );
+    }
+
+    #[test]
+    fn join_reports_worker_error() {
+        let handle = thread::spawn(|| Err(anyhow::anyhow!("flush failed")));
+        assert_eq!(
+            join_agent_thread(handle, Duration::from_secs(5)),
+            JoinOutcome::Failed("flush failed".to_string())
+        );
+    }
+
+    /// The timeout branch the built-binary e2e cannot reach: a wedged worker
+    /// (e.g. a hung SessionEnd hook) is abandoned once the budget elapses
+    /// instead of holding the process open indefinitely.
+    #[test]
+    fn join_abandons_wedged_worker_at_budget() {
+        let handle = thread::spawn(|| {
+            thread::sleep(Duration::from_secs(30));
+            Ok(())
+        });
+        let started = std::time::Instant::now();
+        assert_eq!(
+            join_agent_thread(handle, Duration::from_millis(50)),
+            JoinOutcome::TimedOut
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "join must return at its budget, not wait out the worker"
+        );
+    }
+
+    #[test]
+    fn panic_payloads_render_as_text() {
+        assert_eq!(
+            classify_join(Err(Box::new("boom"))),
+            JoinOutcome::Panicked("boom".to_string())
+        );
+        assert_eq!(
+            classify_join(Err(Box::new("boom".to_string()))),
+            JoinOutcome::Panicked("boom".to_string())
+        );
+        assert_eq!(
+            classify_join(Err(Box::new(7u32))),
+            JoinOutcome::Panicked("non-string panic payload".to_string())
+        );
+    }
 }

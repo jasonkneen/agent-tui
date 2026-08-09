@@ -148,7 +148,7 @@ impl AgentView {
                 if let Some(opt) = perm.options.get(perm.active_idx)
                     && opt.kind == agent_client_protocol::PermissionOptionKind::RejectOnce
                     && crate::input::key::is_text_input_key(key)
-                    && matches!(key.code, KeyCode::Char(c) if ! c.is_ascii_digit())
+                    && matches!(key.code, KeyCode::Char(c) if !c.is_ascii_digit())
                 {
                     perm.focus = PermissionFocus::FollowupInput;
                     let _ = self.prompt.handle_key(key);
@@ -227,9 +227,6 @@ impl AgentView {
                 let idx = (c as usize) - ('1' as usize);
                 let choice = CancelTurnChoice::ALL[idx];
                 InputOutcome::Action(Action::CancelTurnChoice(choice))
-            }
-            KeyCode::Esc => {
-                InputOutcome::Action(Action::CancelTurnChoice(CancelTurnChoice::ContinueToRun))
             }
             _ => InputOutcome::Unchanged,
         }
@@ -323,51 +320,19 @@ impl AgentView {
         };
         match qv.focus {
             QuestionFocus::InputMode => {
-                if key.code == KeyCode::Esc {
-                    if self.prompt.file_search_visible() {
-                        self.prompt.file_search.clear_context();
-                    } else {
-                        let idx = qv.active_tab;
-                        let text = self.prompt.text().to_string();
-                        let has_text = !text.trim().is_empty();
-                        if let Some(slot) = qv.per_question_freeform.get_mut(idx) {
-                            *slot = text;
-                        }
-                        if has_text {
-                            if let Some(sel) = qv.per_question_freeform_selected.get_mut(idx) {
-                                *sel = true;
-                            }
-                            if let Some(crate::views::question_view::QuestionSelection::Single(
-                                sel,
-                            )) = qv.selections.get_mut(idx)
-                            {
-                                *sel = None;
-                            }
-                        } else {
-                            if let Some(sel) = qv.per_question_freeform_selected.get_mut(idx) {
-                                *sel = false;
-                            }
-                            if let Some(slot) = qv.per_question_freeform.get_mut(idx) {
-                                slot.clear();
-                            }
-                        }
-                        qv.focus = QuestionFocus::Navigation;
-                    }
-                    return InputOutcome::Changed;
-                }
                 if key!('f', CONTROL).matches(key) {
                     qv.fullscreen = !qv.fullscreen;
                     return InputOutcome::Changed;
                 }
                 if key!('y', CONTROL).matches(key) {
-                    self.dismiss_question_view();
-                    return InputOutcome::Changed;
+                    return self.dismiss_question_view();
                 }
                 if key!('c', CONTROL).matches(key) {
                     if qv.is_feedback() {
                         return self.clear_feedback_then_dismiss();
                     }
                     qv.focus = QuestionFocus::Navigation;
+                    self.last_prompt_click_ms = None;
                     return InputOutcome::Changed;
                 }
                 match self.prompt.route_enter(key) {
@@ -403,8 +368,7 @@ impl AgentView {
             }
             QuestionFocus::Navigation => {
                 if key!('y', CONTROL).matches(key) {
-                    self.dismiss_question_view();
-                    return InputOutcome::Changed;
+                    return self.dismiss_question_view();
                 }
                 if key!('c', CONTROL).matches(key) {
                     return self.submit_question_answers(true);
@@ -420,7 +384,7 @@ impl AgentView {
                     && matches!(key.code, KeyCode::Char(c) if c != ' ')
                 {
                     let text = qv.activate_freeform_input();
-                    self.prompt.set_text(&text);
+                    self.prompt.set_text_preserving(&text);
                     let _ = self.prompt.handle_key(key);
                     return InputOutcome::Changed;
                 }
@@ -464,7 +428,7 @@ impl AgentView {
                     KeyCode::Char(' ') => {
                         if qv.is_on_freeform_row() {
                             let text = qv.activate_freeform_input();
-                            self.prompt.set_text(&text);
+                            self.prompt.set_text_preserving(&text);
                         } else {
                             let active = qv.active_tab;
                             let cursor = qv.cursor();
@@ -484,7 +448,7 @@ impl AgentView {
                     KeyCode::Enter => {
                         if qv.is_on_freeform_row() {
                             let text = qv.activate_freeform_input();
-                            self.prompt.set_text(&text);
+                            self.prompt.set_text_preserving(&text);
                         } else {
                             let cursor = qv.cursor();
                             let active = qv.active_tab;
@@ -505,7 +469,7 @@ impl AgentView {
                             let freeform_idx = qv.total_items(qv.active_tab).saturating_sub(1);
                             qv.set_cursor(freeform_idx);
                             let text = qv.activate_freeform_input();
-                            self.prompt.set_text(&text);
+                            self.prompt.set_text_preserving(&text);
                         }
                     }
                     KeyCode::Char('l') | KeyCode::Char(']') | KeyCode::Right
@@ -667,11 +631,11 @@ impl AgentView {
                         modifiers: mouse.modifiers,
                     };
                     let _ = self.prompt.handle_mouse(&event);
-                } else if let Some((scroll_top, scroll_bottom)) = self.question_scroll_region {
-                    if mouse.row >= scroll_top && mouse.row < scroll_bottom {
-                        self.apply_question_scroll(delta);
-                    }
-                } else {
+                } else if let Some((scroll_top, scroll_bottom)) = self.question_scroll_region
+                    && mouse.row >= scroll_top
+                    && mouse.row < scroll_bottom
+                {
+                    self.apply_question_scroll(delta);
                 }
                 InputOutcome::Changed
             }
@@ -696,6 +660,11 @@ impl AgentView {
                         .contains((mouse.column, mouse.row).into())
                     {
                         let _ = self.prompt.handle_mouse(mouse);
+                        if self.prompt_click_is_double()
+                            && self.prompt.expand_paste_element_at_cursor()
+                        {
+                            self.prompt.refresh_slash(&self.session.models);
+                        }
                         return InputOutcome::Changed;
                     }
                     self.commit_question_freeform();
@@ -744,7 +713,7 @@ impl AgentView {
                             .get(active_tab)
                             .cloned()
                             .unwrap_or_default();
-                        self.prompt.set_text(&text);
+                        self.prompt.set_text_preserving(&text);
                         qv.focus = crate::views::question_view::QuestionFocus::InputMode;
                     }
                     return InputOutcome::Changed;
@@ -827,7 +796,7 @@ impl AgentView {
                             .get(tab)
                             .cloned()
                             .unwrap_or_default();
-                        self.prompt.set_text(&text);
+                        self.prompt.set_text_preserving(&text);
                         qv.focus = QuestionFocus::InputMode;
                     }
                 }
@@ -1043,21 +1012,29 @@ impl AgentView {
             .get(qv.active_tab)
             .map(|s| s.as_str())
             .unwrap_or("");
-        self.prompt.set_text(new_text);
+        self.prompt.set_text_preserving(new_text);
     }
     /// Dismiss (hide) the question view without submitting answers.
     ///
     /// Restores the original prompt text that was stashed when the question
     /// view opened, so typed "additional context" doesn't leak into the
     /// main prompt. Also clears any stashed (tab-hidden) question view.
-    fn dismiss_question_view(&mut self) {
+    fn dismiss_question_view(&mut self) -> InputOutcome {
+        let is_doctor_fix = self.question_view.as_ref().is_some_and(|qv| {
+            matches!(
+                qv.local_kind,
+                Some(crate::views::question_view::LocalQuestionKind::DoctorFix { .. })
+            )
+        });
+        if is_doctor_fix {
+            return self.submit_question_answers(true);
+        }
         if let Some(qv) = self.question_view.take() {
             self.record_question_pause(&qv);
             self.restore_card_prompt(qv.stashed_prompt);
         }
-        self.hovered_question_item = None;
-        self.inline_prompt_area = None;
-        self.last_question_click = None;
+        self.cleanup_question_state();
+        InputOutcome::Changed
     }
     /// Retract an interaction modal (permission / question / plan-approval) that
     /// another connected client already resolved.
@@ -1077,7 +1054,7 @@ impl AgentView {
             .as_ref()
             .is_some_and(|qv| qv.tool_call_id == tool_call_id)
         {
-            self.dismiss_question_view();
+            let _ = self.dismiss_question_view();
             return true;
         }
         if self
@@ -1179,7 +1156,19 @@ impl AgentView {
         }
         self.record_question_pause(&qv);
         if let Some(kind) = qv.local_kind.take() {
-            let outcome = translate_local_submit(&qv, kind, skipped);
+            let is_doctor_fix = matches!(
+                kind,
+                crate::views::question_view::LocalQuestionKind::DoctorFix { .. }
+            );
+            let outcome = if skipped && is_doctor_fix {
+                let crate::views::question_view::LocalQuestionKind::DoctorFix { target, .. } = kind
+                else {
+                    unreachable!("doctor fix checked above")
+                };
+                InputOutcome::Action(Action::DoctorFixCancelled(target))
+            } else {
+                translate_local_submit(&qv, kind, skipped)
+            };
             self.prompt.restore(qv.stashed_prompt);
             self.cleanup_question_state();
             return outcome;
@@ -1237,6 +1226,7 @@ impl AgentView {
         self.hit_question_scrollbar.clear();
         self.inline_prompt_area = None;
         self.last_question_click = None;
+        self.last_prompt_click_ms = None;
     }
     /// Answer the ACTIVE question of this agent's pending
     /// `AskUserQuestion` from the dashboard peek panel.
@@ -1346,6 +1336,7 @@ mod cancel_turn_mouse_tests {
                 bg_tool_call_to_task: std::collections::HashMap::new(),
                 scheduled_tasks: std::collections::HashMap::new(),
                 in_flight_prompt: None,
+                compact_held_prompt: None,
                 current_prompt_id: None,
                 created_via_new: false,
             },
@@ -1441,6 +1432,28 @@ mod cancel_turn_mouse_tests {
         let mut agent = make_agent();
         let outcome = agent.handle_cancel_turn_mouse(&down(10, 10));
         assert!(matches!(outcome, InputOutcome::Unchanged));
+    }
+    #[test]
+    fn esc_confirm_refreshes_expired_rewind_grace() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use std::time::Instant;
+        let mut agent = make_agent();
+        agent.session.state = AgentState::TurnRunning;
+        setup_panel(&mut agent);
+        agent.rewind_suppress_deadline = Some(Instant::now());
+        let outcome =
+            agent.handle_cancel_turn_key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(
+            matches!(
+                outcome,
+                InputOutcome::Action(Action::CancelTurnChoice(CancelTurnChoice::ContinueToRun))
+            ),
+            "panel Esc must confirm the parent-turn cancel, got {outcome:?}"
+        );
+        assert!(
+            agent.rewind_arm_suppressed(Instant::now()),
+            "the Esc-confirmed cancel must refresh the post-cancel grace"
+        );
     }
 }
 #[cfg(test)]
@@ -1902,7 +1915,7 @@ mod question_no_freeform_tests {
             id: None,
         }
     }
-    fn open_question(agent: &mut AgentView, no_freeform: bool) {
+    pub(super) fn open_question(agent: &mut AgentView, no_freeform: bool) {
         let state = QuestionViewState::new(
             "tc-upsell".into(),
             vec![upsell_question()],
@@ -1916,7 +1929,7 @@ mod question_no_freeform_tests {
     }
     /// Draw one 80x30 frame so `pane_areas` and `question_scroll_region`
     /// hold the real rendered layout the mouse handler hit-tests against.
-    fn draw_frame(agent: &mut AgentView) {
+    pub(super) fn draw_frame(agent: &mut AgentView) {
         let area = Rect::new(0, 0, 80, 30);
         let reg = ActionRegistry::defaults();
         let bundle = crate::app::bundle::BundleState::default();
@@ -1930,20 +1943,15 @@ mod question_no_freeform_tests {
             &mut scratch,
             None,
             false,
-            0,
-            &[],
-            &std::collections::BTreeSet::new(),
-            None,
+            crate::app::agent_view::BannerSlotParams::none(),
             &bundle,
             false,
             false,
             &mut Vec::new(),
-            false,
-            false,
-            None,
+            crate::app::agent_view::AppRenderParams::default(),
         );
     }
-    fn down(col: u16, row: u16) -> MouseEvent {
+    pub(super) fn down(col: u16, row: u16) -> MouseEvent {
         MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: col,
@@ -1959,7 +1967,7 @@ mod question_no_freeform_tests {
             modifiers: KeyModifiers::empty(),
         }
     }
-    fn qv(agent: &AgentView) -> &QuestionViewState {
+    pub(super) fn qv(agent: &AgentView) -> &QuestionViewState {
         agent.question_view.as_ref().expect("question view open")
     }
     /// Clicking the empty rows under the last option (option gap, footer)

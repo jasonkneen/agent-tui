@@ -1,6 +1,6 @@
 //! Subagent spawn-context inheritance: a child session must inherit the parent's
-//! permission handle and goal-loop gate so policy and run-state can't be bypassed
-//! by delegating to a subagent.
+//! permission handle, goal-loop gate, and configured tool-overrides cutoff so policy,
+//! run-state, and a backtest bound can't be bypassed by delegating to a subagent.
 
 use super::{build_minimal_agent_for_tests, make_test_handle};
 use agent_client_protocol as acp;

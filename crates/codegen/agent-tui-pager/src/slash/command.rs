@@ -29,6 +29,13 @@ pub struct ScheduledTaskPreview {
     pub tag: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DoctorRequest {
+    Report,
+    ListFixes,
+    Fix(crate::diagnostics::DiagnosticId),
+}
+
 /// Result of running a slash command.
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -39,6 +46,8 @@ pub enum CommandResult {
     /// Command handled but was a no-op (e.g., model already selected).
     /// Included for TUI parity. Dispatch treats it identically to Handled.
     HandledNoOp,
+    /// Build or act on TUI doctor state from live app/session inputs.
+    Doctor(DoctorRequest),
     /// Command failed with an error message.
     Error(String),
     /// Command produced a user-visible message.
@@ -189,6 +198,16 @@ pub trait SlashCommand: Send + Sync {
     /// Whether the command accepts arguments at all.
     fn takes_args(&self) -> bool {
         false
+    }
+
+    /// Runtime args contract (e.g. subcommands only for some auth modes).
+    /// Defaults to [`Self::takes_args`]. Dropdown/completion paths only:
+    /// insert text (trailing space), the args-phase snapshot, and argument
+    /// suggestions. Enter-completeness ([`crate::slash::is_command_complete`])
+    /// keys off the static [`Self::takes_args`] / [`Self::args_required`] pair.
+    #[allow(unused_variables)]
+    fn takes_args_now(&self, ctx: &AppCtx) -> bool {
+        self.takes_args()
     }
 
     /// Whether arguments are required for execution.

@@ -293,7 +293,7 @@ impl SubagentsConfig {
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(e) => {
-                tracing::debug!(error = % e, "Failed to read personas directory");
+                tracing::debug!(error = %e, "Failed to read personas directory");
                 return;
             }
         };
@@ -313,20 +313,15 @@ impl SubagentsConfig {
                     Ok(mut persona) => {
                         persona.source_dir = path.parent().map(|p| p.to_path_buf());
                         persona.source_path = Some(path.display().to_string());
-                        tracing::debug!(
-                            persona = % name, "Loaded persona from file"
-                        );
+                        tracing::debug!(persona = %name, "Loaded persona from file");
                         self.personas.insert(name, persona);
                     }
                     Err(e) => {
-                        tracing::warn!(
-                            persona = % name, error = % e,
-                            "Failed to parse persona file"
-                        );
+                        tracing::warn!(persona = %name, error = %e, "Failed to parse persona file");
                     }
                 },
                 Err(e) => {
-                    tracing::warn!(error = % e, "Failed to read persona file");
+                    tracing::warn!(error = %e, "Failed to read persona file");
                 }
             }
         }
@@ -338,7 +333,7 @@ impl SubagentsConfig {
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(e) => {
-                tracing::debug!(error = % e, "Failed to read roles directory");
+                tracing::debug!(error = %e, "Failed to read roles directory");
                 return;
             }
         };
@@ -351,29 +346,30 @@ impl SubagentsConfig {
                 continue;
             };
             if self.roles.contains_key(&name) {
-                tracing::debug!(
-                    role = % name,
-                    "Skipping file-based role, higher-priority config takes precedence"
-                );
+                tracing::debug!(role = %name, "Skipping file-based role, higher-priority config takes precedence");
                 continue;
             }
             match std::fs::read_to_string(&path) {
                 Ok(content) => match toml::from_str::<SubagentRole>(&content) {
                     Ok(mut role) => {
                         role.source_dir = path.parent().map(|p| p.to_path_buf());
-                        tracing::debug!(role = % name, "Loaded role from file");
+                        tracing::debug!(role = %name, "Loaded role from file");
                         self.roles.insert(name, role);
                     }
                     Err(e) => {
                         tracing::warn!(
-                            role = % name, path = % path.display(), error = % e,
+                            role = %name,
+                            path = %path.display(),
+                            error = %e,
                             "Failed to parse role file"
                         );
                     }
                 },
                 Err(e) => {
                     tracing::warn!(
-                        path = % path.display(), error = % e, "Failed to read role file"
+                        path = %path.display(),
+                        error = %e,
+                        "Failed to read role file"
                     );
                 }
             }
@@ -590,13 +586,27 @@ impl SubagentsConfig {
     /// 3. Config file `[subagents]` section
     /// 4. Default (enabled)
     ///
-    /// Subagents are deliberately not remotely gated — only explicit local
+    /// `enabled` is deliberately not remotely gated — only explicit local
     /// intent (CLI flag, `GROK_SUBAGENTS`, `[subagents] enabled`) changes
     /// the default.
     ///
-    /// When `cwd` is provided, file-based roles are discovered from
-    /// `{cwd}/.grok/roles/*.toml` and merged (inline config takes precedence).
-    pub fn resolve(cli_flag: bool, config: &toml::Value, cwd: Option<&std::path::Path>) -> Self {
+    /// Project files are excluded from this trust-independent base; Task
+    /// boundaries overlay them using the parent cwd's authoritative trust verdict.
+    pub fn resolve(cli_flag: bool, config: &toml::Value) -> Self {
+        let user_grok_root = agent_tui_config::user_grok_home();
+        Self::resolve_base_with_sources(
+            cli_flag,
+            config,
+            user_grok_root.as_deref(),
+            &bundle::bundled_root(),
+        )
+    }
+    pub(crate) fn resolve_base_with_sources(
+        cli_flag: bool,
+        config: &toml::Value,
+        user_grok_root: Option<&std::path::Path>,
+        bundled_root: &std::path::Path,
+    ) -> Self {
         let mut result: Self = config
             .get("subagents")
             .and_then(|v| v.clone().try_into().ok())
@@ -610,18 +620,39 @@ impl SubagentsConfig {
             true,
         );
         result.enabled = resolved.value;
-        if let Some(cwd) = cwd {
-            result.discover_roles(cwd);
-            result.discover_personas(cwd);
+        if let Some(root) = user_grok_root {
+            result.discover_roles_in_dir(&root.join("roles"));
+            result.discover_personas_in_dir(&root.join("personas"));
         }
-        if let Some(home) = dirs::home_dir() {
-            result.discover_roles(&home);
-            result.discover_personas(&home);
-        }
-        let bundled_root = bundle::bundled_root();
         result.discover_roles_in_dir(&bundled_root.join("roles"));
         result.discover_personas_in_dir(&bundled_root.join("personas"));
         result
+    }
+    pub(crate) fn effective_definition_maps(
+        roles: &std::collections::HashMap<String, SubagentRole>,
+        personas: &std::collections::HashMap<String, SubagentPersona>,
+        cwd: &std::path::Path,
+        project_trusted: bool,
+    ) -> (
+        std::collections::HashMap<String, SubagentRole>,
+        std::collections::HashMap<String, SubagentPersona>,
+    ) {
+        let mut project = Self::default();
+        if project_trusted {
+            project.discover_roles(cwd);
+            project.discover_personas(cwd);
+        }
+        for (name, role) in roles {
+            if role.source_dir.is_none() || !project.roles.contains_key(name) {
+                project.roles.insert(name.clone(), role.clone());
+            }
+        }
+        for (name, persona) in personas {
+            if persona.source_path.is_none() || !project.personas.contains_key(name) {
+                project.personas.insert(name.clone(), persona.clone());
+            }
+        }
+        (project.roles, project.personas)
     }
 }
 /// Managed MCP connector fetching config (`[managed_mcps]` in config.toml).
@@ -889,15 +920,15 @@ impl ToolsConfig {
                     Ok(cfg) if cfg.is_valid() => Some(cfg),
                     Ok(_) => {
                         tracing::warn!(
-                            "tools.zdr_video_output_s3 is present but incomplete; ignoring ZDR video output config"
-                        );
+                                "tools.zdr_video_output_s3 is present but incomplete; ignoring ZDR video output config"
+                            );
                         None
                     }
                     Err(e) => {
                         tracing::warn!(
-                            error = % e,
-                            "tools.zdr_video_output_s3 failed to parse; ignoring ZDR video output config"
-                        );
+                                error = %e,
+                                "tools.zdr_video_output_s3 failed to parse; ignoring ZDR video output config"
+                            );
                         None
                     }
                 }),
@@ -976,12 +1007,12 @@ impl StorageMode {
 pub use agent_tui_config::ConfigLayers;
 pub use agent_tui_config::{
     MDM_REQUIREMENTS_SOURCE, RequirementsLayer, RequirementsSource, ServingIdentity, SyncMarker,
-    claude_managed_settings_probe_path, fail_closed_flag_from_str,
+    claude_managed_settings_probe_path, confirmed_team_switch, confirmed_team_switch_at,
     is_managed_config_hard_stale_for, is_managed_config_stale_for, load_config_file,
     load_from_disk, load_managed_config, load_merged_requirements, load_system_managed_config,
-    load_toml_file, managed_config_identity_changed, managed_deployment_id,
-    managed_policy_compromised_for, mark_managed_config_synced, requirements_layers,
-    system_config_dir, user_grok_home,
+    load_toml_file, managed_config_identity_changed_at, managed_deployment_id,
+    managed_policy_compromised_for, mark_managed_config_synced, mark_managed_config_synced_at,
+    normalize_identity, requirements_layers, system_config_dir, user_grok_home,
 };
 /// Map of "dotted.path" to which config file the value came from.
 pub(crate) fn config_origins(
@@ -1215,10 +1246,11 @@ fn apply_requirements_inner(
     pin_feature!(lsp_tools);
     pin_feature!(web_fetch);
     pin_feature!(ask_user_question);
-    pin_requirement_only!(image_gen);
+    pin_feature!(image_gen);
     pin_requirement_only!(image_edit);
     pin_feature!(video_gen);
     pin_feature!(write_file);
+    pin_feature!(voice_mode);
     pin_requirement_only!(remote_fetch);
     if let Some(val) = req_bool(req, "telemetry", "trace_upload") {
         config.requirements.trace_upload.pin(val, source.clone());
@@ -1272,11 +1304,22 @@ fn apply_requirements_inner(
     enforce_str!("models", "web_search", config.models.web_search);
     enforce_str!("cli", "channel", config.cli.channel);
     enforce_str!("cli", "minimum_version", config.cli.minimum_version);
-    if let Some(val) = req_str(req, "endpoints", "xai_api_base_url")
-        && config.endpoints.xai_api_base_url != val
+    enforce_str!("cli", "maximum_version", config.cli.maximum_version);
+    enforce_str!(
+        "cli",
+        "required_minimum_version",
+        config.cli.required_minimum_version
+    );
+    enforce_str!(
+        "cli",
+        "required_maximum_version",
+        config.cli.required_maximum_version
+    );
+    if let Some(val) = req_str(req, "endpoints", "agent_tui_api_base_url")
+        && config.endpoints.agent_tui_api_base_url != val
     {
-        config.endpoints.xai_api_base_url = val.to_owned();
-        push("endpoints.xai_api_base_url", val.to_owned());
+        config.endpoints.agent_tui_api_base_url = val.to_owned();
+        push("endpoints.agent_tui_api_base_url", val.to_owned());
     }
     if let Some(val) = req_str(req, "endpoints", "cli_chat_proxy_base_url")
         && config.endpoints.cli_chat_proxy_base_url.as_deref() != Some(val)
@@ -1392,8 +1435,8 @@ fn apply_requirements_inner(
     }
     if !enforced.is_empty() {
         tracing::info!(
-            enforced = ? enforced.iter().map(| e | e.to_string()).collect::< Vec < _ >>
-            (), "deployment requirements enforced"
+            enforced = ?enforced.iter().map(|e| e.to_string()).collect::<Vec<_>>(),
+            "deployment requirements enforced"
         );
     }
     enforced
@@ -1436,6 +1479,11 @@ pub fn apply_sandbox(
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     #[cfg(target_os = "linux")]
     let requires_read_deny = agent_tui_sandbox::requires_read_deny(&sandbox_profile, &workspace);
+    #[cfg(target_os = "linux")]
+    let requires_hook_write_deny =
+        agent_tui_sandbox::requires_hook_write_deny(&sandbox_profile, &workspace);
+    #[cfg(target_os = "linux")]
+    let requires_bwrap = requires_read_deny || requires_hook_write_deny;
     #[cfg(target_os = "linux")]
     {
         let refuse_unprotected = |cause: &str| {
@@ -1483,10 +1531,14 @@ pub fn apply_sandbox(
             None => {}
         }
     }
-    agent_tui_sandbox::warn_sandbox_profile_conflicts(&workspace);
     if sandbox_profile != agent_tui_sandbox::ProfileName::Off {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let is_custom = matches!(sandbox_profile, agent_tui_sandbox::ProfileName::Custom(_));
+        let requires_protection = {
+            let is_custom = matches!(sandbox_profile, agent_tui_sandbox::ProfileName::Custom(_));
+            let needs_hooks =
+                agent_tui_sandbox::requires_hook_write_deny(&sandbox_profile, &workspace);
+            is_custom || needs_hooks
+        };
         let mut sandbox = agent_tui_sandbox::SandboxManager::new(sandbox_profile, &workspace);
         if let Err(e) = sandbox.apply(&workspace) {
             eprintln!("warning: sandbox could not be applied: {e}");
@@ -1494,16 +1546,28 @@ pub fn apply_sandbox(
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             #[cfg(target_os = "macos")]
-            let unappliable_custom = is_custom && !sandbox.is_applied();
+            let unappliable = requires_protection && !sandbox.is_applied();
             #[cfg(target_os = "linux")]
-            let unappliable_custom =
-                is_custom && !sandbox.is_applied() && !agent_tui_sandbox::is_inside_bwrap();
-            if unappliable_custom {
+            let unappliable = requires_protection
+                && !sandbox.is_applied()
+                && !agent_tui_sandbox::is_inside_bwrap();
+            if unappliable {
                 eprintln!(
                     "error: could not apply the '{}' sandbox profile; see the \
                      warning above for the cause. Refusing to start with its \
                      protections missing.",
                     sandbox.profile()
+                );
+                std::process::exit(1);
+            }
+            #[cfg(target_os = "linux")]
+            if requires_hook_write_deny
+                && agent_tui_sandbox::is_inside_bwrap()
+                && let Err(e) = agent_tui_sandbox::verify_hook_write_deny_enforced()
+            {
+                eprintln!(
+                    "error: required hook write-deny mounts not verified after apply ({e}); \
+                     refusing to start"
                 );
                 std::process::exit(1);
             }

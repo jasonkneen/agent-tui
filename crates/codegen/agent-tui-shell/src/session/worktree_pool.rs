@@ -40,7 +40,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use agent_tui_fast_worktree::{WorktreeBuilder, WorktreeSync};
 
-const WORKTREE_POOL_LOG: &str = "xai_worktree_pool";
+const WORKTREE_POOL_LOG: &str = "agent_tui_worktree_pool";
 use crate::util::config::PoolConfig;
 use crate::util::grok_home::grok_home;
 

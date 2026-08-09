@@ -242,6 +242,7 @@ fn client_identifier_allowlist_is_pinned() {
         "grok-web",
         "grok-desktop",
         "grok-code-extension",
+        "grok-agent-sdk",
         "nebula",
         "zed",
     ];
@@ -822,6 +823,8 @@ fn contextual_tip_maps_every_tip_and_action() {
         (K::SmallScreen, A::Accepted, "small_screen", "accepted"),
         (K::WordSelect, A::Shown, "word_select", "shown"),
         (K::WordSelect, A::Accepted, "word_select", "accepted"),
+        (K::SshWrap, A::Shown, "ssh_wrap", "shown"),
+        (K::SshWrap, A::Accepted, "ssh_wrap", "accepted"),
     ];
     for (tip, action, tip_label, action_label) in cases {
         let stream = build(gates_off());
@@ -1021,8 +1024,8 @@ fn redacting_log_exporter_drops_record_with_unknown_key() {
 // Remote policy: tighten-only
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[test]
-fn remote_force_disable_stops_emission() {
+#[tokio::test(flavor = "current_thread")]
+async fn remote_force_disable_stops_emission() {
     let stream = build(gates_off());
     super::apply_remote_policy_on(
         &stream.ext,
@@ -1037,8 +1040,8 @@ fn remote_force_disable_stops_emission() {
     );
 }
 
-#[test]
-fn remote_gate_lock_forces_gates_off_and_never_on() {
+#[tokio::test(flavor = "current_thread")]
+async fn remote_gate_lock_forces_gates_off_and_never_on() {
     let stream = build(gates_all_on());
     super::apply_remote_policy_on(
         &stream.ext,

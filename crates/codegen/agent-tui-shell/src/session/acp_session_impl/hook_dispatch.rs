@@ -9,7 +9,9 @@ pub(super) fn turn_result_to_hook_outcome(
 ) -> agent_tui_tool_protocol::turn_hook::TurnHookOutcome {
     use agent_tui_tool_protocol::turn_hook::TurnHookOutcome;
     match result {
-        Ok(TurnOutcome::Completed { .. }) => TurnHookOutcome::Completed,
+        Ok(TurnOutcome::Completed { .. }) | Ok(TurnOutcome::StationarityEnded { .. }) => {
+            TurnHookOutcome::Completed
+        }
         Ok(TurnOutcome::Cancelled { .. }) | Ok(TurnOutcome::MaxTurnsReached { .. }) => {
             TurnHookOutcome::Cancelled
         }
@@ -21,7 +23,7 @@ pub(super) fn turn_result_to_hook_outcome(
 /// as its bare snake_case wire string for the `after_turn` hook payload.
 /// Deliberately `serde_json::to_value` + `as_str`, NOT `to_string` — the
 /// latter yields the quoted form and fails the workspace decode.
-pub(super) fn cancellation_category_wire_string(
+pub(super) fn cancellation_category_to_wire_string(
     category: Option<crate::session::events::CancellationCategory>,
 ) -> Option<String> {
     let category = category?;
@@ -147,6 +149,19 @@ impl SessionActor {
                     HookRunResult::Skipped { hook_name } => {
                         (hook_name.clone(), HookRunStatusDto::Skipped)
                     }
+                    HookRunResult::Blocked {
+                        hook_name,
+                        detail,
+                        elapsed,
+                        ..
+                    } => (
+                        hook_name.clone(),
+                        HookRunStatusDto::Failed {
+                            error: detail.clone(),
+                            elapsed_ms: elapsed.as_millis() as u64,
+                            blocked: true,
+                        },
+                    ),
                     HookRunResult::Failed {
                         hook_name,
                         error,
@@ -157,6 +172,7 @@ impl SessionActor {
                         HookRunStatusDto::Failed {
                             error: error.clone(),
                             elapsed_ms: elapsed.as_millis() as u64,
+                            blocked: false,
                         },
                     ),
                 };
@@ -253,6 +269,13 @@ impl SessionActor {
                     elapsed,
                     agent_tui_telemetry::events::HookOutcome::Success,
                 ),
+                agent_tui_hooks::result::HookRunResult::Blocked {
+                    hook_name, elapsed, ..
+                } => (
+                    hook_name,
+                    elapsed,
+                    agent_tui_telemetry::events::HookOutcome::Blocked,
+                ),
                 agent_tui_hooks::result::HookRunResult::Failed {
                     hook_name, elapsed, ..
                 } => (
@@ -281,8 +304,8 @@ mod notification_hook_filter_tests {
     };
 
     #[test]
-    fn hook_execution_does_not_fire_notification_hook() {
-        let update = XaiSessionUpdate::HookExecution {
+    fn hook_updates_do_not_fire_notification_hook() {
+        let execution = XaiSessionUpdate::HookExecution {
             event_name: "pre_tool_use".into(),
             tool_name: Some("read_file".into()),
             prompt_id: None,
@@ -292,15 +315,12 @@ mod notification_hook_filter_tests {
                 output: None,
             }],
         };
-        assert!(notification_hook_for_update(&update).is_none());
-    }
+        assert!(notification_hook_for_update(&execution).is_none());
 
-    #[test]
-    fn hook_annotation_does_not_fire_notification_hook() {
-        let update = XaiSessionUpdate::HookAnnotation {
+        let annotation = XaiSessionUpdate::HookAnnotation {
             message: "running hooks".into(),
         };
-        assert!(notification_hook_for_update(&update).is_none());
+        assert!(notification_hook_for_update(&annotation).is_none());
     }
 
     #[test]

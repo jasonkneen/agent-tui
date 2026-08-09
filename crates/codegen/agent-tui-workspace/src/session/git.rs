@@ -63,7 +63,7 @@ pub struct DiffSizeExceededFile {
 /// *required* for the requested operation (e.g. `git add`, `git commit`) are
 /// unaffected.  See `git(1)` and `GIT_OPTIONAL_LOCKS`.
 pub async fn git_cli(cwd: &Path, args: &[&str]) -> Result<String> {
-    tracing::debug!(cwd = % cwd.display(), args = ? args, "git_cli");
+    tracing::debug!(cwd = %cwd.display(), args = ?args, "git_cli");
     let mut cmd = Command::new("git");
     cmd.current_dir(cwd).arg("--no-optional-locks");
     for &(key, val) in agent_tui_tty_utils::GIT_AUTH_SUPPRESSION_ENVS.iter() {
@@ -76,7 +76,9 @@ pub async fn git_cli(cwd: &Path, args: &[&str]) -> Result<String> {
         Ok(o) => o,
         Err(e) => {
             tracing::error!(
-                error = % e, error_kind = ? e.kind(), cwd = % cwd.display(),
+                error = %e,
+                error_kind = ?e.kind(),
+                cwd = %cwd.display(),
                 "git_cli: Command::output() FAILED (spawn error)"
             );
             return Err(e.into());
@@ -89,7 +91,7 @@ pub async fn git_cli(cwd: &Path, args: &[&str]) -> Result<String> {
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let code = output.status.code();
-        tracing::debug!(exit_code = ? code, stderr = % stderr, "git_cli failed");
+        tracing::debug!(exit_code = ?code, stderr = %stderr, "git_cli failed");
         Err(anyhow::anyhow!(
             "{}",
             if stderr.is_empty() {
@@ -125,7 +127,7 @@ pub async fn jj_cli_mut(cwd: &Path, args: &[&str]) -> Result<String> {
     jj_cli_inner(cwd, args, false).await
 }
 async fn jj_cli_inner(cwd: &Path, args: &[&str], ignore_wc: bool) -> Result<String> {
-    tracing::debug!(cwd = % cwd.display(), args = ? args, ignore_wc, "jj_cli");
+    tracing::debug!(cwd = %cwd.display(), args = ?args, ignore_wc, "jj_cli");
     let mut cmd = Command::new("jj");
     cmd.current_dir(cwd)
         .stderr(std::process::Stdio::piped())
@@ -138,7 +140,9 @@ async fn jj_cli_inner(cwd: &Path, args: &[&str], ignore_wc: bool) -> Result<Stri
         Ok(o) => o,
         Err(e) => {
             tracing::error!(
-                error = % e, error_kind = ? e.kind(), cwd = % cwd.display(),
+                error = %e,
+                error_kind = ?e.kind(),
+                cwd = %cwd.display(),
                 "jj_cli_inner: Command::output() FAILED (spawn error)"
             );
             return Err(e.into());
@@ -148,13 +152,20 @@ async fn jj_cli_inner(cwd: &Path, args: &[&str], ignore_wc: bool) -> Result<Stri
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !stderr.is_empty() {
-            tracing::warn!(cwd = % cwd.display(), "jj_cli success with stderr warnings");
+            tracing::warn!(
+                cwd = %cwd.display(),
+                "jj_cli success with stderr warnings"
+            );
         }
         tracing::debug!(exit_code = 0, stdout_len = stdout.len(), "jj_cli success");
         Ok(stdout)
     } else {
         let code = output.status.code();
-        tracing::warn!(cwd = % cwd.display(), exit_code = ? code, "jj_cli FAILED");
+        tracing::warn!(
+            cwd = %cwd.display(),
+            exit_code = ?code,
+            "jj_cli FAILED"
+        );
         Err(anyhow::anyhow!(
             "{}",
             if stderr.is_empty() {
@@ -1183,9 +1194,7 @@ async fn status_via_cli(
     let root = root_res.ok().map(|s| s.trim_end_matches('/').to_string());
     let git_dir = git_dir_res.ok();
     let common_dir = common_dir_res.ok();
-    let is_worktree = matches!(
-        (& git_dir, & common_dir), (Some(gd), Some(cd)) if gd != cd
-    );
+    let is_worktree = matches!((&git_dir, &common_dir), (Some(gd), Some(cd)) if gd != cd);
     let main_root = if is_worktree {
         common_dir.and_then(|d| {
             let p = PathBuf::from(&d);
@@ -1233,8 +1242,12 @@ async fn status_via_cli(
         unstaged,
     };
     tracing::debug!(
-        root = ? data.root, branch = ? data.branch, staged = data.staged.len(), unstaged
-        = data.unstaged.len(), elapsed = ? start.elapsed(), "git.status (CLI fallback)"
+        root = ?data.root,
+        branch = ?data.branch,
+        staged = data.staged.len(),
+        unstaged = data.unstaged.len(),
+        elapsed = ?start.elapsed(),
+        "git.status (CLI fallback)"
     );
     Ok(data)
 }
@@ -1402,14 +1415,19 @@ async fn status_ungated(
     let libgit2_err = match &result {
         Ok(data) => {
             tracing::debug!(
-                root = ? data.root, branch = ? data.branch, staged = data.staged.len(),
-                unstaged = data.unstaged.len(), elapsed = ? start.elapsed(), "git.status"
+                root = ?data.root,
+                branch = ?data.branch,
+                staged = data.staged.len(),
+                unstaged = data.unstaged.len(),
+                elapsed = ?start.elapsed(),
+                "git.status"
             );
             return result;
         }
         Err(e) => {
             tracing::warn!(
-                error = % e, elapsed = ? start.elapsed(),
+                error = %e,
+                elapsed = ?start.elapsed(),
                 "git.status: libgit2 failed, falling back to CLI"
             );
             e.to_string()
@@ -1488,12 +1506,14 @@ pub async fn read_files(
     match &result {
         Ok(data) => {
             tracing::debug!(
-                files = data.files.len(), errors = data.errors.len(), elapsed = ? start
-                .elapsed(), "git.files"
+                files = data.files.len(),
+                errors = data.errors.len(),
+                elapsed = ?start.elapsed(),
+                "git.files"
             )
         }
         Err(e) => {
-            tracing::debug!(error = % e, elapsed = ? start.elapsed(), "git.files failed")
+            tracing::debug!(error = %e, elapsed = ?start.elapsed(), "git.files failed")
         }
     }
     result
@@ -1569,7 +1589,8 @@ async fn diffs_ungated(
                 Some(oid) => oid.to_string(),
                 None => {
                     tracing::warn!(
-                        from = % from, to = % to,
+                        from = %from,
+                        to = %to,
                         "git.diffs: could not compute merge-base, falling back to direct diff"
                     );
                     from.clone()
@@ -1651,12 +1672,10 @@ async fn diffs_ungated(
     .await?;
     match &result {
         Ok(data) => {
-            tracing::debug!(
-                files = data.files.len(), elapsed = ? start.elapsed(), "git.diffs"
-            )
+            tracing::debug!(files = data.files.len(), elapsed = ?start.elapsed(), "git.diffs")
         }
         Err(e) => {
-            tracing::debug!(error = % e, elapsed = ? start.elapsed(), "git.diffs failed")
+            tracing::debug!(error = %e, elapsed = ?start.elapsed(), "git.diffs failed")
         }
     }
     result
@@ -1712,9 +1731,7 @@ pub async fn stage(git_root: &Path, paths: Option<Vec<String>>) -> Result<StageD
         args.extend(paths_to_stage.iter().map(String::as_str));
         git_cli_mut(git_root, &args).await
     };
-    tracing::debug!(
-        paths = paths_to_stage.len(), elapsed = ? start.elapsed(), "git.stage"
-    );
+    tracing::debug!(paths = paths_to_stage.len(), elapsed = ?start.elapsed(), "git.stage");
     result.map(|_| StageData {
         paths: paths_to_stage,
     })
@@ -1730,8 +1747,9 @@ pub async fn unstage(git_root: &Path, paths: Option<Vec<String>>) -> Result<()> 
         _ => git_cli_mut(git_root, &["reset", "HEAD"]).await,
     };
     tracing::debug!(
-        paths = paths.as_ref().map(| v | v.len()).unwrap_or(0), elapsed = ? start
-        .elapsed(), "git.unstage"
+        paths = paths.as_ref().map(|v| v.len()).unwrap_or(0),
+        elapsed = ?start.elapsed(),
+        "git.unstage"
     );
     result.map(|_| ())
 }
@@ -1777,7 +1795,7 @@ pub async fn discard(
         }
         git_cli_mut(git_root, &args).await?;
     }
-    tracing::debug!(paths = path_refs.len(), elapsed = ? start.elapsed(), "git.discard");
+    tracing::debug!(paths = path_refs.len(), elapsed = ?start.elapsed(), "git.discard");
     Ok(())
 }
 pub async fn stash(git_root: &Path, include_untracked: bool) -> Result<()> {
@@ -1793,13 +1811,14 @@ pub async fn stash(git_root: &Path, include_untracked: bool) -> Result<()> {
 /// Tracing target used by all `--restore-code` log lines that are NOT
 /// scoped to a specific worktree subsystem. Operators filter on this to
 /// find restore-code-related warnings.
-pub const RESTORE_CODE_LOG: &str = "xai_restore_code";
+pub const RESTORE_CODE_LOG: &str = "agent_tui_restore_code";
 /// Emit the "session registry disabled" warning shared by both the
 /// worktree and non-worktree `--restore-code` paths. Centralised so a
 /// future refactor cannot silently downgrade one site to `debug!`.
 pub fn warn_registry_disabled_restore(session_id: &str) {
     tracing::warn!(
-        target : RESTORE_CODE_LOG, session_id,
+        target: RESTORE_CODE_LOG,
+        session_id,
         "session registry disabled — staged/unstaged/untracked will not be restored"
     );
 }
@@ -1882,8 +1901,11 @@ pub async fn stash_before_destructive_op(
     }
     if let Some(reason) = in_progress_state_reason(git_root) {
         tracing::warn!(
-            target : RESTORE_CODE_LOG, path = % git_root.display(), label, session_id,
-            reason = % reason,
+            target: RESTORE_CODE_LOG,
+            path = %git_root.display(),
+            label,
+            session_id,
+            reason = %reason,
             "stash_before_destructive_op: skipping stash (in-progress operation detected)"
         );
         return StashOutcome::Skipped(reason);
@@ -1901,8 +1923,11 @@ pub async fn stash_before_destructive_op(
     {
         let reason = format!("git stash failed: {e}");
         tracing::warn!(
-            target : RESTORE_CODE_LOG, path = % git_root.display(), label, session_id,
-            error = % e,
+            target: RESTORE_CODE_LOG,
+            path = %git_root.display(),
+            label,
+            session_id,
+            error = %e,
             "stash_before_destructive_op: stash failed, continuing without stash"
         );
         return StashOutcome::Skipped(reason);
@@ -1911,8 +1936,11 @@ pub async fn stash_before_destructive_op(
         Ok(s) if !s.trim().is_empty() => {
             let stash_ref = s.trim().to_owned();
             tracing::info!(
-                target : RESTORE_CODE_LOG, path = % git_root.display(), label,
-                session_id, stash_ref = % stash_ref,
+                target: RESTORE_CODE_LOG,
+                path = %git_root.display(),
+                label,
+                session_id,
+                stash_ref = %stash_ref,
                 "stash_before_destructive_op: dirty state stashed"
             );
             StashOutcome::Stashed(stash_ref)
@@ -1920,7 +1948,9 @@ pub async fn stash_before_destructive_op(
         _ => {
             let reason = "git rev-parse stash@{0} returned empty or failed".to_owned();
             tracing::warn!(
-                target : RESTORE_CODE_LOG, path = % git_root.display(), label,
+                target: RESTORE_CODE_LOG,
+                path = %git_root.display(),
+                label,
                 session_id,
                 "stash_before_destructive_op: could not capture stash ref after push"
             );
@@ -1950,7 +1980,8 @@ pub async fn checkout_session_commit(
         && current.trim() == target_sha
     {
         tracing::debug!(
-            path = % git_root.display(), commit = % target_sha,
+            path = %git_root.display(),
+            commit = %target_sha,
             "checkout_session_commit: already at target commit"
         );
         return CheckoutSessionOutcome {
@@ -1977,8 +2008,10 @@ pub async fn checkout_session_commit(
         .is_ok()
     {
         tracing::info!(
-            path = % git_root.display(), commit = % target_sha, stash_ref = ? outcome
-            .stash_ref, "checkout_session_commit: checked out session HEAD"
+            path = %git_root.display(),
+            commit = %target_sha,
+            stash_ref = ?outcome.stash_ref,
+            "checkout_session_commit: checked out session HEAD"
         );
         outcome.checked_out = true;
         return outcome;
@@ -2039,14 +2072,17 @@ pub async fn checkout_session_commit(
         .is_ok()
     {
         tracing::info!(
-            path = % git_root.display(), commit = % target_sha, stash_ref = ? outcome
-            .stash_ref, "checkout_session_commit: checked out after fetch"
+            path = %git_root.display(),
+            commit = %target_sha,
+            stash_ref = ?outcome.stash_ref,
+            "checkout_session_commit: checked out after fetch"
         );
         outcome.checked_out = true;
         return outcome;
     }
     tracing::warn!(
-        path = % git_root.display(), commit = % target_sha,
+        path = %git_root.display(),
+        commit = %target_sha,
         "checkout_session_commit: checkout still failed after fetch, giving up"
     );
     outcome
@@ -2360,7 +2396,8 @@ async fn staged_paths(git_root: &Path) -> Option<Vec<PathBuf>> {
         Ok(out) => out,
         Err(e) => {
             tracing::warn!(
-                path = % git_root.display(), error = % e,
+                path = %git_root.display(),
+                error = %e,
                 "staged_paths: `git diff --cached` failed; skipping git-checkpoint \
                  capture for this turn rather than recording an empty staged set"
             );
@@ -2413,7 +2450,8 @@ pub async fn soft_restore_git_state(
 ) -> GitRestoreOutcome {
     let Some(git_root) = resolve_git_root(cwd).await else {
         tracing::warn!(
-            path = % cwd.display(), session_id,
+            path = %cwd.display(),
+            session_id,
             "soft_restore_git_state: aborting — could not resolve git repo root"
         );
         return GitRestoreOutcome {
@@ -2428,7 +2466,9 @@ pub async fn soft_restore_git_state(
         StashOutcome::Stashed(r) => Some(r),
         StashOutcome::Skipped(reason) => {
             tracing::warn!(
-                path = % git_root.display(), session_id, reason = % reason,
+                path = %git_root.display(),
+                session_id,
+                reason = %reason,
                 "soft_restore_git_state: aborting — dirty tree could not be stashed"
             );
             return GitRestoreOutcome {
@@ -2441,18 +2481,23 @@ pub async fn soft_restore_git_state(
     };
     if let Err(e) = git_cli_mut(&git_root, &["reset", "--soft", &git_ref.head]).await {
         tracing::warn!(
-            path = % git_root.display(), session_id, commit = % git_ref.head, error = %
-            e, "soft_restore_git_state: reset --soft failed"
+            path = %git_root.display(),
+            session_id,
+            commit = %git_ref.head,
+            error = %e,
+            "soft_restore_git_state: reset --soft failed"
         );
         let stash_ref = match stash_ref {
             Some(stash) => match git_cli_mut(&git_root, &["stash", "pop"]).await {
                 Ok(_) => None,
                 Err(pop_err) => {
                     tracing::warn!(
-                        path = % git_root.display(), session_id, stash_ref = % stash,
-                        error = % pop_err,
+                        path = %git_root.display(),
+                        session_id,
+                        stash_ref = %stash,
+                        error = %pop_err,
                         "soft_restore_git_state: could not restore stashed changes after a \
-                     failed reset; uncommitted work remains in the stash"
+                         failed reset; uncommitted work remains in the stash"
                     );
                     Some(stash)
                 }
@@ -2470,7 +2515,9 @@ pub async fn soft_restore_git_state(
         Ok(_) => true,
         Err(e) => {
             tracing::warn!(
-                path = % git_root.display(), session_id, error = % e,
+                path = %git_root.display(),
+                session_id,
+                error = %e,
                 "soft_restore_git_state: `git reset -- .` (unstage) failed; staged path \
                  set may not match the recorded checkpoint"
             );
@@ -2478,8 +2525,11 @@ pub async fn soft_restore_git_state(
         }
     };
     tracing::info!(
-        path = % git_root.display(), session_id, commit = % git_ref.head, staged =
-        git_ref.staged.len(), stash_ref = ? stash_ref,
+        path = %git_root.display(),
+        session_id,
+        commit = %git_ref.head,
+        staged = git_ref.staged.len(),
+        stash_ref = ?stash_ref,
         "soft_restore_git_state: soft-restored HEAD and unstaged; staged paths re-applied post-FS-revert"
     );
     GitRestoreOutcome {
@@ -2500,7 +2550,8 @@ pub async fn restage_git_paths(cwd: &Path, git_ref: &GitStateRef, session_id: &s
     }
     let Some(git_root) = resolve_git_root(cwd).await else {
         tracing::warn!(
-            path = % cwd.display(), session_id,
+            path = %cwd.display(),
+            session_id,
             "restage_git_paths: could not resolve git repo root; staged path set not restored"
         );
         return false;
@@ -2517,7 +2568,9 @@ pub async fn restage_git_paths(cwd: &Path, git_ref: &GitStateRef, session_id: &s
         return true;
     }
     tracing::debug!(
-        path = % git_root.display(), session_id, total = git_ref.staged.len(),
+        path = %git_root.display(),
+        session_id,
+        total = git_ref.staged.len(),
         "restage_git_paths: batched `git add` failed; falling back to per-path best-effort"
     );
     let mut failed_adds = 0usize;
@@ -2532,8 +2585,10 @@ pub async fn restage_git_paths(cwd: &Path, git_ref: &GitStateRef, session_id: &s
     }
     if failed_adds > 0 {
         tracing::debug!(
-            path = % git_root.display(), session_id, failed_adds, total = git_ref.staged
-            .len(),
+            path = %git_root.display(),
+            session_id,
+            failed_adds,
+            total = git_ref.staged.len(),
             "restage_git_paths: some recorded staged paths could not be re-added \
              (typically removed during the turn; best-effort)"
         );
@@ -3025,28 +3080,28 @@ mod tests {
     use super::*;
     #[test]
     fn strip_url_credentials_removes_token() {
-        let url_with_token = "https://x-access-token:secret-token@github.com/xai-org/example.git";
+        let url_with_token = "https://x-access-token:secret-token@github.com/agent-tui-org/example.git";
         assert_eq!(
             strip_url_credentials(url_with_token),
-            "https://github.com/xai-org/example.git"
+            "https://github.com/agent-tui-org/example.git"
         );
     }
     #[test]
     fn strip_url_credentials_preserves_clean_https_url() {
-        let clean_url = "https://github.com/xai-org/example.git";
+        let clean_url = "https://github.com/agent-tui-org/example.git";
         assert_eq!(strip_url_credentials(clean_url), clean_url);
     }
     #[test]
     fn strip_url_credentials_preserves_ssh_url() {
-        let ssh_url = "git@github.com:xai-org/example.git";
+        let ssh_url = "git@github.com:agent-tui-org/example.git";
         assert_eq!(strip_url_credentials(ssh_url), ssh_url);
     }
     #[test]
     fn strip_url_credentials_removes_username_password() {
-        let url_with_creds = "https://alice:secret@github.com/xai-org/example.git";
+        let url_with_creds = "https://alice:secret@github.com/agent-tui-org/example.git";
         assert_eq!(
             strip_url_credentials(url_with_creds),
-            "https://github.com/xai-org/example.git"
+            "https://github.com/agent-tui-org/example.git"
         );
     }
     #[test]
@@ -3077,12 +3132,12 @@ mod tests {
         let repo = git2::Repository::init(tmp.path()).unwrap();
         repo.remote(
             "origin",
-            "https://x-access-token:secret-token@github.com/xai-org/example.git",
+            "https://x-access-token:secret-token@github.com/agent-tui-org/example.git",
         )
         .unwrap();
-        repo.remote("backup", "https://gitlab.com/xai-org/example.git")
+        repo.remote("backup", "https://gitlab.com/agent-tui-org/example.git")
             .unwrap();
-        repo.remote("duplicate", "https://github.com/xai-org/example.git")
+        repo.remote("duplicate", "https://github.com/agent-tui-org/example.git")
             .unwrap();
         let metadata = resolve_persisted_session_git_metadata_sync(tmp.path());
         assert_eq!(
@@ -3092,8 +3147,8 @@ mod tests {
         assert_eq!(
             metadata.git_remotes,
             vec![
-                "https://github.com/xai-org/example.git".to_string(),
-                "https://gitlab.com/xai-org/example.git".to_string(),
+                "https://github.com/agent-tui-org/example.git".to_string(),
+                "https://gitlab.com/agent-tui-org/example.git".to_string(),
             ]
         );
     }
@@ -3101,7 +3156,7 @@ mod tests {
     fn test_resolve_persisted_session_git_metadata_captures_head() {
         let tmp = tempfile::tempdir().unwrap();
         let repo = git2::Repository::init(tmp.path()).unwrap();
-        repo.remote("origin", "https://github.com/xai-org/example.git")
+        repo.remote("origin", "https://github.com/agent-tui-org/example.git")
             .unwrap();
         let metadata = resolve_persisted_session_git_metadata_sync(tmp.path());
         assert!(metadata.head_commit.is_none());
@@ -3155,7 +3210,7 @@ mod tests {
         let main_path = tmp.path().join("main-repo");
         std::fs::create_dir_all(&main_path).unwrap();
         let repo = git2::Repository::init(&main_path).unwrap();
-        repo.remote("origin", "https://github.com/xai-org/example.git")
+        repo.remote("origin", "https://github.com/agent-tui-org/example.git")
             .unwrap();
         {
             let mut index = repo.index().unwrap();
@@ -3188,7 +3243,7 @@ mod tests {
         );
         assert_eq!(
             metadata.git_remotes,
-            vec!["https://github.com/xai-org/example.git".to_string()],
+            vec!["https://github.com/agent-tui-org/example.git".to_string()],
         );
     }
     #[test]
@@ -3691,84 +3746,84 @@ mod tests {
     #[test]
     fn normalize_ssh_scp_url() {
         assert_eq!(
-            normalize_repo_url("git@github.com:xai-org/example.git"),
-            Some("github.com/xai-org/example".into()),
+            normalize_repo_url("git@github.com:agent-tui-org/example.git"),
+            Some("github.com/agent-tui-org/example".into()),
         );
     }
     #[test]
     fn normalize_https_url() {
         assert_eq!(
-            normalize_repo_url("https://github.com/xai-org/example.git"),
-            Some("github.com/xai-org/example".into()),
+            normalize_repo_url("https://github.com/agent-tui-org/example.git"),
+            Some("github.com/agent-tui-org/example".into()),
         );
     }
     #[test]
     fn normalize_ssh_and_https_produce_same_result() {
-        let ssh = normalize_repo_url("git@github.com:xai-org/example.git");
-        let https = normalize_repo_url("https://github.com/xai-org/example.git");
+        let ssh = normalize_repo_url("git@github.com:agent-tui-org/example.git");
+        let https = normalize_repo_url("https://github.com/agent-tui-org/example.git");
         assert_eq!(ssh, https);
     }
     #[test]
     fn normalize_https_without_git_suffix() {
         assert_eq!(
-            normalize_repo_url("https://github.com/xai-org/example"),
-            Some("github.com/xai-org/example".into()),
+            normalize_repo_url("https://github.com/agent-tui-org/example"),
+            Some("github.com/agent-tui-org/example".into()),
         );
     }
     #[test]
     fn normalize_https_with_credentials() {
         assert_eq!(
-            normalize_repo_url("https://x-access-token:secret@github.com/xai-org/example.git"),
-            Some("github.com/xai-org/example".into()),
+            normalize_repo_url("https://x-access-token:secret@github.com/agent-tui-org/example.git"),
+            Some("github.com/agent-tui-org/example".into()),
         );
     }
     #[test]
     fn normalize_ssh_scheme_url() {
         assert_eq!(
-            normalize_repo_url("ssh://git@github.com/xai-org/example.git"),
-            Some("github.com/xai-org/example".into()),
+            normalize_repo_url("ssh://git@github.com/agent-tui-org/example.git"),
+            Some("github.com/agent-tui-org/example".into()),
         );
     }
     #[test]
     fn normalize_ssh_scheme_with_port() {
         assert_eq!(
-            normalize_repo_url("ssh://git@github.com:22/xai-org/example.git"),
-            Some("github.com/xai-org/example".into()),
+            normalize_repo_url("ssh://git@github.com:22/agent-tui-org/example.git"),
+            Some("github.com/agent-tui-org/example".into()),
         );
     }
     #[test]
     fn normalize_git_scheme_url() {
         assert_eq!(
-            normalize_repo_url("git://github.com/xai-org/example.git"),
-            Some("github.com/xai-org/example".into()),
+            normalize_repo_url("git://github.com/agent-tui-org/example.git"),
+            Some("github.com/agent-tui-org/example".into()),
         );
     }
     #[test]
     fn normalize_http_url() {
         assert_eq!(
-            normalize_repo_url("http://github.com/xai-org/example.git"),
-            Some("github.com/xai-org/example".into()),
+            normalize_repo_url("http://github.com/agent-tui-org/example.git"),
+            Some("github.com/agent-tui-org/example".into()),
         );
     }
     #[test]
     fn normalize_strips_trailing_slash() {
         assert_eq!(
-            normalize_repo_url("https://github.com/xai-org/example/"),
-            Some("github.com/xai-org/example".into()),
+            normalize_repo_url("https://github.com/agent-tui-org/example/"),
+            Some("github.com/agent-tui-org/example".into()),
         );
     }
     #[test]
     fn normalize_strips_dot_git_with_trailing_slash() {
         assert_eq!(
-            normalize_repo_url("https://github.com/xai-org/example.git/"),
-            Some("github.com/xai-org/example".into()),
+            normalize_repo_url("https://github.com/agent-tui-org/example.git/"),
+            Some("github.com/agent-tui-org/example".into()),
         );
     }
     #[test]
     fn normalize_lowercases_host() {
         assert_eq!(
-            normalize_repo_url("git@GitHub.COM:xai-org/example.git"),
-            Some("github.com/xai-org/example".into()),
+            normalize_repo_url("git@GitHub.COM:agent-tui-org/example.git"),
+            Some("github.com/agent-tui-org/example".into()),
         );
     }
     #[test]
@@ -3786,22 +3841,22 @@ mod tests {
     #[test]
     fn normalize_git_plus_ssh_scheme() {
         assert_eq!(
-            normalize_repo_url("git+ssh://git@github.com/xai-org/example.git"),
-            Some("github.com/xai-org/example".into()),
+            normalize_repo_url("git+ssh://git@github.com/agent-tui-org/example.git"),
+            Some("github.com/agent-tui-org/example".into()),
         );
     }
     #[test]
     fn normalize_git_plus_https_scheme() {
         assert_eq!(
-            normalize_repo_url("git+https://github.com/xai-org/example.git"),
-            Some("github.com/xai-org/example".into()),
+            normalize_repo_url("git+https://github.com/agent-tui-org/example.git"),
+            Some("github.com/agent-tui-org/example".into()),
         );
     }
     #[test]
     fn normalize_scp_no_user() {
         assert_eq!(
-            normalize_repo_url("github.com:xai-org/example.git"),
-            Some("github.com/xai-org/example".into()),
+            normalize_repo_url("github.com:agent-tui-org/example.git"),
+            Some("github.com/agent-tui-org/example".into()),
         );
     }
     #[test]
@@ -3844,12 +3899,12 @@ mod tests {
     fn resolve_normalized_remote_urls_deduplicates_across_transports() {
         let tmp = tempfile::tempdir().unwrap();
         let repo = git2::Repository::init(tmp.path()).unwrap();
-        repo.remote("origin", "git@github.com:xai-org/example.git")
+        repo.remote("origin", "git@github.com:agent-tui-org/example.git")
             .unwrap();
-        repo.remote("https-mirror", "https://github.com/xai-org/example.git")
+        repo.remote("https-mirror", "https://github.com/agent-tui-org/example.git")
             .unwrap();
         let urls = resolve_normalized_remote_urls(tmp.path());
-        assert_eq!(urls, vec!["github.com/xai-org/example"]);
+        assert_eq!(urls, vec!["github.com/agent-tui-org/example"]);
     }
 }
 #[cfg(test)]

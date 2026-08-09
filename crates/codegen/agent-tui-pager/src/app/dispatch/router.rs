@@ -5,7 +5,7 @@ use super::auth::{
 };
 use super::billing::dispatch_open_supergrok_url;
 use super::ctx::{
-    active_agent_session_id, get_active_agent_mut, navigate_clearing_selection,
+    active_agent_session_id, get_active_agent_mut, navigate_clearing_selection, open_url_or_show,
     sync_sleep_inhibitor, with_active_agent, with_scrollback,
 };
 use super::dashboard::{
@@ -28,6 +28,7 @@ use super::import_claude::{
     dispatch_import_claude_confirm,
 };
 use super::interject::dispatch_interject;
+use super::jump::{dispatch_jump_dismiss, dispatch_jump_picker_select, dispatch_jump_show_picker};
 use super::modes::{
     dispatch_cycle_mode, dispatch_enter_plan_mode, dispatch_show_plan, dispatch_toggle_yolo,
     set_permission_mode, set_plan_mode, set_yolo_mode,
@@ -117,6 +118,23 @@ use crate::app::app_view::{ActiveView, AppView, AuthState};
 use crate::scrollback::types::DisplayMode;
 use crate::views::session_picker::CONTENT_EXPAND_OFFSET;
 use agent_tui_telemetry::session_ctx::log_event;
+pub(super) fn dispatch_copy_auth_url(
+    app: &mut AppView,
+    copy: impl FnOnce(&str) -> crate::clipboard::ClipboardDelivery,
+) -> Vec<Effect> {
+    let AuthState::Authenticating {
+        auth_url: Some(url),
+        ..
+    } = &app.auth_state
+    else {
+        return vec![];
+    };
+    app.auth_clipboard_delivery = Some(copy(url));
+    app.auth_clipboard_feedback_generation = app.auth_clipboard_feedback_generation.wrapping_add(1);
+    vec![Effect::ScheduleClearAuthCopyFeedback {
+        generation: app.auth_clipboard_feedback_generation,
+    }]
+}
 /// Dispatch an action: mutate state, return effects to execute.
 ///
 /// The returned `Vec<Effect>` may be empty (pure state mutation) or contain
@@ -409,6 +427,14 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             }],
             None => vec![],
         },
+        Action::QueueHoldEditShared { id } => match active_agent_session_id(app) {
+            Some(session_id) => vec![Effect::QueueHoldEdit { session_id, id }],
+            None => vec![],
+        },
+        Action::QueueReleaseEditShared { id } => match active_agent_session_id(app) {
+            Some(session_id) => vec![Effect::QueueReleaseEdit { session_id, id }],
+            None => vec![],
+        },
         Action::QueueInterjectShared {
             id,
             expected_version,
@@ -542,7 +568,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             crate::unified_log::info(
                 "mouse_reporting_toggle.dispatch",
                 None,
-                Some(serde_json::json!({ "phase" : "entered_dispatch_arm", })),
+                Some(serde_json::json!({
+                    "phase": "entered_dispatch_arm",
+                })),
             );
             dispatch_toggle_mouse_capture(app);
             vec![]
@@ -586,8 +614,8 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             dispatch_copy_block_content(app);
             vec![]
         }
-        Action::CopyAssistantMessage { n } => {
-            dispatch_copy_assistant_message(app, n);
+        Action::CopyAssistantMessage { n, file_path } => {
+            dispatch_copy_assistant_message(app, n, file_path);
             vec![]
         }
         Action::ExportConversation { file_path } => {
@@ -637,10 +665,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                     surface: agent_tui_telemetry::events::CreditLimitUpsellSurface::InlineCard,
                     choice,
                 });
-                crate::app::link_opener::open_url_if_safe(
-                    &url,
-                    crate::terminal::hyperlinks::SchemeFilter::Standard,
-                );
+                open_url_or_show(app, &url);
             } else {
                 dispatch_open_block_viewer(app);
             }
@@ -669,6 +694,26 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                 server_name,
             }]
         }
+        Action::McpSetupSubmit {
+            server_name,
+            values,
+        } => {
+            let ActiveView::Agent(id) = app.active_view else {
+                return vec![];
+            };
+            let Some(agent) = app.agents.get_mut(&id) else {
+                return vec![];
+            };
+            let Some(session_id) = agent.session.session_id.clone() else {
+                return vec![];
+            };
+            vec![Effect::McpSetupSubmit {
+                agent_id: id,
+                session_id,
+                server_name,
+                values,
+            }]
+        }
         Action::ReloadSkills => {
             let ActiveView::Agent(id) = app.active_view else {
                 return vec![];
@@ -678,14 +723,21 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             };
             if let Some(ref mut modal) = agent.extensions_modal {
                 modal.skills_data = crate::views::extensions_modal::TabDataState::Loading;
+                modal.workflows_data = crate::views::extensions_modal::TabDataState::Loading;
             }
             let Some(session_id) = agent.session.session_id.clone() else {
                 return vec![];
             };
-            vec![Effect::FetchSkillsList {
-                agent_id: id,
-                session_id,
-            }]
+            vec![
+                Effect::FetchSkillsList {
+                    agent_id: id,
+                    session_id: session_id.clone(),
+                },
+                Effect::FetchWorkflowsList {
+                    agent_id: id,
+                    session_id,
+                },
+            ]
         }
         Action::RefreshMcpList => {
             let ActiveView::Agent(id) = app.active_view else {
@@ -851,16 +903,6 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         }
         Action::NextModel => vec![],
         Action::SwitchModel { model_id, effort } => {
-            // External runtimes: local selection only (no Grok ACP switch).
-            match crate::runtime_backend::active() {
-                crate::runtime_backend::RuntimeBackend::Codex
-                | crate::runtime_backend::RuntimeBackend::Claude
-                | crate::runtime_backend::RuntimeBackend::Lazar
-                | crate::runtime_backend::RuntimeBackend::Hermes => {
-                    return set_default_model(app, model_id);
-                }
-                crate::runtime_backend::RuntimeBackend::Grok => {}
-            }
             let ActiveView::Agent(id) = app.active_view else {
                 return vec![];
             };
@@ -937,16 +979,17 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             }
         }
         Action::AnnouncementsOpenCta(surface) => {
-            use crate::terminal::hyperlinks::SchemeFilter;
             if let Some((promo, url)) = crate::views::announcements::promo_cta_target(
                 &app.active_announcements,
                 &app.hidden_announcement_ids,
             ) {
+                let url = url.to_owned();
+                let promo_id = promo.id.clone();
                 log_event(agent_tui_telemetry::events::AnnouncementCtaClicked {
-                    id: promo.id.clone(),
+                    id: promo_id,
                     source: surface,
                 });
-                crate::app::link_opener::open_url_if_safe(url, SchemeFilter::Standard);
+                open_url_or_show(app, &url);
             }
             vec![]
         }
@@ -966,9 +1009,11 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::ShowReleaseNotes { title, content } => {
             dispatch_show_release_notes(app, title, content)
         }
+        Action::OpenTutorial => dispatch_open_tutorial(app),
         Action::RenameSession { title } => dispatch_rename_session(app, title),
         Action::ShowContextInfo => dispatch_show_context_info(app),
         Action::ShowUsage => dispatch_show_usage(app),
+        Action::ManageBilling => dispatch_manage_billing(app),
         Action::ShowQueue => dispatch_show_queue(app),
         Action::ShowTasks => dispatch_show_tasks(app),
         Action::ShowPlan => dispatch_show_plan(app),
@@ -1007,6 +1052,8 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetRespectManualFolds(v) => set_respect_manual_folds(app, v),
         Action::SetDefaultSelectedPermission(s) => set_default_selected_permission(app, s),
         Action::SetHunkTrackerMode(s) => set_hunk_tracker_mode(app, s),
+        Action::SetScreenMode(s) => set_screen_mode(app, s),
+        Action::SetVoiceKeybindEnabled(v) => set_voice_keybind_enabled(app, v),
         Action::SetVoiceCaptureMode(s) => set_voice_capture_mode(app, s),
         Action::SetVoiceSttLanguage(s) => set_voice_stt_language(app, s),
         Action::ToggleTimestamps => dispatch_toggle_timestamps(app),
@@ -1027,6 +1074,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetContextualHintSendNow(v) => set_contextual_hint_send_now(app, v),
         Action::SetContextualHintSmallScreen(v) => set_contextual_hint_small_screen(app, v),
         Action::SetContextualHintWordSelect(v) => set_contextual_hint_word_select(app, v),
+        Action::SetContextualHintSshWrap(v) => set_contextual_hint_ssh_wrap(app, v),
         Action::SetTheme(v) => set_theme(app, v),
         Action::SetAutoDarkTheme(v) => set_auto_dark_theme(app, v),
         Action::SetAutoLightTheme(v) => set_auto_light_theme(app, v),
@@ -1058,7 +1106,6 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::CheckSubscription => vec![Effect::CheckSubscription { verify: None }],
         Action::OpenSupergrokUrl => dispatch_open_supergrok_url(app),
         Action::OpenUrl(url) => {
-            use crate::terminal::hyperlinks::SchemeFilter;
             if url.starts_with("file://") {
                 let opened = url::Url::parse(&url)
                     .ok()
@@ -1070,14 +1117,31 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                     "Could not open file"
                 });
             } else {
-                crate::app::link_opener::open_url_if_safe(&url, SchemeFilter::Standard);
+                open_url_or_show(app, &url);
+            }
+            vec![]
+        }
+        Action::OpenLink(target) => {
+            use crate::render::osc8::LinkTarget;
+            match crate::render::osc8::resolve_link_open_target(&target) {
+                Some(LinkTarget::File(path)) => {
+                    let opened = crate::app::link_opener::open_path(&path);
+                    app.show_toast(if opened {
+                        "Opening in default app\u{2026}"
+                    } else {
+                        "Could not open file"
+                    });
+                }
+                Some(LinkTarget::Url(url)) => {
+                    crate::app::link_opener::open_url(&url);
+                }
+                None => {}
             }
             vec![]
         }
         Action::OpenManagedConnectors => {
-            use crate::terminal::hyperlinks::SchemeFilter;
             let url = crate::views::mcps_modal::managed_connectors_url(app.team_id.as_deref());
-            crate::app::link_opener::open_url_if_safe(&url, SchemeFilter::Standard);
+            open_url_or_show(app, &url);
             vec![]
         }
         Action::OpenNextLink => {
@@ -1088,83 +1152,11 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             with_active_agent(app, |agent| agent.cycle_highlighted_link(false));
             vec![]
         }
-        Action::SetRuntime(backend) => {
-            match crate::runtime_backend::set_active(backend) {
-                Ok(()) => {
-                    let note = match backend {
-                        crate::runtime_backend::RuntimeBackend::Grok => {
-                            // Restore Grok catalog if we had swapped it for Codex.
-                            if let Some(stashed) =
-                                crate::runtime_backend::take_stashed_grok_catalog()
-                            {
-                                app.models = stashed.clone();
-                                if let Some(agent) = get_active_agent_mut(app) {
-                                    agent.session.models = stashed;
-                                }
-                            }
-                            "Runtime: Grok (xAI) — built-in agent".to_string()
-                        }
-                        crate::runtime_backend::RuntimeBackend::Codex => {
-                            "Runtime: Codex — loading models from app-server…".to_string()
-                        }
-                        crate::runtime_backend::RuntimeBackend::Claude => {
-                            "Runtime: Claude — loading models (Claude Code Agent SDK harness)…".to_string()
-                        }
-                        crate::runtime_backend::RuntimeBackend::Lazar => {
-                            "Runtime: Lazar — kernel-reported model".to_string()
-                        }
-                        crate::runtime_backend::RuntimeBackend::Hermes => {
-                            "Runtime: Hermes — config default model".to_string()
-                        }
-                    };
-                    app.show_toast(&note);
-                    if let Some(agent) = get_active_agent_mut(app) {
-                        agent
-                            .scrollback
-                            .push_block(crate::scrollback::block::RenderBlock::system(note));
-                    }
-                    return match backend {
-                        crate::runtime_backend::RuntimeBackend::Codex => {
-                            vec![Effect::RefreshCodexModels]
-                        }
-                        crate::runtime_backend::RuntimeBackend::Claude => {
-                            vec![Effect::RefreshClaudeModels]
-                        }
-                        crate::runtime_backend::RuntimeBackend::Lazar => {
-                            vec![Effect::RefreshLazarModels]
-                        }
-                        crate::runtime_backend::RuntimeBackend::Hermes => {
-                            vec![Effect::RefreshHermesModels]
-                        }
-                        crate::runtime_backend::RuntimeBackend::Grok => vec![],
-                    };
-                }
-                Err(e) => {
-                    app.show_toast(&format!("Couldn't save runtime: {e}"));
-                }
-            }
-            vec![]
-        }
-        Action::RefreshCodexModels => vec![Effect::RefreshCodexModels],
-        Action::RefreshClaudeModels => vec![Effect::RefreshClaudeModels],
-        Action::RefreshLazarModels => vec![Effect::RefreshLazarModels],
-        Action::RefreshHermesModels => vec![Effect::RefreshHermesModels],
         Action::Login => dispatch_login(app),
         Action::CancelLogin => dispatch_cancel_login(app),
         Action::SubmitAuthCode(code) => dispatch_submit_auth_code(app, code),
         Action::CopyAuthUrl => {
-            if let AuthState::Authenticating {
-                auth_url: Some(url),
-                ..
-            } = &app.auth_state
-            {
-                app.auth_clipboard_copied = crate::clipboard::SystemClipboard::try_set(url);
-            }
-            if app.auth_clipboard_copied {
-                vec![Effect::ScheduleClearAuthCopied]
-            } else {
-                vec![]
-            }
+            dispatch_copy_auth_url(app, crate::clipboard::SystemClipboard::try_set)
         }
         Action::ShowRawAuthUrl => {
             app.auth_show_raw_url = true;
@@ -1244,6 +1236,34 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             );
             effects
         }
+        Action::DoctorFixConfirmed { target, plan } => {
+            let Some(target) = super::task_result::current_doctor_target(app, &target) else {
+                super::task_result::deliver_doctor_message(
+                    app,
+                    target.agent_id,
+                    "This fix was cancelled because the session changed. Run `/doctor fix` again."
+                        .to_owned(),
+                );
+                return vec![];
+            };
+            if let Some(agent) = app.agents.get_mut(&target.agent_id) {
+                agent
+                    .scrollback
+                    .push_block(crate::scrollback::block::RenderBlock::system(format!(
+                        "Applying {}…",
+                        plan.id()
+                    )));
+            }
+            vec![Effect::ApplyDoctorFix { target, plan }]
+        }
+        Action::DoctorFixCancelled(target) => {
+            super::task_result::deliver_doctor_message(
+                app,
+                target.agent_id,
+                "Fix cancelled.".to_owned(),
+            );
+            vec![]
+        }
         Action::AgentTypeMismatchAnswered {
             start_new,
             model_id,
@@ -1272,15 +1292,22 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             path,
             refresh_agents_modal,
         } => {
-            if let ActiveView::Agent(id) = app.active_view
-                && let Some(agent) = app.agents.get_mut(&id)
-            {
-                agent.active_modal = None;
+            if app.pending_editor.is_none() {
+                if let ActiveView::Agent(id) = app.active_view
+                    && let Some(agent) = app.agents.get_mut(&id)
+                {
+                    agent.active_modal = None;
+                }
+                app.pending_editor = Some(
+                    crate::app::external_editor::PendingEditorRequest::ConfigFile {
+                        path,
+                        refresh_agents_modal,
+                    },
+                );
             }
-            app.pending_editor_path = Some(path);
-            app.pending_agents_modal_refresh = refresh_agents_modal;
             vec![]
         }
+        Action::EditPromptExternal => super::external_editor::dispatch_edit_prompt_external(app),
         Action::OpenDashboard => dispatch_open_dashboard(app),
         Action::ExitDashboard => dispatch_exit_dashboard(app),
         Action::DashboardAttach(id) => dispatch_dashboard_attach(app, id),
@@ -1297,14 +1324,6 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::DashboardCancelRename => {
             if let Some(d) = app.dashboard.as_mut() {
                 d.rename = None;
-            }
-            vec![]
-        }
-        Action::DashboardRenameInput(text) => {
-            if let Some(d) = app.dashboard.as_mut()
-                && let Some(rn) = d.rename.as_mut()
-            {
-                rn.draft = text;
             }
             vec![]
         }
@@ -1409,6 +1428,21 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             });
             vec![]
         }
+        Action::ToggleWorkflows => {
+            let opening = matches!(app.active_view, ActiveView::Agent(id) if app.agents.get(&id).is_some_and(|agent| !agent.show_workflows));
+            if opening {
+                app.scroll_state.cancel_stream();
+                app.last_scroll_pos = None;
+            }
+            with_active_agent(app, |agent| {
+                agent.show_workflows = !agent.show_workflows;
+                if agent.show_workflows {
+                    agent.workflows_view.reset();
+                    agent.show_goal_detail = false;
+                }
+            });
+            vec![]
+        }
         Action::Rewind => dispatch_rewind(app),
         Action::RewindShowPicker => dispatch_rewind_show_picker(app),
         Action::RewindPickerSelect(prompt_index) => {
@@ -1420,6 +1454,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::RewindDismiss => dispatch_rewind_dismiss(app),
         Action::RewindDismissError => dispatch_rewind_dismiss_error(app),
         Action::InlineEditSubmit => dispatch_inline_edit_submit(app),
+        Action::JumpShowPicker => dispatch_jump_show_picker(app),
+        Action::JumpPickerSelect(turn_idx) => dispatch_jump_picker_select(app, turn_idx),
+        Action::JumpDismiss => dispatch_jump_dismiss(app),
     };
     app.reconcile_foreign_resume_launch();
     sync_sleep_inhibitor(app);
@@ -1445,22 +1482,24 @@ pub(super) fn dispatch_action_result(
         }
         Ok(outcome) => match outcome.status {
             OutcomeStatus::Success => {
-                if !outcome.message.trim().is_empty()
-                    && let Some(ref mut modal) = agent.extensions_modal
-                    && modal.result_notice.is_none()
-                {
-                    let entry_index = match modal.last_plugins_action {
-                        Some(agent_tui_hooks_plugins_types::PluginsAction::Uninstall { .. }) => None,
-                        _ => modal.pending_entry_index,
-                    };
-                    modal.result_notice =
-                        Some(crate::views::extensions_modal::ActionResultNotice {
-                            message: outcome.message.clone(),
-                            entry_index,
-                            ticks_remaining: crate::views::extensions_modal::RESULT_NOTICE_TICKS,
-                        });
-                }
                 let mut effects = Vec::new();
+                if let Some(ref mut modal) = agent.extensions_modal {
+                    if !outcome.message.trim().is_empty() && modal.result_notice.is_none() {
+                        let entry_index = match modal.last_plugins_action {
+                            Some(agent_tui_hooks_plugins_types::PluginsAction::Uninstall { .. }) => None,
+                            _ => modal.pending_entry_index,
+                        };
+                        modal.result_notice =
+                            Some(crate::views::extensions_modal::ActionResultNotice {
+                                message: outcome.message.clone(),
+                                entry_index,
+                                ticks_remaining:
+                                    crate::views::extensions_modal::RESULT_NOTICE_TICKS,
+                            });
+                    }
+                    modal.pending_action = None;
+                    modal.pending_entry_index = None;
+                }
                 if let Some(session_id) = agent.session.session_id.clone() {
                     if outcome.requires_reload {
                         effects.push(Effect::PluginsAction {
@@ -1468,7 +1507,7 @@ pub(super) fn dispatch_action_result(
                             session_id,
                             action: agent_tui_hooks_plugins_types::PluginsAction::Reload,
                         });
-                    } else if agent.extensions_modal.is_some() {
+                    } else if let Some(modal) = agent.extensions_modal.as_mut() {
                         effects.push(Effect::FetchHooksList {
                             agent_id,
                             session_id: session_id.clone(),
@@ -1477,10 +1516,12 @@ pub(super) fn dispatch_action_result(
                             agent_id,
                             session_id: session_id.clone(),
                         });
-                        effects.push(Effect::FetchMarketplaceList {
+                        crate::app::dispatch::transcript::push_marketplace_fetch(
+                            modal,
+                            &mut effects,
                             agent_id,
-                            session_id: session_id.clone(),
-                        });
+                            session_id.clone(),
+                        );
                         effects.push(Effect::FetchMcpsList {
                             agent_id,
                             session_id,
@@ -1504,14 +1545,18 @@ pub(super) fn dispatch_action_result(
                         action
                     });
                     if let Some(action) = confirmed_action {
+                        let pending_entry_index = modal
+                            .pending_entry_index
+                            .or(Some(modal.picker_state.selected));
                         modal.modal_message =
                             Some(crate::views::extensions_modal::ModalMessage::Confirmation {
-                                message: format!(
-                                    "{} Press y to confirm, Esc to cancel.",
-                                    outcome.message
+                                message: outcome.message,
+                                action: crate::views::extensions_modal::ConfirmationAction::Plugins(
+                                    action,
                                 ),
-                                action,
+                                pending_entry_index,
                             });
+                        modal.picker_state.link_band = None;
                     } else {
                         modal.modal_message = Some(
                             crate::views::extensions_modal::ModalMessage::Error(outcome.message),
@@ -1525,6 +1570,8 @@ pub(super) fn dispatch_action_result(
             | OutcomeStatus::InternalError
             | OutcomeStatus::Unsupported => {
                 if let Some(ref mut modal) = agent.extensions_modal {
+                    modal.pending_action = None;
+                    modal.pending_entry_index = None;
                     modal.modal_message = Some(
                         crate::views::extensions_modal::ModalMessage::Error(outcome.message),
                     );

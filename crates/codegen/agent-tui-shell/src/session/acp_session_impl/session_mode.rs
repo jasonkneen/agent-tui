@@ -28,33 +28,6 @@ pub(super) fn filter_cursor_tools_by_plan_mode(
 ) -> Vec<ToolDefinition> {
     defs
 }
-
-/// Prepare an agent-mode prompt update without rewriting model-visible history.
-///
-/// Before the first inference, replacing the bootstrap system prompt is safe.
-/// Once a response or tool interaction exists, return a bounded reminder that
-/// callers append as a new item instead.
-pub(super) fn prepare_agent_mode_prompt_update(
-    conversation: &mut [ConversationItem],
-    agent_name: &str,
-    new_prompt: &str,
-) -> Option<String> {
-    if agent_tui_chat_state::conversation_util::has_inference_history(conversation) {
-        return Some(agent_tui_sampling_types::bound_synthetic_text(format!(
-            "<agent-mode-change name=\"{}\">\n{}\n</agent-mode-change>",
-            agent_name, new_prompt
-        )));
-    }
-
-    if let Some(ConversationItem::System(system)) = conversation
-        .iter_mut()
-        .find(|item| matches!(item, ConversationItem::System(_)))
-    {
-        system.content = std::sync::Arc::<str>::from(new_prompt.to_owned());
-    }
-    None
-}
-
 impl SessionActor {
     pub(super) fn apply_prompt_modes_to_snapshot(&self, snapshot: &mut TurnDeltaSnapshot) {
         snapshot.start_prompt_mode = Some(self.turn_start_prompt_mode.lock().to_string());
@@ -80,7 +53,8 @@ impl SessionActor {
                 ));
             }
             tracing::info!(
-                session_id = % self.session_info.id.0, entered,
+                session_id = %self.session_info.id.0,
+                entered,
                 "Plan mode toggled ON (Pending)"
             );
             let turn_in_flight = self.state.lock().await.running_task.is_some();
@@ -118,8 +92,10 @@ impl SessionActor {
             self.persist_plan_mode_state();
             self.enqueue_current_mode_update(session_mode_id.clone());
             tracing::info!(
-                session_id = % self.session_info.id.0, new_mode = % session_mode_id.0,
-                turn_in_flight, "Plan mode toggled OFF"
+                session_id = %self.session_info.id.0,
+                new_mode = %session_mode_id.0,
+                turn_in_flight,
+                "Plan mode toggled OFF"
             );
             agent_tui_telemetry::session_ctx::log_event(
                 agent_tui_telemetry::events::PlanModeToggled {
@@ -130,8 +106,11 @@ impl SessionActor {
                 },
             );
             tracing::info_span!(
-                "session.permission_mode_changed", from_mode = "plan", to_mode = %
-                session_mode_id.0, trigger = "user", enabled = false,
+                "session.permission_mode_changed",
+                from_mode = "plan",
+                to_mode = %session_mode_id.0,
+                trigger = "user",
+                enabled = false,
             )
             .in_scope(|| {});
         }
@@ -144,10 +123,13 @@ impl SessionActor {
         };
         if let Some(ref def) = agent_def {
             tracing::info!(
-                session_id = % self.session_info.id.0, agent_name = % def.name,
-                agent_scope = % def.scope, prompt_mode = ? def.prompt_mode,
-                has_completion_req = def.completion_requirement.is_some(), tool_configs =
-                def.tool_config.tools.len(), "Resolved AgentDefinition for session mode"
+                session_id = %self.session_info.id.0,
+                agent_name = %def.name,
+                agent_scope = %def.scope,
+                prompt_mode = ?def.prompt_mode,
+                has_completion_req = def.completion_requirement.is_some(),
+                tool_configs = def.tool_config.tools.len(),
+                "Resolved AgentDefinition for session mode"
             );
             self.agent
                 .borrow()
@@ -158,14 +140,13 @@ impl SessionActor {
         if let Some(ref def) = agent_def {
             let new_prompt = self.agent.borrow().render_prompt_for_definition(def).await;
             let mut conversation = self.chat_state_handle.get_conversation().await;
-            if let Some(delta) =
-                prepare_agent_mode_prompt_update(&mut conversation, &def.name, &new_prompt)
-            {
-                self.chat_state_handle
-                    .push_user_message(ConversationItem::system_reminder(delta));
-            } else {
-                self.chat_state_handle.replace_conversation(conversation);
+            for item in conversation.iter_mut() {
+                if let ConversationItem::System(sys) = item {
+                    sys.content = std::sync::Arc::<str>::from(new_prompt);
+                    break;
+                }
             }
+            self.chat_state_handle.replace_conversation(conversation);
         }
     }
     /// Settle the mode a turn runs in, applying the prompt's declaration when
@@ -270,7 +251,8 @@ impl SessionActor {
                 self.plan_mode.lock().record_reminder_injected();
                 self.persist_plan_mode_state();
                 tracing::info!(
-                    session_id = % self.session_info.id.0, is_reentry,
+                    session_id = %self.session_info.id.0,
+                    is_reentry,
                     uses_template_reminders = use_cursor_reminders,
                     "Plan mode activated: injected system-reminder"
                 );
@@ -358,7 +340,7 @@ impl SessionActor {
                 .activate_mid_turn(format!("<{tag}>\n{rendered}\n</{tag}>")),
             None => {
                 tracing::warn!(
-                    session_id = % self.session_info.id.0,
+                    session_id = %self.session_info.id.0,
                     "Mid-turn plan activation: reminder render failed; \
                      activating without a buffered reminder"
                 );
@@ -370,7 +352,9 @@ impl SessionActor {
         }
         self.persist_plan_mode_state();
         tracing::info!(
-            session_id = % self.session_info.id.0, is_reentry, buffered,
+            session_id = %self.session_info.id.0,
+            is_reentry,
+            buffered,
             "Plan mode activated mid-turn"
         );
     }
@@ -398,10 +382,10 @@ impl SessionActor {
         plan_path: &std::path::Path,
         plan_has_content: bool,
     ) -> Option<String> {
-        let extra = serde_json::json!(
-            { "plan_path" : plan_path.display().to_string(), "plan_has_content" :
-            plan_has_content, }
-        );
+        let extra = serde_json::json!({
+            "plan_path": plan_path.display().to_string(),
+            "plan_has_content": plan_has_content,
+        });
         self.agent
             .borrow()
             .tool_bridge()

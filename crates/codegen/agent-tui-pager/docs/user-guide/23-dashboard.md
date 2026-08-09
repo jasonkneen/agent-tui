@@ -27,7 +27,7 @@ Hidden in minimal mode. Set `GROK_AGENT_DASHBOARD=0` or
 ## What you see
 
 ```
- Agent TUI · Dashboard — 4 agents · 2 awaiting
+ Grok Build · Dashboard — 4 agents · 2 awaiting
 ▌● reviewer · audit token flow    Awaiting your input            2m
  ● implementer · fix login bug    Running: cargo test           12m
  ⋅ refactor · feat/login          Responding…                   24m
