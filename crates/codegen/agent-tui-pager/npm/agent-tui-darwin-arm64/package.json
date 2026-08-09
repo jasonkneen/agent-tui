@@ -1,19 +1,19 @@
 {
-    "name": "@agent-tui/agent-tui-darwin-arm64",
-    "version": "0.2.0-dev",
-    "description": "darwin-arm64 binary for @agent-tui/agent-tui. Do not install directly; install @agent-tui/agent-tui instead.",
-    "license": "Apache-2.0",
-    "files": [
-        "bin/",
-        "THIRD_PARTY_NOTICES.md"
-    ],
-    "os": [
-        "darwin"
-    ],
-    "cpu": [
-        "arm64"
-    ],
-    "publishConfig": {
-        "access": "public"
-    }
+  "name": "@agent-tui/agent-tui-darwin-arm64",
+  "version": "1.0.0",
+  "description": "darwin-arm64 binary for @agent-tui/agent-tui. Do not install directly; install @agent-tui/agent-tui instead.",
+  "license": "Apache-2.0",
+  "files": [
+    "bin/",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }

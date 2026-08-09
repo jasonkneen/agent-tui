@@ -1,41 +1,41 @@
 {
-    "name": "@agent-tui/agent-tui",
-    "version": "0.1.220-alpha.4",
-    "description": "Bring Agent TUI into your terminal",
-    "license": "Apache-2.0",
-    "bin": {
-        "agent-tui": "bin/agent-tui"
-    },
-    "files": [
-        "bin/"
-    ],
-    "os": [
-        "darwin",
-        "linux",
-        "win32"
-    ],
-    "cpu": [
-        "arm64",
-        "x64"
-    ],
-    "scripts": {
-        "postinstall": "node bin/postinstall.js"
-    },
-    "publishConfig": {
-        "access": "public"
-    },
-    "engines": {
-        "node": ">=20"
-    },
-    "dependencies": {
-        "@iarna/toml": "^3.0.0"
-    },
-    "optionalDependencies": {
-        "@agent-tui/agent-tui-darwin-arm64": "0.1.220-alpha.4",
-        "@agent-tui/agent-tui-darwin-x64": "0.1.220-alpha.4",
-        "@agent-tui/agent-tui-linux-arm64": "0.1.220-alpha.4",
-        "@agent-tui/agent-tui-linux-x64": "0.1.220-alpha.4",
-        "@agent-tui/agent-tui-win32-arm64": "0.1.220-alpha.4",
-        "@agent-tui/agent-tui-win32-x64": "0.1.220-alpha.4"
-    }
+  "name": "@agent-tui/agent-tui",
+  "version": "1.0.0",
+  "description": "Bring Agent TUI into your terminal",
+  "license": "Apache-2.0",
+  "bin": {
+    "agent-tui": "bin/agent-tui"
+  },
+  "files": [
+    "bin/"
+  ],
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "arm64",
+    "x64"
+  ],
+  "scripts": {
+    "postinstall": "node bin/postinstall.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@iarna/toml": "^3.0.0"
+  },
+  "optionalDependencies": {
+    "@agent-tui/agent-tui-darwin-arm64": "1.0.0",
+    "@agent-tui/agent-tui-darwin-x64": "1.0.0",
+    "@agent-tui/agent-tui-linux-arm64": "1.0.0",
+    "@agent-tui/agent-tui-linux-x64": "1.0.0",
+    "@agent-tui/agent-tui-win32-arm64": "1.0.0",
+    "@agent-tui/agent-tui-win32-x64": "1.0.0"
+  }
 }

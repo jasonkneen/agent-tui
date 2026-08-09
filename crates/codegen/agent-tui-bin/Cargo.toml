@@ -1,6 +1,6 @@
 [package]
 name = "agent-tui-bin"
-version = "0.1.220-alpha.4"
+version = "1.0.0"
 edition.workspace = true
 license = "Apache-2.0"
 authors = ["Agent TUI contributors"]
