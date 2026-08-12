@@ -768,7 +768,7 @@ dependencies = [
 
 [[package]]
 name = "agent-tui-pager"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "agent-client-protocol",
  "agent-tui-acp-lib",
@@ -856,7 +856,6 @@ dependencies = [
  "url",
  "urlencoding",
  "uuid",
- "wait-timeout",
  "walkdir",
  "which",
  "windows-sys 0.59.0",
@@ -984,7 +983,6 @@ dependencies = [
  "thiserror 2.0.18",
  "toml",
  "tracing",
- "wait-timeout",
 ]
 
 [[package]]
@@ -1154,7 +1152,7 @@ dependencies = [
 
 [[package]]
 name = "agent-tui-shell"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "agent-client-protocol",
  "agent-tui-acp-lib",
@@ -1327,20 +1325,15 @@ dependencies = [
 name = "agent-tui-shell-session-support"
 version = "0.1.0"
 dependencies = [
- "agent-client-protocol",
  "agent-tui-file-utils",
  "agent-tui-http",
- "agent-tui-shell-base",
  "agent-tui-version",
- "agent-tui-workspace",
  "axum",
- "chrono",
  "reqwest 0.12.24",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "tokio-util",
  "tracing",
 ]
 
@@ -1665,12 +1658,14 @@ name = "agent-tui-update"
 version = "0.1.220-alpha.4"
 dependencies = [
  "agent-tui-shell",
+ "agent-tui-telemetry",
  "agent-tui-tools",
  "agent-tui-version",
  "anyhow",
  "dunce",
  "futures",
  "indicatif",
+ "libc",
  "reqwest 0.12.24",
  "semver",
  "serde",
@@ -1681,6 +1676,7 @@ dependencies = [
  "time",
  "tokio",
  "tracing",
+ "url",
  "wiremock",
 ]
 
@@ -1834,6 +1830,7 @@ dependencies = [
  "agent-tui-tool-types",
  "agent-tui-workspace-types",
  "schemars 1.0.4",
+ "semver",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

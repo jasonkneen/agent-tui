@@ -665,7 +665,7 @@ pub fn model_state_from_codex_entries(
         .or_else(|| available.keys().next().cloned());
 
     let mut state = ModelState::default();
-    state.update_catalog(available, current.clone());
+    state.update_catalog(available);
     if let Some(id) = current {
         state.set_current(id, None);
     }
@@ -734,7 +734,7 @@ pub fn model_state_from_lazar_active(
     let mut available = IndexMap::new();
     available.insert(model_id.clone(), info);
     let mut state = crate::acp::model_state::ModelState::default();
-    state.update_catalog(available, Some(model_id.clone()));
+    state.update_catalog(available);
     state.set_current(model_id, None);
     state
 }
@@ -760,7 +760,7 @@ pub fn model_state_from_hermes_active(
     let mut available = IndexMap::new();
     available.insert(model_id.clone(), info);
     let mut state = crate::acp::model_state::ModelState::default();
-    state.update_catalog(available, Some(model_id.clone()));
+    state.update_catalog(available);
     state.set_current(model_id, None);
     state
 }
@@ -809,7 +809,7 @@ pub fn model_state_from_claude_discovered(
         preferred_id.or(default_id)
     };
     let mut state = ModelState::default();
-    state.update_catalog(available, current.clone());
+    state.update_catalog(available);
     if let Some(id) = current {
         state.set_current(id, None);
     }

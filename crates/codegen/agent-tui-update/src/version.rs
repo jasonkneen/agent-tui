@@ -48,6 +48,44 @@ pub(crate) const CLI_BASE_URL_FALLBACK: &str =
 /// CLI base URLs in preference order for flat-layout downloads only.
 pub(crate) const CLI_BASE_URLS: &[&str] = &[CLI_BASE_URL_PRIMARY, CLI_BASE_URL_FALLBACK];
 
+/// [`CLI_BASE_URLS`] with a test seam: `AGENT_TUI_CLI_BASE_URL` (legacy
+/// `GROK_CLI_BASE_URL`) points fetches and downloads at one base.
+/// Loopback-only: downloads are verified by a smoke test, not a checksum,
+/// so an arbitrary redirect base would be an install-hijack vector.
+pub(crate) fn cli_base_urls() -> Vec<String> {
+    let override_base = std::env::var("AGENT_TUI_CLI_BASE_URL")
+        .or_else(|_| std::env::var("GROK_CLI_BASE_URL"));
+    if let Ok(base) = override_base {
+        let base = base.trim();
+        if is_loopback_base(base) {
+            return vec![base.to_owned()];
+        }
+        if !base.is_empty() {
+            tracing::warn!(
+                "AGENT_TUI_CLI_BASE_URL/GROK_CLI_BASE_URL ignored: only loopback bases are honored"
+            );
+        }
+    }
+    CLI_BASE_URLS.iter().map(|s| (*s).to_owned()).collect()
+}
+
+/// Parsed, not prefix-matched: `http://127.0.0.1:9@evil.com` starts with a
+/// loopback prefix but its host is `evil.com` (userinfo trick).
+fn is_loopback_base(base: &str) -> bool {
+    let Ok(u) = url::Url::parse(base) else {
+        return false;
+    };
+    if u.scheme() != "http" || !u.username().is_empty() || u.password().is_some() {
+        return false;
+    }
+    match u.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        Some(url::Host::Domain(d)) => d == "localhost",
+        None => false,
+    }
+}
+
 /// Minimal configuration the update system needs from the environment.
 ///
 /// Constructed once from `GrokBuildEnvironment` at startup and threaded through the
@@ -255,7 +293,7 @@ async fn fetch_gh_release_latest(exclude_pre: bool) -> Result<String> {
 /// returns the semver-greater, matching the behavior of the npm and
 /// gh-release paths.
 ///
-/// Tries each base URL in [`CLI_BASE_URLS`] in order and stops at the first
+/// Tries each base URL from [`cli_base_urls`] in order and stops at the first
 /// success. Each individual base also retries up to 3 times with exponential
 /// backoff (1s, 2s, 4s) on transient failures before falling through to the
 /// next base.
@@ -265,11 +303,12 @@ async fn fetch_gh_release_latest(exclude_pre: bool) -> Result<String> {
 #[allow(dead_code)]
 pub(crate) async fn fetch_gcs_version(channel: &str) -> Result<String> {
     let mut last_err: Option<anyhow::Error> = None;
-    for (i, base) in CLI_BASE_URLS.iter().enumerate() {
+    let bases = cli_base_urls();
+    for (i, base) in bases.iter().enumerate() {
         match fetch_gcs_version_from_base(channel, base).await {
             Ok(v) => return Ok(v),
             Err(e) => {
-                if i + 1 < CLI_BASE_URLS.len() {
+                if i + 1 < bases.len() {
                     tracing::warn!(
                         "channel pointer fetch from {} failed ({:#}); trying next base URL",
                         base,
@@ -613,8 +652,8 @@ pub(crate) async fn try_fetch_stable_pointer() -> Option<String> {
             return Some(v);
         }
         // Flat-layout mirrors (tests / self-hosted).
-        for base in CLI_BASE_URLS {
-            if let Ok(v) = fetch_gcs_channel_pointer("stable", base).await {
+        for base in cli_base_urls() {
+            if let Ok(v) = fetch_gcs_channel_pointer("stable", &base).await {
                 return Some(v);
             }
         }
@@ -692,6 +731,20 @@ pub fn channel_label() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn loopback_base_rejects_userinfo_and_non_loopback() {
+        use super::is_loopback_base;
+        assert!(is_loopback_base("http://127.0.0.1:8971"));
+        assert!(is_loopback_base("http://localhost:8971"));
+        assert!(is_loopback_base("http://[::1]:8971"));
+        // Prefix-check bypass vectors.
+        assert!(!is_loopback_base("http://127.0.0.1:9@evil.com"));
+        assert!(!is_loopback_base("http://localhost.evil.com:80"));
+        assert!(!is_loopback_base("https://x.ai/cli"));
+        assert!(!is_loopback_base("http://192.168.1.1:80"));
+        assert!(!is_loopback_base(""));
+    }
+
     use super::*;
 
     /// Verifies that a future `checked_at` timestamp (e.g. from clock skew or

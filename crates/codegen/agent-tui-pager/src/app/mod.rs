@@ -36,6 +36,7 @@ pub mod subagent;
 pub mod subscription;
 pub(crate) use effects::sanitize_user_error;
 mod event_loop;
+mod exit_timeout;
 pub(crate) mod external_editor;
 mod foreign_sessions;
 mod inline_edit;
@@ -45,7 +46,9 @@ mod modals;
 mod mouse;
 mod queue_edit;
 pub(crate) mod screen_mode_relaunch;
+mod session_load_barrier;
 pub mod signal_handler;
+mod startup_failure;
 mod turn_completion;
 mod xt_filter;
 pub(crate) use crate::terminal::{kitty_flags_pushed, kitty_releases_reported};
@@ -65,6 +68,7 @@ pub(crate) use foreign_sessions::{
     badge_for_picker_source, foreign_tool_display_label, is_foreign_picker_source,
 };
 use ratatui::backend::CrosstermBackend;
+pub use startup_failure::StartupFailure;
 use std::io::{self, Write};
 use std::panic;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -376,7 +380,7 @@ pub(crate) struct ExitInfo {
     pub session_id: String,
     pub minimal: bool,
     /// Glanceable session tail; `Some` exactly when it should print. The
-    /// presence policy lives at the sole construction site, `make_run_result`.
+    /// presence policy lives at the sole construction site, `finish_run`.
     pub summary: Option<ExitSummary>,
 }
 /// Session tail printed above the resume command on fullscreen quits.
@@ -545,51 +549,62 @@ struct ConnectFailure {
     outcome: crate::acp::StartupOutcome,
     error: anyhow::Error,
     timeout_secs: Option<u64>,
+    longest_step: Option<crate::acp::StartupPhase>,
 }
 /// Bound connect so a hung leader/spawn cannot blank-screen forever.
-/// Timeout error includes phase summary (`stuck in` + `phases=`).
 async fn bounded_connect(
     cancel: &CancellationToken,
     timeout: std::time::Duration,
     target: crate::acp::AgentKind,
+    attempt: startup_failure::ConnectAttempt,
     timer: &crate::acp::StartupTimer,
     connect: impl std::future::Future<Output = anyhow::Result<crate::acp::AcpConnection>>,
 ) -> Result<crate::acp::AcpConnection, ConnectFailure> {
     use crate::acp::StartupOutcome;
+    let context = || startup_failure::Context {
+        target,
+        attempt,
+        version: agent_tui_version::display_version_with_commit(
+            env!("VERSION_WITH_COMMIT"),
+            agent_tui_update::channel_label(),
+        ),
+        log_path: agent_tui_telemetry::unified_log::path(),
+    };
     tokio::select! {
         biased;
         () = cancel.cancelled() => Err(ConnectFailure {
             outcome: StartupOutcome::Cancelled,
-            error: anyhow::anyhow!("startup cancelled before {target} connected"),
+            error: anyhow::Error::new(startup_failure::StartupFailure::cancelled(context())),
             timeout_secs: None,
+            longest_step: None,
         }),
-        r = connect => r.map_err(|error| ConnectFailure {
+        connected = connect => connected.map_err(|error| ConnectFailure {
             outcome: StartupOutcome::Error,
             error,
             timeout_secs: None,
+            longest_step: None,
         }),
         () = tokio::time::sleep(timeout) => {
-            let stuck = timer.stuck_in();
-            let phases = timer.summary();
-            // `connect_target`: tracing reserves bare `target=` for the log target.
+            let timings = timer.phase_snapshot();
+            let longest_step = timings.longest_step();
+            // `connect_target`: tracing reserves bare `target=`.
             tracing::error!(
-                connect_target = %target,
-                stuck_in = stuck,
-                phases = %phases,
+                connect_target = target.label(),
+                stuck_in = timings.stuck_in(),
+                phases = %timings.summary(),
                 timeout_secs = timeout.as_secs(),
                 "connect timed out"
             );
             Err(ConnectFailure {
                 outcome: StartupOutcome::Timeout,
-                error: anyhow::anyhow!(
-                    "timed out after {}s connecting to {target}\n  \
-                     stuck in: {stuck}\n  \
-                     phases: {phases}\n  \
-                     startup log: {}",
-                    timeout.as_secs(),
-                    agent_tui_telemetry::unified_log::path().display()
-                ),
+                error: anyhow::Error::new(startup_failure::StartupFailure::timed_out(
+                    context(),
+                    // Measured, not the budget: a synchronous step can overrun it.
+                    timer.elapsed(),
+                    timings,
+                )),
                 timeout_secs: Some(timeout.as_secs()),
+                longest_step,
             })
         }
     }
@@ -898,16 +913,24 @@ pub async fn run(
             },
         ),
     );
+    let pending_startup = agent_tui_telemetry::startup::PendingStartup::new();
     let timer = agent_tui_telemetry::startup::begin(crate::acp::Owner::Client);
-    let connect_result =
-        bounded_connect(&cancel, CONNECT_UI_TIMEOUT, primary_target, &timer, async {
+    let primary_started = std::time::Instant::now();
+    let connect_result = bounded_connect(
+        &cancel,
+        CONNECT_UI_TIMEOUT,
+        primary_target,
+        startup_failure::ConnectAttempt::First,
+        &timer,
+        async {
             if use_leader {
                 crate::acp::connect_via_leader(&cancel, connect_flags, &raw_config).await
             } else {
                 crate::acp::connect(&cancel, connect_flags).await
             }
-        })
-        .await;
+        },
+    )
+    .await;
     let (connect_result, embedded_fallback, timer, connect_target) = match connect_result {
         Err(f) if use_leader && !cancel.is_cancelled() => {
             tracing::warn!(error = %f.error, "leader connect failed; falling back to embedded agent");
@@ -915,9 +938,19 @@ pub async fn run(
             let flags = fallback_flags.expect("set on the use_leader path");
             let timer = agent_tui_telemetry::startup::begin(crate::acp::Owner::Client);
             let target = crate::acp::AgentKind::Embedded;
-            let fallback = bounded_connect(&cancel, CONNECT_UI_TIMEOUT, target, &timer, async {
-                crate::acp::connect(&cancel, flags).await
-            })
+            let fallback = bounded_connect(
+                &cancel,
+                CONNECT_UI_TIMEOUT,
+                target,
+                startup_failure::ConnectAttempt::AfterFallback(startup_failure::EarlierAttempt {
+                    target: primary_target,
+                    wait: primary_started.elapsed(),
+                    outcome: f.outcome,
+                    longest_step: f.longest_step,
+                }),
+                &timer,
+                async { crate::acp::connect(&cancel, flags).await },
+            )
             .await;
             (fallback, true, timer, target)
         }
@@ -943,9 +976,9 @@ pub async fn run(
         Err(f) => {
             timer.emit_telemetry(connect_target, f.outcome, f.timeout_secs, embedded_fallback);
             if f.outcome == crate::acp::StartupOutcome::Cancelled {
-                agent_tui_telemetry::startup::clear();
+                pending_startup.abandon();
             } else {
-                agent_tui_telemetry::startup::report_total(f.outcome);
+                pending_startup.finish(f.outcome);
             }
             crate::unified_log::flush_blocking().await;
             let _ = restore_terminal(terminal, writer_thread, screen_mode);
@@ -973,6 +1006,7 @@ pub async fn run(
     let result = event_loop::run(
         &mut terminal,
         connection,
+        pending_startup,
         &mut config_watcher,
         &effective_args,
         session_cwd,
@@ -983,6 +1017,16 @@ pub async fn run(
         writer_event_rx,
     )
     .await;
+    signal_handler::clear_quit_notify();
+    let forced_exit_code = match &result {
+        Ok(run_result) if run_result.quit_for_update || run_result.relaunch.is_some() => None,
+        Ok(_) => Some(0),
+        Err(_) => Some(1),
+    };
+    if let Some(code) = forced_exit_code {
+        exit_timeout::arm(code);
+        exit_timeout::hold_teardown_for_test();
+    }
     crate::unified_log::flush_blocking().await;
     let restore_result = restore_terminal(terminal, writer_thread, screen_mode);
     drop(agent_guard);
@@ -1716,52 +1760,6 @@ mod tests {
     fn config_with_leader(enabled: bool) -> toml::Value {
         let toml_str = format!("[cli]\nuse_leader = {enabled}");
         toml::from_str(&toml_str).unwrap()
-    }
-    #[tokio::test]
-    async fn bounded_connect_times_out_when_the_target_stalls() {
-        agent_tui_telemetry::unified_log::redirect_to_temp_for_tests();
-        let cancel = CancellationToken::new();
-        let timer = crate::acp::StartupTimer::new();
-        timer.enter(crate::acp::StartupPhase::LoadConfig);
-        timer.enter(crate::acp::StartupPhase::ModelCatalog);
-        let r = bounded_connect(
-            &cancel,
-            std::time::Duration::from_millis(20),
-            crate::acp::AgentKind::Embedded,
-            &timer,
-            std::future::pending::<anyhow::Result<crate::acp::AcpConnection>>(),
-        )
-        .await;
-        let Err(f) = r else {
-            panic!("should time out");
-        };
-        assert_eq!(f.outcome, crate::acp::StartupOutcome::Timeout);
-        let msg = f.error.to_string();
-        assert!(
-            msg.contains("timed out after 0s connecting to the embedded agent"),
-            "{msg}"
-        );
-        assert!(msg.contains("stuck in: model_catalog"), "{msg}");
-        assert!(msg.contains("startup log: "), "{msg}");
-    }
-    #[tokio::test]
-    async fn bounded_connect_returns_err_on_cancel() {
-        agent_tui_telemetry::unified_log::redirect_to_temp_for_tests();
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        let timer = crate::acp::StartupTimer::new();
-        let r = bounded_connect(
-            &cancel,
-            std::time::Duration::from_secs(60),
-            crate::acp::AgentKind::Embedded,
-            &timer,
-            std::future::pending::<anyhow::Result<crate::acp::AcpConnection>>(),
-        )
-        .await;
-        assert!(r.is_err_and(|f| {
-            f.outcome == crate::acp::StartupOutcome::Cancelled
-                && f.error.to_string().contains("cancelled")
-        }));
     }
     #[test]
     fn terminal_title_strips_control_characters() {

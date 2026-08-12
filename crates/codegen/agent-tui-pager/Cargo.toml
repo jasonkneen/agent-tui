@@ -1,16 +1,16 @@
 [package]
 name = "agent-tui-pager"
-version = "1.0.0"
+version = "1.0.1"
 edition.workspace = true
 license = "Apache-2.0"
 authors = ["xAI"]
 
 [dependencies]
-which = { workspace = true }
 agent-tui-hermes-runtime = { workspace = true }
 agent-tui-lazar-runtime = { workspace = true }
 agent-tui-claude-runtime = { workspace = true }
 agent-tui-codex-runtime = { workspace = true }
+which = { workspace = true }
 # TTY safety — detach subprocesses from the controlling terminal
 dunce = { workspace = true }
 agent-tui-tty-utils = { workspace = true }
@@ -114,7 +114,6 @@ agent-tui-tools = { workspace = true }
 agent-tui-agent = { workspace = true }
 agent-tui-plugin-marketplace = { path = "../agent-tui-plugin-marketplace" }
 agent-tui-hooks-plugins-types = { path = "../agent-tui-hooks-plugins-types" }
-wait-timeout = { workspace = true }
 walkdir = { workspace = true }
 agent-tui-sandbox = { path = "../agent-tui-sandbox", default-features = false }
 

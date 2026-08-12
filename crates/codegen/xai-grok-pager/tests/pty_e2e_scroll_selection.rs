@@ -9,6 +9,8 @@
 mod common;
 #[path = "pty_e2e/scroll.rs"]
 mod scroll;
+#[path = "pty_e2e/scroll_anchor_holds_parked_marker_during_live_stream.rs"]
+mod scroll_anchor_holds_parked_marker_during_live_stream;
 
 #[path = "pty_e2e/bash_full_output_double_click_fold_pty.rs"]
 mod bash_full_output_double_click_fold_pty;
@@ -60,6 +62,8 @@ mod scroll_debug_hud_env_toggles_overlay;
 mod scroll_does_not_crash;
 #[path = "pty_e2e/sticky_header_drag_copy_pty.rs"]
 mod sticky_header_drag_copy_pty;
+#[path = "pty_e2e/stuck_drag_finishes_on_bare_motion_pty.rs"]
+mod stuck_drag_finishes_on_bare_motion_pty;
 #[path = "pty_e2e/stuck_drag_recovers_on_esc_pty.rs"]
 mod stuck_drag_recovers_on_esc_pty;
 #[path = "pty_e2e/trackpad_flood_does_not_under_travel.rs"]

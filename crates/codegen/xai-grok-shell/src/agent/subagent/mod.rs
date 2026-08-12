@@ -194,6 +194,10 @@ pub(crate) struct SubagentSpawnContext {
     /// Whether the `ask_user_question` tool is exposed to this subagent,
     /// inherited from the parent session (see `build_subagent_spawn_context`).
     pub ask_user_question_enabled: bool,
+    /// Whether the parent session is non-interactive (headless `-p` / SDK),
+    /// copied onto the child's `StartupHints` so its ask_user_question also
+    /// returns no-operator text instead of pretending a user declined.
+    pub parent_non_interactive: bool,
     /// Parent session command channel. Carries lifecycle notifications the
     /// parent persists (`SubagentSpawned` / `SubagentFinished`) and — when
     /// goal mode is on — transient `SubagentProgress` ticks the parent
@@ -1107,11 +1111,13 @@ fn stamp_live_fork_session_metadata(
     inherited_prefix_len: Option<usize>,
     fork_context_source: &str,
 ) {
-    let dir = session::persistence::session_dir(child_session_info);
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        tracing::warn!(error = %e, "live fork: could not create child session dir for metadata stamp");
-        return;
-    }
+    let dir = match session::persistence::ensure_owner_only_session_dir(child_session_info) {
+        Ok(dir) => dir,
+        Err(e) => {
+            tracing::warn!(error = %e, "live fork: could not create child session dir for metadata stamp");
+            return;
+        }
+    };
     let summary_path = dir.join("summary.json");
     let model = acp::ModelId::new(model_id);
     let mut summary = std::fs::read(&summary_path)

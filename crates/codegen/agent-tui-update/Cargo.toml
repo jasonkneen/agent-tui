@@ -16,9 +16,14 @@ thiserror = { workspace = true }
 time = { workspace = true, features = ["serde"] }
 tokio = { workspace = true, features = ["fs", "process", "io-util", "macros", "time"] }
 tracing = { workspace = true }
+url = { workspace = true }
 agent-tui-shell = { workspace = true }
+agent-tui-telemetry = { workspace = true }
 agent-tui-tools = { workspace = true }
 agent-tui-version = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = { workspace = true }
 
 [dev-dependencies]
 semver = { workspace = true }
