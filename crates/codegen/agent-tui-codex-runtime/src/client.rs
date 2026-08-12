@@ -579,6 +579,17 @@ fn parse_model_entry(item: &Value) -> Option<crate::protocol::CodexModelEntry> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_else(|| vec!["text".into(), "image".into()]);
+    let context_window = item
+        .get("contextWindow")
+        .or_else(|| item.get("context_window"))
+        .or_else(|| item.get("totalContextTokens"))
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            item.get("meta")
+                .and_then(|m| m.get("totalContextTokens").or_else(|| m.get("contextWindow")))
+                .and_then(|v| v.as_u64())
+        })
+        .filter(|&t| t > 0);
     Some(crate::protocol::CodexModelEntry {
         id,
         display_name,
@@ -588,6 +599,7 @@ fn parse_model_entry(item: &Value) -> Option<crate::protocol::CodexModelEntry> {
         default_reasoning_effort,
         supported_reasoning_efforts,
         input_modalities,
+        context_window,
     })
 }
 

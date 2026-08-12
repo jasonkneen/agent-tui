@@ -113,6 +113,10 @@ pub struct CodexModelEntry {
     /// Effort ids in catalog order (e.g. `low`, `medium`, `high`).
     pub supported_reasoning_efforts: Vec<String>,
     pub input_modalities: Vec<String>,
+    /// Context window in tokens when app-server reports it (`contextWindow` /
+    /// `context_window` / nested meta). `None` when omitted — callers may
+    /// apply a model-id heuristic.
+    pub context_window: Option<u64>,
 }
 
 /// Params for `model/list`.

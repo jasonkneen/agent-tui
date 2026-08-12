@@ -545,6 +545,45 @@ pub fn take_stashed_grok_catalog() -> Option<crate::acp::model_state::ModelState
     grok_stash_lock().write().ok().and_then(|mut g| g.take())
 }
 
+/// Insert `totalContextTokens` so the context bar can update on model switch.
+fn meta_with_context_window(
+    meta: &mut serde_json::Map<String, serde_json::Value>,
+    tokens: Option<u64>,
+) {
+    if let Some(tokens) = tokens.filter(|&t| t > 0) {
+        meta.insert(
+            "totalContextTokens".into(),
+            serde_json::Value::Number(tokens.into()),
+        );
+    }
+}
+
+/// Best-effort context window for Claude model ids (catalog has no wire field).
+/// `[1m]` rows → 1_000_000; otherwise Anthropic default 200k.
+pub(crate) fn claude_context_window_tokens(model_id: &str) -> u64 {
+    let lower = model_id.to_ascii_lowercase();
+    if lower.contains("[1m]") {
+        1_000_000
+    } else {
+        200_000
+    }
+}
+
+/// Best-effort context window for Codex model ids when app-server omits it.
+pub(crate) fn codex_context_window_tokens(model_id: &str) -> u64 {
+    let lower = model_id.to_ascii_lowercase();
+    if lower.contains("gpt-5") || lower.contains("o3") || lower.contains("codex") {
+        // Current OpenAI/Codex coding models are typically 200k–400k; 200k is
+        // the safe published floor used for the bar until model/list ships a
+        // real field.
+        200_000
+    } else if lower.contains("gpt-4.1") || lower.contains("gpt-4o") {
+        128_000
+    } else {
+        200_000
+    }
+}
+
 /// Convert app-server `model/list` rows into pager [`ModelState`].
 pub fn model_state_from_codex_entries(
     entries: &[agent_tui_codex_runtime::CodexModelEntry],
@@ -600,6 +639,11 @@ pub fn model_state_from_codex_entries(
                 ),
             );
         }
+        let window = e
+            .context_window
+            .filter(|&t| t > 0)
+            .unwrap_or_else(|| codex_context_window_tokens(&e.id));
+        meta_with_context_window(&mut meta, Some(window));
         let mut info = acp::ModelInfo::new(id.clone(), e.display_name.clone());
         if let Some(ref d) = e.description {
             info = info.description(d.clone());
@@ -682,7 +726,11 @@ pub fn model_state_from_lazar_active(
         .or_else(agent_tui_lazar_runtime::discover_active_model)
         .unwrap_or_else(|| "lazar-default".to_string());
     let model_id = acp::ModelId::new(Arc::from(id.as_str()));
-    let info = acp::ModelInfo::new(model_id.clone(), format!("Lazar — {id}"));
+    // Kernel may target any provider; use a conservative default so the bar
+    // does not keep a previous Grok 500k sticky total after `/runtime lazar`.
+    let mut meta = serde_json::Map::new();
+    meta_with_context_window(&mut meta, Some(200_000));
+    let info = acp::ModelInfo::new(model_id.clone(), format!("Lazar — {id}")).meta(Some(meta));
     let mut available = IndexMap::new();
     available.insert(model_id.clone(), info);
     let mut state = crate::acp::model_state::ModelState::default();
@@ -706,7 +754,9 @@ pub fn model_state_from_hermes_active(
         .unwrap_or_else(|| "hermes-default".to_string());
     // Wire id must be the real Hermes/provider model slug — never the display label.
     let model_id = acp::ModelId::new(Arc::from(id.as_str()));
-    let info = acp::ModelInfo::new(model_id.clone(), format!("Hermes — {id}"));
+    let mut meta = serde_json::Map::new();
+    meta_with_context_window(&mut meta, Some(200_000));
+    let info = acp::ModelInfo::new(model_id.clone(), format!("Hermes — {id}")).meta(Some(meta));
     let mut available = IndexMap::new();
     available.insert(model_id.clone(), info);
     let mut state = crate::acp::model_state::ModelState::default();
@@ -725,7 +775,9 @@ pub fn model_state_from_claude_discovered(
     let mut default_id: Option<acp::ModelId> = None;
     for e in discovered {
         let id = acp::ModelId::new(Arc::from(e.id.as_str()));
-        let mut info = acp::ModelInfo::new(id.clone(), e.display_name);
+        let mut meta = serde_json::Map::new();
+        meta_with_context_window(&mut meta, Some(claude_context_window_tokens(&e.id)));
+        let mut info = acp::ModelInfo::new(id.clone(), e.display_name).meta(Some(meta));
         if let Some(d) = e.description {
             info = info.description(d);
         }
@@ -742,7 +794,12 @@ pub fn model_state_from_claude_discovered(
         if let Some(p) = preferred {
             let id = acp::ModelId::new(Arc::from(p));
             if !available.contains_key(&id) {
-                available.insert(id.clone(), acp::ModelInfo::new(id.clone(), p.to_string()));
+                let mut meta = serde_json::Map::new();
+                meta_with_context_window(&mut meta, Some(claude_context_window_tokens(p)));
+                available.insert(
+                    id.clone(),
+                    acp::ModelInfo::new(id.clone(), p.to_string()).meta(Some(meta)),
+                );
             }
             Some(id)
         } else {

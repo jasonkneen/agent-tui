@@ -164,12 +164,20 @@ impl ModelState {
     }
 
     /// Set the current model and resolve reasoning effort from catalog meta.
+    ///
+    /// Clears a subagent `context_window_override` when the selected model
+    /// changes so a stale override cannot pin the bar to a previous window
+    /// (e.g. Grok 500k after switching providers).
     pub fn set_current(
         &mut self,
         model_id: acp::ModelId,
         effort_override: Option<ReasoningEffort>,
     ) {
+        let model_changed = self.current.as_ref() != Some(&model_id);
         self.current = Some(model_id.clone());
+        if model_changed {
+            self.context_window_override = None;
+        }
         self.reasoning_effort = effort_override.or_else(|| {
             self.available
                 .get(&model_id)
@@ -456,6 +464,48 @@ mod tests {
         assert!(
             state_with_meta(Some(serde_json::json!({ "totalContextTokens": 256000 })))
                 .current_model_accepts_images()
+        );
+    }
+
+    #[test]
+    fn get_context_window_reads_total_context_tokens_meta() {
+        let state = state_with_meta(Some(serde_json::json!({ "totalContextTokens": 200_000 })));
+        assert_eq!(state.get_context_window(), Some(200_000));
+    }
+
+    #[test]
+    fn set_current_clears_context_window_override_on_model_change() {
+        let mut state = state_with_meta(Some(serde_json::json!({ "totalContextTokens": 200_000 })));
+        state.override_context_window(500_000);
+        assert_eq!(state.get_context_window(), Some(500_000));
+
+        let other = acp::ModelId::new(Arc::from("other"));
+        state.available.insert(
+            other.clone(),
+            acp::ModelInfo::new(other.clone(), "Other".to_string()).meta(
+                serde_json::json!({ "totalContextTokens": 128_000 })
+                    .as_object()
+                    .cloned(),
+            ),
+        );
+        state.set_current(other, None);
+        assert_eq!(
+            state.get_context_window(),
+            Some(128_000),
+            "override must not pin bar after model switch"
+        );
+    }
+
+    #[test]
+    fn set_current_same_model_keeps_override() {
+        let mut state = state_with_meta(Some(serde_json::json!({ "totalContextTokens": 200_000 })));
+        let id = state.current.clone().unwrap();
+        state.override_context_window(500_000);
+        state.set_current(id, None);
+        assert_eq!(
+            state.get_context_window(),
+            Some(500_000),
+            "same-model set_current is used for effort; keep override"
         );
     }
 

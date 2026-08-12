@@ -166,6 +166,8 @@ fn handle_vendor_models_loaded(
             app.models = state.clone();
             if let Some(agent) = get_active_agent_mut(app) {
                 agent.session.models = state;
+                // Drop sticky Grok context totals / pick up vendor window meta.
+                agent.sync_context_window_from_model();
                 agent.scrollback.push_block(RenderBlock::system(format!(
                     "{vendor} models ready ({count}). Current: {name}. Switch with /model"
                 )));

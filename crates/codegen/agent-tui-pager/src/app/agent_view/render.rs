@@ -1524,12 +1524,15 @@ impl AgentView {
             );
         }
         let ctx_used = self.context_state.as_ref().map(|c| c.used);
-        let model_window = self.session.models.get_context_window();
-        let ctx_total = self
-            .context_state
-            .as_ref()
-            .and_then(|c| (c.total > 0).then_some(c.total))
-            .or(model_window);
+        // Prefer the live model catalog window so a model/provider switch updates
+        // the bar immediately. Fall back to the last shell-reported total only
+        // when the catalog omits `totalContextTokens` (some vendor rows).
+        let model_window = self.session.models.get_context_window().filter(|&t| t > 0);
+        let ctx_total = model_window.or_else(|| {
+            self.context_state
+                .as_ref()
+                .and_then(|c| (c.total > 0).then_some(c.total))
+        });
         if let Some(ctx_line) = context_bar::context_bar_line_for_session(
             ctx_used,
             ctx_total,

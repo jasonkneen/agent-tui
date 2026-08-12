@@ -1455,6 +1455,7 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
                 let prev_model = agent.session.models.current.clone();
                 let prev_effort = agent.session.models.reasoning_effort;
                 agent.session.models.set_current(model_id.clone(), effort);
+                agent.sync_context_window_from_model();
                 let resolved_effort = agent.session.models.reasoning_effort;
                 let unchanged =
                     prev_model.as_ref() == Some(&model_id) && prev_effort == resolved_effort;
@@ -1478,6 +1479,7 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
             Err(SwitchModelError::IncompatibleAgent { .. }) => {
                 if let Some(ref prev) = prev_model_id {
                     agent.session.models.set_current(prev.clone(), None);
+                    agent.sync_context_window_from_model();
                 }
                 agent.active_modal = None;
                 let display_name = agent.session.models.display_name_for(&model_id);
@@ -1510,6 +1512,7 @@ pub(in crate::app::dispatch) fn dispatch_agent_type_mismatch_answered(
             && let Some(agent) = app.agents.get_mut(&new_aid)
         {
             agent.session.models.set_current(model_id.clone(), effort);
+            agent.sync_context_window_from_model();
             if effort.is_some() {
                 agent.session.deferred_model_switch = Some(DeferredModelSwitch {
                     model_id,

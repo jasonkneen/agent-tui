@@ -923,6 +923,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                 let prev_model = agent.session.models.current.clone();
                 let prev_effort = agent.session.models.reasoning_effort;
                 agent.session.models.set_current(model_id.clone(), effort);
+                agent.sync_context_window_from_model();
                 let resolved_effort = agent.session.models.reasoning_effort;
                 let unchanged =
                     prev_model.as_ref() == Some(&model_id) && prev_effort == resolved_effort;
@@ -1174,6 +1175,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                                 app.models = stashed.clone();
                                 if let Some(agent) = get_active_agent_mut(app) {
                                     agent.session.models = stashed;
+                                    agent.sync_context_window_from_model();
                                 }
                             }
                             "Runtime: Grok (xAI) — built-in agent".to_string()

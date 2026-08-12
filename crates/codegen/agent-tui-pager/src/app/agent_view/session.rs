@@ -937,6 +937,11 @@ impl AgentView {
     ///
     /// No-op for gateway/chat-kind sessions (same policy as
     /// [`Self::apply_full_context_info`]).
+    ///
+    /// When `total` is 0, falls back to the current model's catalog window
+    /// (`totalContextTokens`) before reusing a sticky previous total. That
+    /// prevents a prior Grok 500k window from surviving a model/provider switch
+    /// when the stream omits an explicit total.
     pub fn apply_context_used(&mut self, used: u64, total: u64) {
         if self.chat_kind {
             self.context_state = None;
@@ -945,7 +950,12 @@ impl AgentView {
         let total = if total > 0 {
             total
         } else {
-            self.context_state.as_ref().map(|s| s.total).unwrap_or(0)
+            self.session
+                .models
+                .get_context_window()
+                .filter(|&t| t > 0)
+                .or_else(|| self.context_state.as_ref().map(|s| s.total).filter(|&t| t > 0))
+                .unwrap_or(0)
         };
         match self.context_state.as_mut() {
             Some(snap) => {
@@ -960,6 +970,39 @@ impl AgentView {
                 self.context_state = Some(agent_tui_shell::session::ContextInfo::from_notification(
                     used, total,
                 ));
+            }
+        }
+    }
+    /// Reconcile `context_state.total` with the current model's catalog window.
+    ///
+    /// Call after any model/runtime switch. Catalog `totalContextTokens` is the
+    /// immediate source of truth for the bar; when the new model has no window
+    /// meta, drop a sticky total from the previous model so we never keep
+    /// advertising e.g. Grok's 500k on a Codex/Claude session.
+    pub fn sync_context_window_from_model(&mut self) {
+        if self.chat_kind {
+            return;
+        }
+        match self.session.models.get_context_window().filter(|&t| t > 0) {
+            Some(total) => {
+                if let Some(snap) = self.context_state.as_mut() {
+                    if snap.total != total {
+                        snap.total = total;
+                        snap.usage_pct =
+                            agent_tui_token_estimation::usage_percentage_u8(snap.used, total);
+                        snap.free_tokens =
+                            agent_tui_token_estimation::free_tokens(total, snap.used);
+                    }
+                }
+            }
+            None => {
+                if let Some(snap) = self.context_state.as_mut() {
+                    if snap.total > 0 {
+                        snap.total = 0;
+                        snap.usage_pct = 0;
+                        snap.free_tokens = 0;
+                    }
+                }
             }
         }
     }
