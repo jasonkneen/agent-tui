@@ -1165,20 +1165,29 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             vec![]
         }
         Action::SetRuntime(backend) => {
+            let prev = crate::runtime_backend::active();
             match crate::runtime_backend::set_active(backend) {
                 Ok(()) => {
+                    if prev == crate::runtime_backend::RuntimeBackend::Grok
+                        && backend != crate::runtime_backend::RuntimeBackend::Grok
+                    {
+                        crate::runtime_backend::replace_stashed_grok_catalog(app.models.clone());
+                    }
+                    // Paint this runtime's catalog immediately so `/model` is
+                    // not left listing the previous vendor while a fetch is
+                    // in flight (and so a later hop cannot keep stale chrome).
+                    if prev != backend {
+                        let chrome =
+                            crate::runtime_backend::chrome_after_runtime_switch(backend);
+                        app.models = chrome.clone();
+                        if let Some(agent) = get_active_agent_mut(app) {
+                            agent.session.models = chrome;
+                            agent.sync_context_window_from_model();
+                            agent.prompt.refresh_slash(&agent.session.models);
+                        }
+                    }
                     let note = match backend {
                         crate::runtime_backend::RuntimeBackend::Grok => {
-                            // Restore Grok catalog if we had swapped it for a vendor.
-                            if let Some(stashed) =
-                                crate::runtime_backend::take_stashed_grok_catalog()
-                            {
-                                app.models = stashed.clone();
-                                if let Some(agent) = get_active_agent_mut(app) {
-                                    agent.session.models = stashed;
-                                    agent.sync_context_window_from_model();
-                                }
-                            }
                             "Runtime: Grok (xAI) — built-in agent".to_string()
                         }
                         crate::runtime_backend::RuntimeBackend::Codex => {

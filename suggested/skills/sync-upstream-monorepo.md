@@ -35,7 +35,20 @@ Do **not** bulk-overwrite `agent-tui-bin` or `agent-tui-*-runtime` from xai.
 3. Patch root `Cargo.toml` for **new** workspace dependency pins seen on `upstream/main`
 4. `cargo check -p agent-tui-bin`
 5. Verify bin entry, updater repo id, wire contracts
-6. Commit as `Synced from monorepo` with old→new `SOURCE_REV`
+6. Close remmerge seams (identity restore vs remmerged callees vs fork-only callers) — playbook in the [workflow](../workflows/sync-upstream-into-agent-tui.md) and `~/.agent-tui/skills/sync-upstream-monorepo/references/architecture.md`
+7. Commit as `Synced from monorepo` with old→new `SOURCE_REV`
+
+## After apply — remmerge seams
+
+`apply.sh` bulk-overwrites shared crates, remmerges (shared files take *theirs*), then restores a few identity/fork files from pre-sync HEAD. Those three steps create **API seams**, not random missing files.
+
+| Symptom | Fix (do not revert the remmerged file) |
+|---------|----------------------------------------|
+| `cannot find function` on restored `version.rs` | Port **new functions** from `xai-grok-update/src/version.rs`; keep `jasonkneen/agent-tui` / `@agent-tui/agent-tui`. `AGENT_TUI_CLI_BASE_URL` first, then `GROK_CLI_BASE_URL`. |
+| `cannot find function` only fork callers use | Restore that **function** from `$UPSTREAM_SYNC_HEAD_REV` (e.g. `append_external_runtime_message`) |
+| `update_catalog` argument-count mismatch | Adapt `runtime_backend`: catalog-only + `set_current`. Refresh must not clobber the displayed model. |
+| unresolved crate `which` in pager | Re-add `which = { workspace = true }` (manifests rewrite pager `Cargo.toml` from xai) |
+| `@agent-tui-official/grok` / `agent-tui-org-shared` / extra `npm/grok*` | Delete trees absent on pre-sync HEAD; restore `reinstall_hint` to `@agent-tui/agent-tui` + `jasonkneen/agent-tui` |
 
 ## Script map
 

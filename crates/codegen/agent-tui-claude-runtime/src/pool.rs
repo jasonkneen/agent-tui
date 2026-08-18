@@ -1,13 +1,15 @@
 //! Warm multi-turn Claude Code sessions (sticky `--resume` + idle timeout).
 
 use crate::error::{ClaudeRuntimeError, Result};
-use crate::protocol::{ClaudeTurnResult, PrintResultJson};
+use crate::protocol::{
+    classify_claude_stream_line, ClaudeStreamAction, ClaudeTurnResult, PrintResultJson,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
@@ -121,6 +123,20 @@ impl ClaudeRuntimePool {
         sticky_key: Option<&str>,
         permission_mode: PermissionMode,
     ) -> Result<ClaudeTurnResult> {
+        self.start_text_turn_with_delta(prompt, model, sticky_key, permission_mode, |_| {})
+            .await
+    }
+
+    /// Same as [`Self::start_text_turn_keyed`], calling `on_delta` for live
+    /// `stream-json` text (`content_block_delta` or full assistant messages).
+    pub async fn start_text_turn_with_delta(
+        &self,
+        prompt: impl Into<String>,
+        model: Option<String>,
+        sticky_key: Option<&str>,
+        permission_mode: PermissionMode,
+        mut on_delta: impl FnMut(&str) + Send,
+    ) -> Result<ClaudeTurnResult> {
         self.ensure_binary()?;
         let prompt = prompt.into();
         let model = model.or_else(|| self.config.default_model.clone());
@@ -173,6 +189,7 @@ impl ClaudeRuntimePool {
                 model.as_deref(),
                 resume.as_deref(),
                 permission_mode,
+                &mut on_delta,
             )
             .await?;
 
@@ -218,11 +235,13 @@ impl ClaudeRuntimePool {
         model: Option<&str>,
         resume: Option<&str>,
         permission_mode: PermissionMode,
+        on_delta: &mut (dyn FnMut(&str) + Send),
     ) -> Result<ClaudeTurnResult> {
         let mut cmd = Command::new(&self.config.claude_bin);
         cmd.arg("-p")
             .arg("--output-format")
-            .arg("json")
+            .arg("stream-json")
+            .arg("--include-partial-messages")
             .arg("--permission-mode")
             .arg(permission_mode.claude_cli_value())
             .stdin(Stdio::piped())
@@ -255,7 +274,7 @@ impl ClaudeRuntimePool {
             .map_err(ClaudeRuntimeError::Spawn)?;
         stdin.shutdown().await.map_err(ClaudeRuntimeError::Spawn)?;
         drop(stdin);
-        let mut stdout = child
+        let stdout = child
             .stdout
             .take()
             .ok_or_else(|| ClaudeRuntimeError::Other("claude stdout missing".into()))?;
@@ -264,66 +283,89 @@ impl ClaudeRuntimePool {
             .take()
             .ok_or_else(|| ClaudeRuntimeError::Other("claude stderr missing".into()))?;
 
-        let out_fut = async {
-            let mut buf = Vec::new();
-            stdout.read_to_end(&mut buf).await?;
-            Ok::<_, std::io::Error>(buf)
-        };
-        let err_fut = async {
-            let mut buf = Vec::new();
-            stderr.read_to_end(&mut buf).await?;
-            Ok::<_, std::io::Error>(buf)
-        };
-
-        let join = async {
-            let (out, err) = tokio::try_join!(out_fut, err_fut)?;
-            let status = child.wait().await?;
-            Ok::<_, std::io::Error>((out, err, status))
-        };
-
-        let (out, err, status) = match timeout(self.config.turn_timeout, join).await {
-            Ok(Ok(v)) => v,
-            Ok(Err(e)) => return Err(ClaudeRuntimeError::Spawn(e)),
-            Err(_) => {
-                let _ = child.kill().await;
-                return Err(ClaudeRuntimeError::Timeout(self.config.turn_timeout));
-            }
-        };
-
-        let stdout_str = String::from_utf8_lossy(&out);
-        let stderr_str = String::from_utf8_lossy(&err);
-        if !status.success() {
-            // Claude sometimes still emits a valid JSON result with is_error on
-            // non-zero exit — prefer parsing that.
-            if let Ok(parsed) = parse_print_json(&stdout_str) {
-                if !parsed.text.is_empty() || parsed.is_error {
-                    return Ok(parsed);
+        let work = async {
+            let mut lines = BufReader::new(stdout).lines();
+            let mut saw_token_delta = false;
+            let mut acc = String::new();
+            let mut last_result: Option<ClaudeTurnResult> = None;
+            loop {
+                match lines.next_line().await {
+                    Ok(Some(line)) => match classify_claude_stream_line(&line) {
+                        ClaudeStreamAction::TextDelta(t) => {
+                            saw_token_delta = true;
+                            acc.push_str(&t);
+                            on_delta(&t);
+                        }
+                        ClaudeStreamAction::AssistantText(t) if !saw_token_delta => {
+                            acc.push_str(&t);
+                            on_delta(&t);
+                        }
+                        ClaudeStreamAction::ResultLine => {
+                            if let Ok(parsed) = parse_print_json(&line) {
+                                last_result = Some(parsed);
+                            }
+                        }
+                        ClaudeStreamAction::AssistantText(_) | ClaudeStreamAction::Ignore => {}
+                    },
+                    Ok(None) => break,
+                    Err(e) => return Err(ClaudeRuntimeError::Spawn(e)),
                 }
             }
+            let mut err = Vec::new();
+            let _ = stderr.read_to_end(&mut err).await;
+            let status = child.wait().await.map_err(ClaudeRuntimeError::Spawn)?;
+            Ok::<_, ClaudeRuntimeError>((
+                last_result,
+                acc,
+                status,
+                String::from_utf8_lossy(&err).into_owned(),
+            ))
+        };
+
+        let (last_result, acc, status, stderr_str) =
+            match timeout(self.config.turn_timeout, work).await {
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => return Err(e),
+                Err(_) => {
+                    let _ = child.kill().await;
+                    return Err(ClaudeRuntimeError::Timeout(self.config.turn_timeout));
+                }
+            };
+
+        if let Some(mut parsed) = last_result {
+            if parsed.text.is_empty() && !acc.is_empty() {
+                parsed.text = acc.clone();
+            }
+            if !status.success() && parsed.text.is_empty() && !parsed.is_error {
+                // fall through to exit error
+            } else {
+                return Ok(parsed);
+            }
+        }
+
+        if !status.success() {
             let code = status.code().unwrap_or(-1);
             let msg = if stderr_str.trim().is_empty() {
-                stdout_str.trim().to_string()
+                acc
             } else {
                 stderr_str.trim().to_string()
             };
             return Err(ClaudeRuntimeError::Exit { code, stderr: msg });
         }
 
-        parse_print_json(&stdout_str).or_else(|e| {
-            warn!(error = %e, "claude json parse failed");
-            // Fall back to raw stdout if non-empty.
-            let trimmed = stdout_str.trim();
-            if trimmed.is_empty() {
-                Err(e)
-            } else {
-                Ok(ClaudeTurnResult {
-                    text: trimmed.to_string(),
-                    session_id: None,
-                    model: model.map(str::to_string),
-                    is_error: false,
-                })
-            }
-        })
+        if !acc.is_empty() {
+            return Ok(ClaudeTurnResult {
+                text: acc,
+                session_id: None,
+                model: model.map(str::to_string),
+                is_error: false,
+            });
+        }
+
+        warn!("claude stream-json produced no result line or text");
+        Err(ClaudeRuntimeError::BadJson(
+            "claude stream-json produced no result".into(),
+        ))
     }
 }
 
@@ -447,6 +489,9 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"o
         assert!(!calls[2].contains("--resume"));
         assert!(!args.contains("secret"), "prompt leaked into argv");
         assert!(calls.iter().all(|call| call.contains("<manual>")));
+        assert!(calls
+            .iter()
+            .all(|call| call.contains("<stream-json>") && call.contains("<--include-partial-messages>")));
 
         assert_eq!(
             std::fs::read_to_string(stdin_log).unwrap(),
@@ -456,5 +501,43 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"o
             std::env::remove_var("CLAUDE_TEST_ARGS");
             std::env::remove_var("CLAUDE_TEST_STDIN");
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stream_json_deltas_invoke_callback() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("fake-claude-stream");
+        std::fs::write(
+            &bin,
+            r#"#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hel"}}}'
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"lo"}}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"hello","session_id":"s1"}'
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&bin).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&bin, permissions).unwrap();
+
+        let pool = ClaudeRuntimePool::new(PoolConfig {
+            claude_bin: bin,
+            turn_timeout: Duration::from_secs(5),
+            ..PoolConfig::default()
+        });
+        let mut seen = String::new();
+        let result = pool
+            .start_text_turn_with_delta("hi", None, Some("k"), PermissionMode::Ask, |c| {
+                seen.push_str(c)
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.text, "hello");
+        assert_eq!(seen, "hello");
+        assert_eq!(result.session_id.as_deref(), Some("s1"));
     }
 }

@@ -62,6 +62,9 @@ git show upstream/main:Cargo.toml | head -n 400
 - [ ] `head crates/codegen/agent-tui-bin/src/main.rs` — product skins entry still present
 - [ ] `rg 'jasonkneen/agent-tui' crates/codegen/agent-tui-update/src/version.rs`
 - [ ] `rg 'xai-grok-cli' crates/codegen/agent-tui-auth crates/codegen/agent-tui-http | head`
+- [ ] New `version.rs` functions from `xai-grok-update` exist on the fork file (identity constants still fork)
+- [ ] No `@agent-tui-official` / `agent-tui-org-shared`; pager `npm/` matches pre-sync tree names (`agent-tui*`, not extra `grok*`)
+- [ ] Pager `Cargo.toml` still has `which` + four runtime crates
 - [ ] Optional: `cargo test -p agent-tui-extra-ca` / focused crate tests for touched areas
 
 ### E. Commit
@@ -85,6 +88,11 @@ git commit -m "Synced from monorepo" -m "SOURCE_REV: <old> → <new>"
 | Lost product_profile / runtime_addon | `git show HEAD:…` or remmerge with `--head-rev` pointing at pre-sync tip |
 | `agent-tui-bin` is huge full main | Restore thin main from pre-sync; keep lib product prefix |
 | Dirty tree blocked apply | Stash/commit WIP, or `FORCE=1 bash scripts/upstream-sync/apply.sh` |
+| Restored `version.rs` missing new APIs (`cli_base_urls`, …) | Port new functions from `xai-grok-update/src/version.rs`; keep fork URL/npm constants |
+| Missing fork-only persist helper (`append_external_runtime_message`, …) | Restore that function from pre-sync HEAD; do not revert the remmerged file |
+| `update_catalog` takes 1 arg but fork callers pass 2 | Adapt `runtime_backend` (catalog-only + `set_current`) |
+| unresolved crate `which` in pager | Add `which = { workspace = true }` to pager `Cargo.toml` |
+| `@agent-tui-official` / extra `npm/grok*` | Delete trees absent on pre-sync HEAD; fix `reinstall_hint` |
 
 ## Out of scope
 

@@ -1090,6 +1090,8 @@ pub(in crate::app::dispatch) fn handle_session_loaded(
         {
             app.models = state.clone();
             agent.session.models = state;
+            agent.sync_context_window_from_model();
+            agent.prompt.refresh_slash(&agent.session.models);
         }
         let deferred = crate::app::dispatch::session::lifecycle::apply_deferred_model_switch(
             agent,

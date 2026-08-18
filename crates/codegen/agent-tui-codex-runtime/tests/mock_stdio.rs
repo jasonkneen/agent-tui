@@ -95,8 +95,8 @@ async fn mock_initialize_thread_and_stream_deltas() {
     let completed = timeout(Duration::from_secs(3), async {
         loop {
             match rx.recv().await {
-                Ok(RuntimeEvent::TextDelta { text: t }) => text.push_str(&t),
-                Ok(RuntimeEvent::TurnCompleted { status }) => {
+                Ok(RuntimeEvent::TextDelta { text: t, .. }) => text.push_str(&t),
+                Ok(RuntimeEvent::TurnCompleted { status, .. }) => {
                     assert_eq!(status.as_deref(), Some("completed"));
                     break;
                 }

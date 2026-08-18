@@ -24,7 +24,8 @@ mod pool;
 mod protocol;
 
 pub use client::{
-    ClientIdentity, CodexAppServerClient, TransportConfig, collect_turn_text, collect_turn_text_for,
+    ClientIdentity, CodexAppServerClient, TransportConfig, collect_turn_text,
+    collect_turn_text_for, collect_turn_text_for_with_delta,
 };
 pub use error::{CodexRuntimeError, Result};
 pub use pool::{CodexRuntimePool, PermissionMode, PoolConfig};

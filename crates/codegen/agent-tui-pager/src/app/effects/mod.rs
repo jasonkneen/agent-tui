@@ -37,6 +37,36 @@ use agent::AgentId;
 use crate::unified_log as ulog;
 use agent_tui_shell::sampling::error::http_status_from_error;
 use agent_tui_shell::session::{ExtMethodResult, SessionInfoResponse};
+use std::sync::Mutex;
+
+static RUNTIME_EVENT_TX: Mutex<Option<tokio::sync::mpsc::UnboundedSender<TaskResult>>> =
+    Mutex::new(None);
+
+/// Install (or clear) the live-delta channel the event loop drains.
+pub(crate) fn set_runtime_event_tx(
+    tx: Option<tokio::sync::mpsc::UnboundedSender<TaskResult>>,
+) {
+    *RUNTIME_EVENT_TX.lock().unwrap_or_else(|e| e.into_inner()) = tx;
+}
+
+fn send_runtime_event(result: TaskResult) {
+    let tx = RUNTIME_EVENT_TX
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if let Some(tx) = tx {
+        let _ = tx.send(result);
+    }
+}
+
+pub(crate) struct RuntimeEventTxGuard;
+
+impl Drop for RuntimeEventTxGuard {
+    fn drop(&mut self) {
+        set_runtime_event_tx(None);
+    }
+}
+
 pub(crate) fn execute(
     effect: Effect,
     tasks: &mut JoinSet<TaskResult>,
@@ -1128,6 +1158,19 @@ pub(crate) fn execute(
                     let send_start = std::time::Instant::now();
                     let sticky_key = Some(session_id.0.to_string());
                     let info = external_session_info(&session_id, fallback_cwd);
+                    let delta_agent = agent_id;
+                    let delta_prompt = prompt_id.clone();
+                    let on_delta: Option<Box<dyn FnMut(&str) + Send>> =
+                        Some(Box::new(move |chunk: &str| {
+                            if chunk.is_empty() {
+                                return;
+                            }
+                            send_runtime_event(TaskResult::ExternalRuntimeTextDelta {
+                                agent_id: delta_agent,
+                                prompt_id: Some(delta_prompt.clone()),
+                                text: chunk.to_string(),
+                            });
+                        }));
                     let result = match agent_tui_shell::session::persistence::append_external_runtime_message(
                         &info,
                         &agent_tui_shell::sampling::ConversationItem::user(text.clone()),
@@ -1135,11 +1178,12 @@ pub(crate) fn execute(
                     .await
                     {
                         Ok(()) => {
-                            match crate::runtime_backend::run_external_turn_keyed_with_permission(
+                            match crate::runtime_backend::run_external_turn_keyed_with_delta(
                                 runtime,
                                 text,
                                 sticky_key,
                                 permission_mode,
+                                on_delta,
                             )
                             .await
                             {
@@ -1266,6 +1310,19 @@ pub(crate) fn execute(
                         Err("Empty prompt".into())
                     } else {
                         let info = external_session_info(&session_id, fallback_cwd);
+                        let delta_agent = agent_id;
+                        let delta_prompt = prompt_id.clone();
+                        let on_delta: Option<Box<dyn FnMut(&str) + Send>> =
+                            Some(Box::new(move |chunk: &str| {
+                                if chunk.is_empty() {
+                                    return;
+                                }
+                                send_runtime_event(TaskResult::ExternalRuntimeTextDelta {
+                                    agent_id: delta_agent,
+                                    prompt_id: Some(delta_prompt.clone()),
+                                    text: chunk.to_string(),
+                                });
+                            }));
                         match agent_tui_shell::session::persistence::append_external_runtime_message(
                             &info,
                             &agent_tui_shell::sampling::ConversationItem::user(text.clone()),
@@ -1273,11 +1330,12 @@ pub(crate) fn execute(
                         .await
                         {
                             Ok(()) => {
-                                match crate::runtime_backend::run_external_turn_keyed_with_permission(
+                                match crate::runtime_backend::run_external_turn_keyed_with_delta(
                                     runtime,
                                     text,
                                     sticky_key,
                                     permission_mode,
+                                    on_delta,
                                 )
                                 .await
                                 {

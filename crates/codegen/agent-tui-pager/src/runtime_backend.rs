@@ -18,7 +18,7 @@ use std::sync::{Arc, RwLock};
 mod turns;
 pub use turns::{
     RuntimePermissionMode, cancel_external_turn, run_external_turn, run_external_turn_keyed,
-    run_external_turn_keyed_with_permission,
+    run_external_turn_keyed_with_delta, run_external_turn_keyed_with_permission,
 };
 
 /// Which harness handles user turns.
@@ -116,18 +116,83 @@ struct RuntimeMem {
 
 static MEM: RwLock<Option<RuntimeMem>> = RwLock::new(None);
 
-/// Cached Codex catalog for `/model` while runtime is Codex.
-static CODEX_CATALOG: OnceLock<RwLock<Option<crate::acp::model_state::ModelState>>> =
-    OnceLock::new();
-/// Grok catalog stashed when switching to Codex so we can restore it.
+/// Last live catalog per vendor. One shared slot used to paint Claude with
+/// leftover Codex ids (and the reverse) after `/runtime`.
+#[derive(Default)]
+struct VendorCatalogs {
+    codex: Option<crate::acp::model_state::ModelState>,
+    claude: Option<crate::acp::model_state::ModelState>,
+    lazar: Option<crate::acp::model_state::ModelState>,
+    hermes: Option<crate::acp::model_state::ModelState>,
+}
+
+static VENDOR_CATALOGS: OnceLock<RwLock<VendorCatalogs>> = OnceLock::new();
+/// Grok catalog stashed when leaving Grok so `/runtime grok` can restore it.
 static GROK_STASH: OnceLock<RwLock<Option<crate::acp::model_state::ModelState>>> = OnceLock::new();
 
-fn catalog_lock() -> &'static RwLock<Option<crate::acp::model_state::ModelState>> {
-    CODEX_CATALOG.get_or_init(|| RwLock::new(None))
+fn vendor_catalogs() -> &'static RwLock<VendorCatalogs> {
+    VENDOR_CATALOGS.get_or_init(|| RwLock::new(VendorCatalogs::default()))
 }
 
 fn grok_stash_lock() -> &'static RwLock<Option<crate::acp::model_state::ModelState>> {
     GROK_STASH.get_or_init(|| RwLock::new(None))
+}
+
+fn vendor_slot_mut(
+    map: &mut VendorCatalogs,
+    backend: RuntimeBackend,
+) -> Option<&mut Option<crate::acp::model_state::ModelState>> {
+    match backend {
+        RuntimeBackend::Codex => Some(&mut map.codex),
+        RuntimeBackend::Claude => Some(&mut map.claude),
+        RuntimeBackend::Lazar => Some(&mut map.lazar),
+        RuntimeBackend::Hermes => Some(&mut map.hermes),
+        RuntimeBackend::Grok => None,
+    }
+}
+
+fn vendor_slot<'a>(
+    map: &'a VendorCatalogs,
+    backend: RuntimeBackend,
+) -> Option<&'a crate::acp::model_state::ModelState> {
+    match backend {
+        RuntimeBackend::Codex => map.codex.as_ref(),
+        RuntimeBackend::Claude => map.claude.as_ref(),
+        RuntimeBackend::Lazar => map.lazar.as_ref(),
+        RuntimeBackend::Hermes => map.hermes.as_ref(),
+        RuntimeBackend::Grok => None,
+    }
+}
+
+/// Remember a vendor catalog for restore / `/model` while that addon is active.
+pub fn store_vendor_catalog(
+    backend: RuntimeBackend,
+    state: crate::acp::model_state::ModelState,
+) {
+    if let Ok(mut g) = vendor_catalogs().write()
+        && let Some(slot) = vendor_slot_mut(&mut g, backend)
+    {
+        *slot = Some(state);
+    }
+}
+
+/// Last catalog fetched for `backend`, if any.
+pub fn vendor_catalog(backend: RuntimeBackend) -> Option<crate::acp::model_state::ModelState> {
+    vendor_catalogs()
+        .read()
+        .ok()
+        .and_then(|g| vendor_slot(&g, backend).cloned())
+}
+
+/// Cached Codex catalog (back-compat alias).
+pub fn codex_catalog() -> Option<crate::acp::model_state::ModelState> {
+    vendor_catalog(RuntimeBackend::Codex)
+}
+
+/// Whether a just-finished vendor catalog fetch should replace UI chrome.
+/// Late `/runtime` hops must not paint Codex over Claude (or the reverse).
+pub fn vendor_refresh_applies(loaded: RuntimeBackend, active: RuntimeBackend) -> bool {
+    loaded == active && loaded != RuntimeBackend::Grok
 }
 
 fn runtime_file_path() -> PathBuf {
@@ -253,7 +318,7 @@ pub fn set_codex_model(model_id: impl Into<String>) -> Result<(), String> {
             });
         }
     }
-    sync_catalog_current(&model_id);
+    sync_catalog_current(RuntimeBackend::Codex, &model_id);
     Ok(())
 }
 
@@ -271,7 +336,7 @@ pub fn set_claude_model(model_id: impl Into<String>) -> Result<(), String> {
             });
         }
     }
-    sync_catalog_current(&model_id);
+    sync_catalog_current(RuntimeBackend::Claude, &model_id);
     Ok(())
 }
 
@@ -289,7 +354,7 @@ pub fn set_lazar_model(model_id: impl Into<String>) -> Result<(), String> {
             });
         }
     }
-    sync_catalog_current(&model_id);
+    sync_catalog_current(RuntimeBackend::Lazar, &model_id);
     Ok(())
 }
 
@@ -311,17 +376,18 @@ pub fn set_hermes_model(model_id: impl Into<String>) -> Result<(), String> {
             });
         }
     }
-    sync_catalog_current(&model_id);
+    sync_catalog_current(RuntimeBackend::Hermes, &model_id);
     Ok(())
 }
 
-fn sync_catalog_current(model_id: &str) {
-    if let Ok(mut g) = catalog_lock().write() {
-        if let Some(ref mut state) = *g {
-            let id = acp::ModelId::new(Arc::from(model_id));
-            if state.available.contains_key(&id) {
-                state.set_current(id, None);
-            }
+fn sync_catalog_current(backend: RuntimeBackend, model_id: &str) {
+    if let Ok(mut g) = vendor_catalogs().write()
+        && let Some(slot) = vendor_slot_mut(&mut g, backend)
+        && let Some(state) = slot
+    {
+        let id = acp::ModelId::new(Arc::from(model_id));
+        if state.available.contains_key(&id) {
+            state.set_current(id, None);
         }
     }
 }
@@ -526,23 +592,68 @@ pub fn claude_pool() -> Arc<agent_tui_claude_runtime::ClaudeRuntimePool> {
     .clone()
 }
 
-/// Cached Codex model catalog (None until first successful fetch).
-pub fn codex_catalog() -> Option<crate::acp::model_state::ModelState> {
-    catalog_lock().read().ok().and_then(|g| g.clone())
+/// Stash the Grok catalog if nothing is stored yet (ACP-while-vendor).
+pub fn stash_grok_catalog(state: crate::acp::model_state::ModelState) {
+    if let Ok(mut g) = grok_stash_lock().write()
+        && g.is_none()
+    {
+        *g = Some(state);
+    }
 }
 
-/// Stash the current Grok catalog before replacing it with Codex models.
-pub fn stash_grok_catalog(state: crate::acp::model_state::ModelState) {
+/// Overwrite the Grok stash (call when *leaving* Grok so restore has the latest pick).
+pub fn replace_stashed_grok_catalog(state: crate::acp::model_state::ModelState) {
     if let Ok(mut g) = grok_stash_lock().write() {
-        if g.is_none() {
-            *g = Some(state);
-        }
+        *g = Some(state);
     }
+}
+
+/// Peek the stashed Grok catalog without consuming it.
+pub fn stashed_grok_catalog() -> Option<crate::acp::model_state::ModelState> {
+    grok_stash_lock().read().ok().and_then(|g| g.clone())
 }
 
 /// Take the stashed Grok catalog (if any).
 pub fn take_stashed_grok_catalog() -> Option<crate::acp::model_state::ModelState> {
     grok_stash_lock().write().ok().and_then(|mut g| g.take())
+}
+
+/// Catalog to paint immediately on `/runtime` so `/model` is not left showing
+/// the previous vendor while the live refresh is in flight.
+///
+/// Missing cache → empty state (Codex `/model` already treats empty as loading).
+pub fn chrome_after_runtime_switch(
+    backend: RuntimeBackend,
+) -> crate::acp::model_state::ModelState {
+    match backend {
+        RuntimeBackend::Grok => stashed_grok_catalog().unwrap_or_default(),
+        RuntimeBackend::Codex => vendor_catalog(RuntimeBackend::Codex)
+            .or_else(|| single_entry_catalog(codex_model(), "Codex"))
+            .unwrap_or_default(),
+        RuntimeBackend::Claude => vendor_catalog(RuntimeBackend::Claude)
+            .unwrap_or_else(|| model_state_from_claude_discovered(claude_model().as_deref())),
+        RuntimeBackend::Lazar => vendor_catalog(RuntimeBackend::Lazar)
+            .unwrap_or_else(|| model_state_from_lazar_active(lazar_model().as_deref())),
+        RuntimeBackend::Hermes => vendor_catalog(RuntimeBackend::Hermes)
+            .unwrap_or_else(|| model_state_from_hermes_active(hermes_model().as_deref())),
+    }
+}
+
+fn single_entry_catalog(
+    id: Option<String>,
+    vendor: &str,
+) -> Option<crate::acp::model_state::ModelState> {
+    let id = id.filter(|s| !s.is_empty())?;
+    let model_id = acp::ModelId::new(Arc::from(id.as_str()));
+    let mut meta = serde_json::Map::new();
+    meta_with_context_window(&mut meta, Some(200_000));
+    let info = acp::ModelInfo::new(model_id.clone(), format!("{vendor} — {id}")).meta(Some(meta));
+    let mut available = IndexMap::new();
+    available.insert(model_id.clone(), info);
+    let mut state = crate::acp::model_state::ModelState::default();
+    state.update_catalog(available);
+    state.set_current(model_id, None);
+    Some(state)
 }
 
 /// Insert `totalContextTokens` so the context bar can update on model switch.
@@ -689,9 +800,7 @@ pub async fn refresh_codex_models() -> Result<crate::acp::model_state::ModelStat
             let _ = set_codex_model(id);
         }
     }
-    if let Ok(mut g) = catalog_lock().write() {
-        *g = Some(state.clone());
-    }
+    store_vendor_catalog(RuntimeBackend::Codex, state.clone());
     Ok(state)
 }
 
@@ -705,16 +814,16 @@ pub fn refresh_claude_models() -> Result<crate::acp::model_state::ModelState, St
             let _ = set_claude_model(id);
         }
     }
-    if let Ok(mut g) = catalog_lock().write() {
-        *g = Some(state.clone());
-    }
+    store_vendor_catalog(RuntimeBackend::Claude, state.clone());
     Ok(state)
 }
 
 /// Load the Lazar "catalog": the kernel owns providers and reports one active
 /// model (LAZAR_MODEL / memory/model.txt); there is no catalog API.
 pub fn refresh_lazar_models() -> Result<crate::acp::model_state::ModelState, String> {
-    Ok(model_state_from_lazar_active(lazar_model().as_deref()))
+    let state = model_state_from_lazar_active(lazar_model().as_deref());
+    store_vendor_catalog(RuntimeBackend::Lazar, state.clone());
+    Ok(state)
 }
 
 /// Build ModelState from the kernel-reported active model (single entry).
@@ -741,7 +850,9 @@ pub fn model_state_from_lazar_active(
 
 /// Load the Hermes "catalog": config.yaml default + optional selected model.
 pub fn refresh_hermes_models() -> Result<crate::acp::model_state::ModelState, String> {
-    Ok(model_state_from_hermes_active(hermes_model().as_deref()))
+    let state = model_state_from_hermes_active(hermes_model().as_deref());
+    store_vendor_catalog(RuntimeBackend::Hermes, state.clone());
+    Ok(state)
 }
 
 pub fn model_state_from_hermes_active(
@@ -821,6 +932,22 @@ pub fn model_state_from_claude_known(
     preferred: Option<&str>,
 ) -> crate::acp::model_state::ModelState {
     model_state_from_claude_discovered(preferred)
+}
+
+#[cfg(test)]
+pub(crate) fn catalog_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+pub(crate) fn reset_runtime_catalogs_for_test() {
+    if let Ok(mut g) = vendor_catalogs().write() {
+        *g = VendorCatalogs::default();
+    }
+    if let Ok(mut g) = grok_stash_lock().write() {
+        *g = None;
+    }
 }
 
 #[cfg(test)]

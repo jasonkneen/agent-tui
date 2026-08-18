@@ -61,6 +61,73 @@ fn late_external_runtime_result_is_dropped_after_turn_retired() {
     assert!(agent.session.current_prompt_id.is_none());
 }
 
+#[test]
+fn external_runtime_text_deltas_stream_then_done_does_not_duplicate() {
+    let mut app = test_app_with_agent();
+    {
+        let agent = app.agents.get_mut(&AgentId(0)).unwrap();
+        agent.session.start_turn(&mut agent.scrollback);
+        agent.session.current_prompt_id = Some("live-prompt".into());
+        agent.turn_started_at = Some(std::time::Instant::now());
+    }
+
+    dispatch(
+        Action::TaskComplete(TaskResult::ExternalRuntimeTextDelta {
+            agent_id: AgentId(0),
+            prompt_id: Some("live-prompt".into()),
+            text: "Hel".into(),
+        }),
+        &mut app,
+    );
+    dispatch(
+        Action::TaskComplete(TaskResult::ExternalRuntimeTextDelta {
+            agent_id: AgentId(0),
+            prompt_id: Some("live-prompt".into()),
+            text: "lo".into(),
+        }),
+        &mut app,
+    );
+    dispatch(
+        Action::TaskComplete(TaskResult::ExternalRuntimeTurnDone {
+            agent_id: AgentId(0),
+            prompt_id: Some("live-prompt".into()),
+            result: Ok("Hello".into()),
+            runtime: crate::runtime_backend::RuntimeBackend::Lazar,
+        }),
+        &mut app,
+    );
+
+    let agent = &app.agents[&AgentId(0)];
+    let messages: Vec<String> = (0..agent.scrollback.len())
+        .filter_map(|index| {
+            agent
+                .scrollback
+                .get(index)
+                .and_then(|entry| entry.block.as_agent_message())
+                .map(|message| message.text())
+        })
+        .collect();
+    assert_eq!(messages, vec!["Hello".to_string()]);
+    assert!(matches!(agent.session.state, AgentState::Idle));
+}
+
+#[test]
+fn stale_external_runtime_text_delta_is_dropped() {
+    let mut app = test_app_with_agent();
+    let before = app.agents[&AgentId(0)].scrollback.len();
+    dispatch(
+        Action::TaskComplete(TaskResult::ExternalRuntimeTextDelta {
+            agent_id: AgentId(0),
+            prompt_id: Some("retired-prompt".into()),
+            text: "nope".into(),
+        }),
+        &mut app,
+    );
+    let agent = &app.agents[&AgentId(0)];
+    assert_eq!(agent.scrollback.len(), before);
+    assert!(!agent.session.tracker.has_open_agent_message());
+}
+
 fn doctor_target(app: &AppView, id: AgentId) -> crate::app::actions::DoctorFixTarget {
     let agent = &app.agents[&id];
     crate::app::actions::DoctorFixTarget {

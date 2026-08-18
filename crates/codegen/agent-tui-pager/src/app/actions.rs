@@ -2464,6 +2464,12 @@ pub enum TaskResult {
         /// constructions that don't need gating.
         prompt_id: Option<String>,
     },
+    /// Live token from an external runtime (Lazar/Claude/Codex/Hermes).
+    ExternalRuntimeTextDelta {
+        agent_id: AgentId,
+        prompt_id: Option<String>,
+        text: String,
+    },
     /// External runtime (Codex / Claude / Lazar / Hermes) finished a turn.
     /// User prompt is already in scrollback; this injects the assistant text
     /// (or an error) and closes the turn like [`TaskResult::PromptResponse`].

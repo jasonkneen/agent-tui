@@ -345,6 +345,77 @@ pub(crate) struct PrintResultJson {
     pub terminal_reason: Option<String>,
 }
 
+/// One line of `claude -p --output-format stream-json`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaudeStreamAction {
+    Ignore,
+    /// Token-level text (`content_block_delta` / `stream_event`).
+    TextDelta(String),
+    /// Complete assistant message (no partials). Used when the CLI does not
+    /// emit token deltas.
+    AssistantText(String),
+    /// Terminal `type=result` line (session id / final text / error).
+    ResultLine,
+}
+
+/// Classify one JSONL line from Claude Code stream-json.
+pub fn classify_claude_stream_line(line: &str) -> ClaudeStreamAction {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+        return ClaudeStreamAction::Ignore;
+    };
+    match v.get("type").and_then(|t| t.as_str()) {
+        Some("stream_event") => text_delta_from_event(v.get("event").unwrap_or(&serde_json::Value::Null)),
+        Some("content_block_delta") => text_delta_from_event(&v),
+        Some("assistant") => {
+            let text = assistant_text_from_message(&v);
+            if text.is_empty() {
+                ClaudeStreamAction::Ignore
+            } else {
+                ClaudeStreamAction::AssistantText(text)
+            }
+        }
+        Some("result") => ClaudeStreamAction::ResultLine,
+        _ => ClaudeStreamAction::Ignore,
+    }
+}
+
+fn text_delta_from_event(event: &serde_json::Value) -> ClaudeStreamAction {
+    let event = if event.get("type").and_then(|t| t.as_str()) == Some("content_block_delta")
+        || event.get("delta").is_some()
+    {
+        event
+    } else {
+        return ClaudeStreamAction::Ignore;
+    };
+    let delta = event.get("delta").unwrap_or(&serde_json::Value::Null);
+    if delta.get("type").and_then(|t| t.as_str()) == Some("text_delta") {
+        if let Some(t) = delta.get("text").and_then(|t| t.as_str()) {
+            if !t.is_empty() {
+                return ClaudeStreamAction::TextDelta(t.to_string());
+            }
+        }
+    }
+    ClaudeStreamAction::Ignore
+}
+
+fn assistant_text_from_message(v: &serde_json::Value) -> String {
+    match v.pointer("/message/content") {
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| {
+                if item.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    item.get("text").and_then(|t| t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        Some(serde_json::Value::String(s)) => s.clone(),
+        _ => String::new(),
+    }
+}
+
 impl PrintResultJson {
     pub fn into_turn(self) -> ClaudeTurnResult {
         let is_error = self.is_error.unwrap_or(false)
@@ -370,6 +441,38 @@ impl PrintResultJson {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classify_stream_json_token_and_assistant() {
+        assert_eq!(
+            classify_claude_stream_line(
+                r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}}"#
+            ),
+            ClaudeStreamAction::TextDelta("Hi".into())
+        );
+        assert_eq!(
+            classify_claude_stream_line(
+                r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"Yo"}}"#
+            ),
+            ClaudeStreamAction::TextDelta("Yo".into())
+        );
+        assert_eq!(
+            classify_claude_stream_line(
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"}]}}"#
+            ),
+            ClaudeStreamAction::AssistantText("Hello".into())
+        );
+        assert_eq!(
+            classify_claude_stream_line(
+                r#"{"type":"result","subtype":"success","result":"Hello"}"#
+            ),
+            ClaudeStreamAction::ResultLine
+        );
+        assert_eq!(
+            classify_claude_stream_line("not-json"),
+            ClaudeStreamAction::Ignore
+        );
+    }
 
     #[test]
     fn known_models_include_fable_and_opus_48() {

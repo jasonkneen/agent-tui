@@ -90,16 +90,19 @@ fn handle_external_runtime_turn_done(
     }
 
     let elapsed = agent.turn_elapsed();
+    let streamed = agent.session.tracker.has_open_agent_message();
     match &result {
         Ok(text) => {
-            let body = if text.trim().is_empty() {
-                format!("_({} returned empty output)_", runtime.display_name())
-            } else {
-                text.clone()
-            };
-            agent
-                .scrollback
-                .push_block(RenderBlock::agent_message(body));
+            if !streamed {
+                let body = if text.trim().is_empty() {
+                    format!("_({} returned empty output)_", runtime.display_name())
+                } else {
+                    text.clone()
+                };
+                agent
+                    .scrollback
+                    .push_block(RenderBlock::agent_message(body));
+            }
         }
         Err(err) => {
             agent.scrollback.push_block(RenderBlock::system(format!(
@@ -140,11 +143,47 @@ fn handle_external_runtime_turn_done(
     drain.effects
 }
 
+fn handle_external_runtime_text_delta(
+    app: &mut AppView,
+    agent_id: AgentId,
+    prompt_id: Option<String>,
+    text: String,
+) -> Vec<Effect> {
+    let Some(agent) = app.agents.get_mut(&agent_id) else {
+        return vec![];
+    };
+    if let Some(ref pid) = prompt_id
+        && agent.session.current_prompt_id.as_deref() != Some(pid.as_str())
+    {
+        return vec![];
+    }
+    let _ = agent
+        .session
+        .tracker
+        .push_external_text_delta(&text, &mut agent.scrollback);
+    vec![]
+}
+
 fn handle_vendor_models_loaded(
     app: &mut AppView,
-    vendor: &str,
+    runtime: RuntimeBackend,
     result: Result<crate::acp::model_state::ModelState, String>,
 ) -> Vec<Effect> {
+    let vendor = match runtime {
+        RuntimeBackend::Codex => "Codex",
+        RuntimeBackend::Claude => "Claude",
+        RuntimeBackend::Lazar => "Lazar",
+        RuntimeBackend::Hermes => "Hermes",
+        RuntimeBackend::Grok => "Grok",
+    };
+    if let Ok(ref state) = result {
+        crate::runtime_backend::store_vendor_catalog(runtime, state.clone());
+    }
+    // A slower Codex fetch must not overwrite Claude chrome after `/runtime claude`.
+    if !crate::runtime_backend::vendor_refresh_applies(runtime, crate::runtime_backend::active())
+    {
+        return vec![];
+    }
     match result {
         Ok(state) => {
             // Stash Grok only when the UI still holds a non-overlapping (Grok)
@@ -168,6 +207,7 @@ fn handle_vendor_models_loaded(
                 agent.session.models = state;
                 // Drop sticky Grok context totals / pick up vendor window meta.
                 agent.sync_context_window_from_model();
+                agent.prompt.refresh_slash(&agent.session.models);
                 agent.scrollback.push_block(RenderBlock::system(format!(
                     "{vendor} models ready ({count}). Current: {name}. Switch with /model"
                 )));
@@ -615,6 +655,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             http_status,
             prompt_id,
         } => handle_prompt_response(app, agent_id, result, http_status, prompt_id),
+        TaskResult::ExternalRuntimeTextDelta {
+            agent_id,
+            prompt_id,
+            text,
+        } => handle_external_runtime_text_delta(app, agent_id, prompt_id, text),
         TaskResult::ExternalRuntimeTurnDone {
             agent_id,
             prompt_id,
@@ -669,16 +714,16 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             vec![]
         }
         TaskResult::CodexModelsLoaded { result } => {
-            handle_vendor_models_loaded(app, "Codex", result)
+            handle_vendor_models_loaded(app, RuntimeBackend::Codex, result)
         }
         TaskResult::ClaudeModelsLoaded { result } => {
-            handle_vendor_models_loaded(app, "Claude", result)
+            handle_vendor_models_loaded(app, RuntimeBackend::Claude, result)
         }
         TaskResult::LazarModelsLoaded { result } => {
-            handle_vendor_models_loaded(app, "Lazar", result)
+            handle_vendor_models_loaded(app, RuntimeBackend::Lazar, result)
         }
         TaskResult::HermesModelsLoaded { result } => {
-            handle_vendor_models_loaded(app, "Hermes", result)
+            handle_vendor_models_loaded(app, RuntimeBackend::Hermes, result)
         }
         TaskResult::PreferredModelPersisted { result } => {
             if let Err(err) = result

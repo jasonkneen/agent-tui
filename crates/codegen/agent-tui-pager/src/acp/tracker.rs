@@ -916,6 +916,30 @@ impl AcpUpdateTracker {
     pub fn expects_user_echo(&self) -> bool {
         self.skip_next_user_echo
     }
+    /// Paint a live vendor `text_delta` using the same streaming agent-message
+    /// block as ACP `agent_message_chunk`.
+    pub fn push_external_text_delta(
+        &mut self,
+        text: &str,
+        scrollback: &mut ScrollbackState,
+    ) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        self.handle_agent_chunk(
+            acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new(
+                text.to_string(),
+            ))),
+            &NotificationMeta::default(),
+            scrollback,
+        )
+    }
+
+    /// Whether an agent message is currently streaming (Lazar live tokens).
+    pub fn has_open_agent_message(&self) -> bool {
+        self.current_agent_msg.is_some()
+    }
+
     /// Handle an agent message chunk (streaming text).
     fn handle_agent_chunk(
         &mut self,

@@ -189,6 +189,20 @@ impl LazarRuntimePool {
         sticky_key: Option<&str>,
         permission_mode: PermissionMode,
     ) -> Result<LazarTurnResult> {
+        self.start_text_turn_with_delta(prompt, model, sticky_key, permission_mode, |_| {})
+            .await
+    }
+
+    /// Same as [`Self::start_text_turn_keyed_with_permission`], calling
+    /// `on_delta` for each non-empty `text_delta` as it arrives.
+    pub async fn start_text_turn_with_delta(
+        &self,
+        prompt: &str,
+        model: Option<&str>,
+        sticky_key: Option<&str>,
+        permission_mode: PermissionMode,
+        mut on_delta: impl FnMut(&str) + Send,
+    ) -> Result<LazarTurnResult> {
         if prompt.len() > MAX_ARG_PROMPT_BYTES {
             return Err(LazarRuntimeError::PromptTooLarge {
                 actual: prompt.len(),
@@ -270,27 +284,17 @@ impl LazarRuntimePool {
             loop {
                 match lines.next_line().await {
                     Ok(Some(line)) => {
-                        let Ok(v) = serde_json::from_str::<Value>(&line) else {
-                            continue;
-                        };
-                        match v["type"].as_str() {
-                            Some("text_delta") => {
-                                if let Some(t) = v["text"].as_str() {
-                                    reply.push_str(t);
-                                }
+                        match classify_stream_json_line(&line) {
+                            StreamJsonAction::TextDelta(t) if !t.is_empty() => {
+                                reply.push_str(&t);
+                                on_delta(&t);
                             }
-                            Some("error") => {
-                                turn_error = Some(
-                                    v["message"]
-                                        .as_str()
-                                        .unwrap_or("unknown kernel error")
-                                        .to_string(),
-                                );
+                            StreamJsonAction::TextDelta(_) => {}
+                            StreamJsonAction::Error(msg) => {
+                                turn_error = Some(msg);
                                 break;
                             }
-                            // tool_use / tool_result / text_done / invoke_* — ignored
-                            // by the text-flattened contract.
-                            _ => {}
+                            StreamJsonAction::Ignore => {}
                         }
                     }
                     Ok(None) => break,
@@ -345,6 +349,33 @@ pub fn discover_active_model() -> Option<String> {
     let raw = std::fs::read_to_string(lazar_home().join("memory").join("model.txt")).ok()?;
     let m = clean_model_id(raw.lines().next().unwrap_or(""));
     (!m.is_empty()).then_some(m)
+}
+
+/// One line of kernel `stream-json` stdout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamJsonAction {
+    Ignore,
+    TextDelta(String),
+    Error(String),
+}
+
+/// Classify one JSONL line from `lazar --output-format stream-json`.
+pub fn classify_stream_json_line(line: &str) -> StreamJsonAction {
+    let Ok(v) = serde_json::from_str::<Value>(line) else {
+        return StreamJsonAction::Ignore;
+    };
+    match v["type"].as_str() {
+        Some("text_delta") => {
+            StreamJsonAction::TextDelta(v["text"].as_str().unwrap_or("").to_string())
+        }
+        Some("error") => StreamJsonAction::Error(
+            v["message"]
+                .as_str()
+                .unwrap_or("unknown kernel error")
+                .to_string(),
+        ),
+        _ => StreamJsonAction::Ignore,
+    }
 }
 
 /// Strip `#` price/ctx annotations and surrounding whitespace from a model id.
@@ -664,6 +695,26 @@ mod tests {
                 None => unsafe { std::env::remove_var(self.key) },
             }
         }
+    }
+
+    #[test]
+    fn classify_text_delta_and_error() {
+        assert_eq!(
+            classify_stream_json_line(r#"{"type":"text_delta","text":"Hi"}"#),
+            StreamJsonAction::TextDelta("Hi".into())
+        );
+        assert_eq!(
+            classify_stream_json_line(r#"{"type":"error","message":"nope"}"#),
+            StreamJsonAction::Error("nope".into())
+        );
+        assert_eq!(
+            classify_stream_json_line(r#"{"type":"tool_use","name":"bash"}"#),
+            StreamJsonAction::Ignore
+        );
+        assert_eq!(
+            classify_stream_json_line("not-json"),
+            StreamJsonAction::Ignore
+        );
     }
 
     #[test]

@@ -46,19 +46,28 @@ pub(crate) fn vendor_catalog_refresh_effects() -> Vec<Effect> {
 /// show. Pure enough for use under an `app.agents.get_mut` borrow (no
 /// `&mut AppView`).
 ///
-/// When a non-Grok runtime owns turns, stashes the Grok catalog (for
-/// `/runtime grok` restore) and returns a cached vendor catalog if any —
-/// never paints Grok as the active model chrome.
+/// When a non-Grok runtime owns turns, stash the Grok catalog (for
+/// `/runtime grok` restore) and return `None` so we do **not** paint a
+/// stale shared vendor cache (historically named `codex_catalog`) over
+/// Claude / Lazar / Hermes. The matching `Refresh*Models` effect installs
+/// the active vendor catalog.
 pub(crate) fn session_models_after_acp(
+    new_models: Option<acp::SessionModelState>,
+) -> Option<ModelState> {
+    session_models_after_acp_for(crate::runtime_backend::active(), new_models)
+}
+
+pub(crate) fn session_models_after_acp_for(
+    runtime: RuntimeBackend,
     new_models: Option<acp::SessionModelState>,
 ) -> Option<ModelState> {
     let m = new_models?;
     let state: ModelState = Some(m).into();
-    if crate::runtime_backend::active() == RuntimeBackend::Grok {
+    if runtime == RuntimeBackend::Grok {
         return Some(state);
     }
     crate::runtime_backend::stash_grok_catalog(state);
-    crate::runtime_backend::codex_catalog()
+    None
 }
 
 /// A deferred model switch to apply once the session exists, plus any effort
@@ -1103,6 +1112,8 @@ pub(in crate::app::dispatch) fn handle_session_created(
         if let Some(state) = session_models_after_acp(new_models) {
             app.models = state.clone();
             agent.session.models = state;
+            agent.sync_context_window_from_model();
+            agent.prompt.refresh_slash(&agent.session.models);
         }
         let deferred = apply_deferred_model_switch(agent, app.cli_effort_token.as_deref());
         let deferred_mode = agent.deferred_session_mode.take();
@@ -1209,9 +1220,11 @@ pub(in crate::app::dispatch) fn handle_worktree_session_created(
         agent.main_repo = None;
         agent.is_worktree = true;
         crate::git_info::populate_from_cwd_async(session_cwd.clone());
-        if let Some(m) = new_models {
-            app.models = Some(m).into();
-            agent.session.models = app.models.clone();
+        if let Some(state) = session_models_after_acp(new_models) {
+            app.models = state.clone();
+            agent.session.models = state;
+            agent.sync_context_window_from_model();
+            agent.prompt.refresh_slash(&agent.session.models);
         }
         agent.prompt.file_search.retarget(&session_cwd);
         agent.scrollback.push_block(RenderBlock::system(format!(
@@ -1506,6 +1519,66 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
         vec![]
     }
 }
+#[cfg(test)]
+mod session_models_after_acp_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn sample_acp(id: &str, name: &str) -> acp::SessionModelState {
+        let mid = acp::ModelId::new(Arc::from(id));
+        acp::SessionModelState::new(mid.clone(), vec![acp::ModelInfo::new(mid, name)])
+    }
+
+    #[test]
+    fn grok_applies_acp_catalog() {
+        let _lock = crate::runtime_backend::catalog_test_lock();
+        crate::runtime_backend::reset_runtime_catalogs_for_test();
+        let state = session_models_after_acp_for(
+            RuntimeBackend::Grok,
+            Some(sample_acp("grok-4.5", "Grok 4.5")),
+        )
+        .expect("Grok ACP catalog must apply");
+        assert_eq!(state.current_model_id_str(), Some("grok-4.5"));
+    }
+
+    #[test]
+    fn vendor_stashes_grok_and_does_not_paint_shared_codex_cache() {
+        let _lock = crate::runtime_backend::catalog_test_lock();
+        crate::runtime_backend::reset_runtime_catalogs_for_test();
+
+        let mut leftover = crate::acp::model_state::ModelState::default();
+        let cid = acp::ModelId::new(Arc::from("gpt-5.4"));
+        leftover.available.insert(
+            cid.clone(),
+            acp::ModelInfo::new(cid.clone(), "GPT-5.4"),
+        );
+        leftover.set_current(cid, None);
+        crate::runtime_backend::store_vendor_catalog(RuntimeBackend::Codex, leftover);
+
+        let painted = session_models_after_acp_for(
+            RuntimeBackend::Claude,
+            Some(sample_acp("grok-4.5", "Grok 4.5")),
+        );
+        assert!(
+            painted.is_none(),
+            "vendor session create must not paint Grok or leftover Codex chrome"
+        );
+        assert_eq!(
+            crate::runtime_backend::stashed_grok_catalog()
+                .and_then(|s| s.current_model_id_str().map(str::to_string))
+                .as_deref(),
+            Some("grok-4.5")
+        );
+        assert_eq!(
+            crate::runtime_backend::vendor_catalog(RuntimeBackend::Codex)
+                .and_then(|s| s.current_model_id_str().map(str::to_string))
+                .as_deref(),
+            Some("gpt-5.4"),
+            "Codex cache must stay isolated"
+        );
+    }
+}
+
 pub(in crate::app::dispatch) fn dispatch_agent_type_mismatch_answered(
     app: &mut AppView,
     start_new: bool,

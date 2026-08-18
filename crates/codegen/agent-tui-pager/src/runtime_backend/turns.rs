@@ -64,12 +64,25 @@ pub async fn run_external_turn_keyed_with_permission(
     sticky_key: Option<String>,
     permission_mode: RuntimePermissionMode,
 ) -> Result<String, String> {
+    run_external_turn_keyed_with_delta(runtime, text, sticky_key, permission_mode, None).await
+}
+
+/// Like [`run_external_turn_keyed_with_permission`], with a live text sink.
+/// Lazar/Claude/Hermes call it while the child streams; Codex while
+/// `item/agentMessage/delta` notifications arrive.
+pub async fn run_external_turn_keyed_with_delta(
+    runtime: RuntimeBackend,
+    text: String,
+    sticky_key: Option<String>,
+    permission_mode: RuntimePermissionMode,
+    on_delta: Option<Box<dyn FnMut(&str) + Send>>,
+) -> Result<String, String> {
     let Some(registry_key) = sticky_key
         .as_deref()
         .filter(|key| !key.trim().is_empty())
         .map(|key| in_flight_key(runtime, key))
     else {
-        return run_external_turn_inner(runtime, text, sticky_key, permission_mode).await;
+        return run_external_turn_inner(runtime, text, sticky_key, permission_mode, on_delta).await;
     };
     let generation = NEXT_TURN_GENERATION.fetch_add(1, Ordering::Relaxed);
     let (cancel, cancel_rx) = tokio::sync::oneshot::channel();
@@ -83,7 +96,7 @@ pub async fn run_external_turn_keyed_with_permission(
 
     let sticky_for_cancel = sticky_key.clone().unwrap_or_default();
     let result = tokio::select! {
-        result = run_external_turn_inner(runtime, text, sticky_key, permission_mode) => result,
+        result = run_external_turn_inner(runtime, text, sticky_key, permission_mode, on_delta) => result,
         _ = cancel_rx => {
             if runtime == RuntimeBackend::Codex {
                 codex_pool()
@@ -112,6 +125,7 @@ async fn run_external_turn_inner(
     text: String,
     sticky_key: Option<String>,
     permission_mode: RuntimePermissionMode,
+    on_delta: Option<Box<dyn FnMut(&str) + Send>>,
 ) -> Result<String, String> {
     match runtime {
         RuntimeBackend::Grok => {
@@ -120,21 +134,18 @@ async fn run_external_turn_inner(
         RuntimeBackend::Claude => {
             let pool = claude_pool();
             let model = claude_model();
+            let perm = match permission_mode {
+                RuntimePermissionMode::Ask => agent_tui_claude_runtime::PermissionMode::Ask,
+                RuntimePermissionMode::Auto => agent_tui_claude_runtime::PermissionMode::Auto,
+                RuntimePermissionMode::AlwaysApprove => {
+                    agent_tui_claude_runtime::PermissionMode::AlwaysApprove
+                }
+            };
+            let mut on_delta = on_delta.unwrap_or_else(|| Box::new(|_| {}));
             let result = pool
-                .start_text_turn_keyed(
-                    text,
-                    model,
-                    sticky_key.as_deref(),
-                    match permission_mode {
-                        RuntimePermissionMode::Ask => agent_tui_claude_runtime::PermissionMode::Ask,
-                        RuntimePermissionMode::Auto => {
-                            agent_tui_claude_runtime::PermissionMode::Auto
-                        }
-                        RuntimePermissionMode::AlwaysApprove => {
-                            agent_tui_claude_runtime::PermissionMode::AlwaysApprove
-                        }
-                    },
-                )
+                .start_text_turn_with_delta(text, model, sticky_key.as_deref(), perm, move |c| {
+                    on_delta(c)
+                })
                 .await
                 .map_err(|e| format!("Claude turn failed: {e}"))?;
             Ok(result.text)
@@ -168,11 +179,13 @@ async fn run_external_turn_inner(
                 .pointer("/turn/id")
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| format!("Codex turn/start missing turn.id: {turn}"))?;
-            agent_tui_codex_runtime::collect_turn_text_for(
+            let mut on_delta = on_delta.unwrap_or_else(|| Box::new(|_| {}));
+            agent_tui_codex_runtime::collect_turn_text_for_with_delta(
                 &mut rx,
                 &thread_id,
                 turn_id,
                 std::time::Duration::from_secs(600),
+                move |c| on_delta(c),
             )
             .await
             .map_err(|e| format!("Codex turn failed: {e}"))
@@ -180,20 +193,21 @@ async fn run_external_turn_inner(
         RuntimeBackend::Lazar => {
             let pool = lazar_pool();
             let model = lazar_model();
+            let perm = match permission_mode {
+                RuntimePermissionMode::AlwaysApprove => {
+                    agent_tui_lazar_runtime::PermissionMode::AlwaysApprove
+                }
+                RuntimePermissionMode::Auto => agent_tui_lazar_runtime::PermissionMode::Auto,
+                RuntimePermissionMode::Ask => agent_tui_lazar_runtime::PermissionMode::Ask,
+            };
+            let mut on_delta = on_delta.unwrap_or_else(|| Box::new(|_| {}));
             let result = pool
-                .start_text_turn_keyed_with_permission(
+                .start_text_turn_with_delta(
                     &text,
                     model.as_deref(),
                     sticky_key.as_deref(),
-                    match permission_mode {
-                        RuntimePermissionMode::AlwaysApprove => {
-                            agent_tui_lazar_runtime::PermissionMode::AlwaysApprove
-                        }
-                        RuntimePermissionMode::Auto => {
-                            agent_tui_lazar_runtime::PermissionMode::Auto
-                        }
-                        RuntimePermissionMode::Ask => agent_tui_lazar_runtime::PermissionMode::Ask,
-                    },
+                    perm,
+                    move |chunk| on_delta(chunk),
                 )
                 .await
                 .map_err(|e| format!("Lazar turn failed: {e}"))?;
@@ -203,21 +217,18 @@ async fn run_external_turn_inner(
             let pool = hermes_pool();
             let model = hermes_model().map(|m| agent_tui_hermes_runtime::normalize_model_id(&m));
             let model_ref = model.as_deref().filter(|m| !m.is_empty());
+            let perm = match permission_mode {
+                RuntimePermissionMode::AlwaysApprove => {
+                    agent_tui_hermes_runtime::PermissionMode::AlwaysApprove
+                }
+                RuntimePermissionMode::Auto => agent_tui_hermes_runtime::PermissionMode::Auto,
+                RuntimePermissionMode::Ask => agent_tui_hermes_runtime::PermissionMode::Ask,
+            };
+            let mut on_delta = on_delta.unwrap_or_else(|| Box::new(|_| {}));
             let result = pool
-                .start_text_turn_keyed_with_permission(
-                    &text,
-                    model_ref,
-                    sticky_key.as_deref(),
-                    match permission_mode {
-                        RuntimePermissionMode::AlwaysApprove => {
-                            agent_tui_hermes_runtime::PermissionMode::AlwaysApprove
-                        }
-                        RuntimePermissionMode::Auto => {
-                            agent_tui_hermes_runtime::PermissionMode::Auto
-                        }
-                        RuntimePermissionMode::Ask => agent_tui_hermes_runtime::PermissionMode::Ask,
-                    },
-                )
+                .start_text_turn_with_delta(&text, model_ref, sticky_key.as_deref(), perm, move |c| {
+                    on_delta(c)
+                })
                 .await
                 .map_err(|e| format!("Hermes turn failed: {e}"))?;
             Ok(result.text)

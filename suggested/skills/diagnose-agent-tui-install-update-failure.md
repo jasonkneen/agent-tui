@@ -17,6 +17,7 @@ The release surface is a set of distributed constants — version string, tag sh
 | Checksum verification fails or is skipped | A release asset shipped without its `.sha256` sibling — a release defect by convention | Re-upload the sibling; fix the release workflow if it dropped it |
 | Stable user received a prerelease, or alpha user can't see the new alpha | Tag shape wrong: stable is `vX.Y.Z` (no hyphen suffix), alpha is `vX.Y.Z-alpha.N` with `prerelease = true`. Stable resolves `releases/latest` (GitHub excludes prereleases); alpha resolves semver-greatest including prereleases | Check the tag and the release's prerelease flag; re-tag correctly |
 | Installed binary is `grok`, config lands in `~/.grok` | The user ran the official `x.ai/cli` installer — that installs upstream Grok Build, never this fork | Point them at the fork one-liner (see `install-agent-tui`); never re-point fork docs at official channels |
+| Updater / docs mention `@agent-tui-official/grok`, `agent-tui-org-shared`, or `x.ai/cli` as *this* fork's install | Remmerge after an upstream sync took renamed upstream identity | Restore `reinstall_hint` + `version.rs` constants (`jasonkneen/agent-tui`, `@agent-tui/agent-tui`); delete extra `npm/grok*` trees. Skill: `sync-upstream-monorepo` |
 | Pinned install (`bash -s 0.1.220`) fails but latest works | That version's assets were renamed or removed after a release-identity change | Verify old-pattern assets still exist for historical versions, or document the floor version |
 
 ## Diagnostic steps

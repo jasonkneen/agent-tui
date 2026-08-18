@@ -42,5 +42,7 @@ Per the vendor readiness ladder, catalog ships independently of inference. Claud
 
 - **Catalog is empty or fails to load** — the vendor's own CLI is not logged in (`~/.codex/auth.json` for Codex, Claude Code login for Claude). Log in with the vendor's tool; there is no Agent TUI-side login.
 - **Pick doesn't seem to take effect** — it applies at the next thread boundary by design; start a new thread rather than expecting a mid-thread swap.
+- **Displayed model changed after the vendor refreshed its catalog (no `/model` pick)** — unexpected. A catalog refresh replaces the available list only; the current pick stays until you `/model` again or start a new thread.
 - **Expected vendor's models missing** — you're on a different active runtime; run `/runtime` to check, then `/runtime <vendor>` before `/model`.
+- **Just switched vendor and `/model` still looks like the last one** — wait for the “models ready” line, or run `/runtime <vendor>` again to reload that vendor's catalog. Do not pick a leftover model from the previous vendor.
 - **Tempted to add a model ID by hand** — don't: catalogs are live-fetched from the vendor runtime, and a literal non-Grok model ID in fork source is a defect.

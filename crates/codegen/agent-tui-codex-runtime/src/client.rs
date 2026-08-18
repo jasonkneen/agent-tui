@@ -642,6 +642,18 @@ pub async fn collect_turn_text_for(
     turn_id: &str,
     max_wait: Duration,
 ) -> Result<String> {
+    collect_turn_text_for_with_delta(rx, thread_id, turn_id, max_wait, |_| {}).await
+}
+
+/// Same as [`collect_turn_text_for`], calling `on_delta` for each matching
+/// `item/agentMessage/delta`.
+pub async fn collect_turn_text_for_with_delta(
+    rx: &mut tokio::sync::broadcast::Receiver<RuntimeEvent>,
+    thread_id: &str,
+    turn_id: &str,
+    max_wait: Duration,
+    mut on_delta: impl FnMut(&str) + Send,
+) -> Result<String> {
     let mut out = String::new();
     let deadline = tokio::time::Instant::now() + max_wait;
     loop {
@@ -657,7 +669,10 @@ pub async fn collect_turn_text_for(
             })) if event_thread.as_deref() == Some(thread_id)
                 && event_turn.as_deref() == Some(turn_id) =>
             {
-                out.push_str(&text);
+                if !text.is_empty() {
+                    out.push_str(&text);
+                    on_delta(&text);
+                }
             }
             Ok(Ok(RuntimeEvent::TurnCompleted {
                 thread_id: event_thread,
@@ -797,6 +812,42 @@ for line in sys.stdin:
             .await
             .unwrap();
         assert_eq!(text, "right");
+    }
+
+    #[tokio::test]
+    async fn collector_invokes_delta_callback() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+        tx.send(RuntimeEvent::TextDelta {
+            thread_id: Some("thread-a".into()),
+            turn_id: Some("turn-a".into()),
+            text: "hel".into(),
+        })
+        .unwrap();
+        tx.send(RuntimeEvent::TextDelta {
+            thread_id: Some("thread-a".into()),
+            turn_id: Some("turn-a".into()),
+            text: "lo".into(),
+        })
+        .unwrap();
+        tx.send(RuntimeEvent::TurnCompleted {
+            thread_id: Some("thread-a".into()),
+            turn_id: Some("turn-a".into()),
+            status: Some("completed".into()),
+        })
+        .unwrap();
+
+        let mut seen = String::new();
+        let text = collect_turn_text_for_with_delta(
+            &mut rx,
+            "thread-a",
+            "turn-a",
+            Duration::from_secs(1),
+            |chunk| seen.push_str(chunk),
+        )
+        .await
+        .unwrap();
+        assert_eq!(text, "hello");
+        assert_eq!(seen, "hello");
     }
 
     #[tokio::test]

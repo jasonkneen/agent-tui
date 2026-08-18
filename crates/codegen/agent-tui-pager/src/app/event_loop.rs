@@ -1540,6 +1540,10 @@ pub(crate) async fn run(
     let mut acp_peek: Option<AcpClientMessage> = None;
     let (progress_tx, mut progress_rx) =
         tokio::sync::mpsc::unbounded_channel::<effects::RestoreProgressMsg>();
+    let (runtime_event_tx, mut runtime_event_rx) =
+        tokio::sync::mpsc::unbounded_channel::<TaskResult>();
+    effects::set_runtime_event_tx(Some(runtime_event_tx));
+    let _runtime_event_guard = effects::RuntimeEventTxGuard;
 
     // Voice STT pipeline is started lazily on first successful `/voice` (see
     // `VoiceState::ColdStart`), not at launch — avoids background work for users
@@ -2279,6 +2283,31 @@ pub(crate) async fn run(
                     break;
                 }
                 presenter.request(false);
+            }
+
+            Some(first) = runtime_event_rx.recv() => {
+                let mut batch = vec![first];
+                while batch.len() < 32 {
+                    match runtime_event_rx.try_recv() {
+                        Ok(more) => batch.push(more),
+                        Err(_) => break,
+                    }
+                }
+                let mut quit = false;
+                for result in batch {
+                    let effs = dispatch::dispatch(Action::TaskComplete(result), &mut app);
+                    if process_effects(effs, &mut tasks, &mut app, &progress_tx) {
+                        quit = true;
+                        break;
+                    }
+                }
+                if quit {
+                    break;
+                }
+                let now = Instant::now();
+                if presenter.request_throttled(now, min_draw_interval) {
+                    app.update_notifications();
+                }
             }
 
             // Background update check completed.

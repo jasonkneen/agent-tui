@@ -185,6 +185,20 @@ impl HermesRuntimePool {
         sticky_key: Option<&str>,
         permission_mode: PermissionMode,
     ) -> Result<HermesTurnResult> {
+        self.start_text_turn_with_delta(prompt, model, sticky_key, permission_mode, |_| {})
+            .await
+    }
+
+    /// Same as [`Self::start_text_turn_keyed_with_permission`], calling
+    /// `on_delta` for each content line as stdout flushes it.
+    pub async fn start_text_turn_with_delta(
+        &self,
+        prompt: &str,
+        model: Option<&str>,
+        sticky_key: Option<&str>,
+        permission_mode: PermissionMode,
+        mut on_delta: impl FnMut(&str) + Send,
+    ) -> Result<HermesTurnResult> {
         if prompt.len() > MAX_ARG_PROMPT_BYTES {
             return Err(HermesRuntimeError::PromptTooLarge {
                 actual: prompt.len(),
@@ -215,7 +229,13 @@ impl HermesRuntimePool {
         // First attempt (with sticky resume if any). On "Session not found",
         // clear that key and retry once fresh — multi-agent / stale sticky.
         match self
-            .run_one_turn(prompt, model.as_deref(), sticky.as_deref(), permission_mode)
+            .run_one_turn(
+                prompt,
+                model.as_deref(),
+                sticky.as_deref(),
+                permission_mode,
+                &mut on_delta,
+            )
             .await
         {
             Ok(result) => {
@@ -231,7 +251,7 @@ impl HermesRuntimePool {
                     state.sessions.remove(&key);
                 }
                 let result = self
-                    .run_one_turn(prompt, model.as_deref(), None, permission_mode)
+                    .run_one_turn(prompt, model.as_deref(), None, permission_mode, &mut on_delta)
                     .await?;
                 if !result.session_id.is_empty() && !is_placeholder_session(&result.session_id) {
                     let mut state = self.state.lock().await;
@@ -249,6 +269,7 @@ impl HermesRuntimePool {
         model: Option<&str>,
         resume: Option<&str>,
         permission_mode: PermissionMode,
+        on_delta: &mut (dyn FnMut(&str) + Send),
     ) -> Result<HermesTurnResult> {
         let mut cmd = Command::new(&self.config.hermes_bin);
         cmd.arg("chat").arg("-q").arg(prompt).arg("-Q"); // quiet: final response on stdout; session_id on stderr
@@ -301,8 +322,10 @@ impl HermesRuntimePool {
                     }
                     if !body.is_empty() {
                         body.push('\n');
+                        on_delta("\n");
                     }
                     body.push_str(&line);
+                    on_delta(&line);
                 }
                 Ok::<_, HermesRuntimeError>((body, session))
             };
@@ -683,6 +706,42 @@ printf '%s\n' 'session_id: fake-session' >&2
         unsafe {
             std::env::remove_var("HERMES_TEST_ARGS");
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fake_cli_streams_content_lines() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("fake-hermes-stream");
+        std::fs::write(
+            &bin,
+            r#"#!/bin/sh
+printf '%s\n' 'hello'
+printf '%s\n' 'world'
+printf '%s\n' 'session_id: s1' >&2
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&bin).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&bin, permissions).unwrap();
+
+        let pool = HermesRuntimePool::new(PoolConfig {
+            hermes_bin: bin,
+            turn_timeout: Duration::from_secs(5),
+            ..PoolConfig::default()
+        });
+        let mut seen = String::new();
+        let result = pool
+            .start_text_turn_with_delta("q", None, Some("k"), PermissionMode::Ask, |c| {
+                seen.push_str(c)
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.text, "hello\nworld");
+        assert_eq!(seen, "hello\nworld");
     }
 
     #[tokio::test]
