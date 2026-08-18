@@ -19,8 +19,6 @@ ptyctl = { path = "../ptyctl" }
 
 # PTY spawning + input/output
 portable-pty = { workspace = true }
-# Real OS signals (libc::kill) for the SIGINT/SIGTERM/SIGHUP e2e path.
-libc = { workspace = true }
 
 # alacritty_terminal re-exports `vte` which timing.rs uses for frame marker
 # detection. screen.rs uses ptyctl's Terminal (backed by alacritty_terminal)
@@ -53,6 +51,12 @@ tempfile = { workspace = true }
 agent-tui-tty-utils = { workspace = true }
 
 clap = { workspace = true, features = ["derive"] }
+
+# Real OS signals (libc::kill) for the SIGINT/SIGTERM/SIGHUP e2e path.
+# Unix-only: the sole consumer is `PtyController::send_signal` in src/pty.rs,
+# which is `#[cfg(unix)]` — ConPTY has no process groups or POSIX signals.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true }

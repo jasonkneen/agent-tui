@@ -58,11 +58,37 @@ rustflags = [
     "-C", "link-arg=-Wl,-z,relro,-z,now,-z,noexecstack",
 ]
 
+# symbol-mangling-version=v0 (Windows): this workspace's deeply generic types
+# (ratatui/tokio/serde layers) produce legacy-mangled symbol names that exceed
+# the PDB format's 64 KiB per-symbol limit. link.exe 14.44+ rejects those with
+# `fatal error LNK4319: A PDB limit was hit while adding public symbols`;
+# earlier linkers silently truncated instead. v0 mangling is substantially more
+# compact and stays under the limit.
+#
+# Preferred over the linker's own remedy, `/DEBUG:LongSymbolTruncate`: that
+# option only exists on MSVC 14.5x+, and on older toolchains — including the
+# VS 2022 linkers on GitHub-hosted windows runners — it is a hard failure
+# (`fatal error LNK1117: syntax error in option`). v0 mangling needs no linker
+# support at all.
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "force-unwind-tables=yes", "-C", "target-feature=+crt-static"]
+rustflags = [
+    "-C",
+    "force-unwind-tables=yes",
+    "-C",
+    "target-feature=+crt-static",
+    "-C",
+    "symbol-mangling-version=v0",
+]
 
 [target.aarch64-pc-windows-msvc]
-rustflags = ["-C", "force-unwind-tables=yes", "-C", "target-feature=+crt-static"]
+rustflags = [
+    "-C",
+    "force-unwind-tables=yes",
+    "-C",
+    "target-feature=+crt-static",
+    "-C",
+    "symbol-mangling-version=v0",
+]
 
 
 # jemalloc page size for Apple Silicon (macOS aarch64 uses 16KB pages = 2^14).

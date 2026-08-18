@@ -16,19 +16,39 @@ env:
 
 jobs:
   check:
-    name: cargo check
-    runs-on: ubuntu-22.04
+    name: cargo check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
     steps:
+      # persist-credentials: false keeps the job's token out of the local git
+      # config. Nothing here performs an authenticated git operation: the only
+      # git dependency (nucleo) is a public repo, and there are no submodules.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@1.92.0
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install protoc
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
+          protoc --version
+
+      # Windows has no shebang support, so `bin/protoc` (a DotSlash launcher)
+      # is not directly executable. find_protoc resolves it via `dotslash --
+      # fetch` and otherwise falls back to PATH, which is what this installs —
+      # matching how release.yml builds the Windows target.
+      - name: Install protoc (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install protoc -y --no-progress
           protoc --version
 
       - name: Check agent-tui-bin
@@ -39,3 +59,8 @@ jobs:
 
       - name: Unit tests (update crate)
         run: cargo test -p agent-tui-update --lib
+
+      # Guards the cross-platform protoc/depfile handling in
+      # agent-tui-proto-build against Unix-only regressions.
+      - name: Unit tests (proto-build)
+        run: cargo test -p agent-tui-proto-build

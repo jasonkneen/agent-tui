@@ -45,8 +45,28 @@ Requirements:
 
 - **protoc** — proto codegen resolves [`bin/protoc`](bin/protoc) via DotSlash,
   or falls back to a `protoc` on `PATH` / `$PROTOC`.
-- macOS and Linux are supported build hosts; Windows builds are best-effort
-  and not currently tested from this tree.
+- macOS, Linux, and Windows are supported build hosts.
+
+### Windows
+
+Install DotSlash as above, or put any `protoc` on `PATH` instead:
+
+```powershell
+cargo install dotslash          # resolves bin/protoc automatically, or
+choco install protoc            # any protoc on PATH also works
+```
+
+A DotSlash launcher is a JSON file that relies on a `#!` line, which Windows
+cannot execute directly, so `bin/protoc` is resolved via `dotslash -- fetch`
+rather than run in place. Everything else is automatic: the 8 MiB main-thread
+stack comes from `crates/codegen/agent-tui-bin/build.rs`, and v0 symbol
+mangling — which keeps generic symbol names under the PDB limit — from
+`.cargo/config.toml`.
+
+Verified on both `x86_64` and `aarch64` MSVC hosts, including the interactive
+TUI. Other Windows host architectures are untested. The product-skin symlinks
+below are created by a shell script and are POSIX-only; on Windows, run the
+core binary directly.
 
 ```sh
 cargo build -p agent-tui-bin
