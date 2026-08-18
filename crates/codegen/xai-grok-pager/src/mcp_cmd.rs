@@ -80,6 +80,15 @@ pub enum McpCommand {
         #[arg(short = 's', long, value_enum)]
         scope: Option<McpScope>,
     },
+    /// Forget stored OAuth credentials for an MCP server
+    Logout {
+        /// Server name whose stored credentials should be removed
+        name: String,
+
+        /// Server URL. Required only when the server is no longer configured.
+        #[arg(long, value_name = "URL")]
+        url: Option<String>,
+    },
     /// Diagnose MCP server configuration and connectivity
     Doctor {
         /// Emit machine-readable JSON output
@@ -142,6 +151,7 @@ pub async fn run(mcp_args: McpArgs) -> Result<()> {
         McpCommand::List { json } => run_list(json),
         McpCommand::Add(args) => run_add(args).await,
         McpCommand::Remove { name, scope } => run_remove(&name, scope).await,
+        McpCommand::Logout { name, url } => run_logout(&name, url.as_deref()).await,
         McpCommand::Doctor { json, name } => run_doctor(json, name).await,
     }
 }
@@ -578,6 +588,34 @@ async fn run_remove(name: &str, requested_scope: Option<McpScope>) -> Result<()>
         );
     }
 
+    Ok(())
+}
+
+async fn run_logout(name: &str, explicit_url: Option<&str>) -> Result<()> {
+    let server_url = if let Some(raw_url) = explicit_url {
+        url::Url::parse(raw_url)
+            .map_err(|error| anyhow::anyhow!("Invalid URL '{raw_url}': {error}"))?
+    } else {
+        let cwd = current_dir_or_exit();
+        let mut config = xai_grok_shell::util::config::get_effective_mcp_server_config(name, &cwd)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "MCP server '{name}' is not configured; pass --url to forget retained credentials"
+                )
+            })?;
+        config.expand_strings(&xai_grok_shell::config::expand_env_vars_in_string);
+        let McpServerTransportConfig::StreamableHttp { url, .. } = config.transport else {
+            bail!("MCP server '{name}' does not use HTTP OAuth credentials");
+        };
+        url::Url::parse(&url)
+            .map_err(|error| anyhow::anyhow!("Invalid configured URL '{url}': {error}"))?
+    };
+
+    if xai_grok_shell::util::config::forget_mcp_credentials(name, &server_url).await? {
+        println!("Forgot stored OAuth credentials for MCP server '{name}'");
+    } else {
+        println!("No stored OAuth credentials found for MCP server '{name}'");
+    }
     Ok(())
 }
 
@@ -1043,6 +1081,28 @@ mod tests {
                 assert_eq!(scope, Some(McpScope::Project));
             }
             other => panic!("expected mcp remove, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn logout_accepts_explicit_url_for_removed_servers() {
+        let args = PagerArgs::try_parse_from([
+            "grok",
+            "mcp",
+            "logout",
+            "linear",
+            "--url",
+            "https://mcp.linear.app/mcp",
+        ])
+        .expect("logout with an explicit URL parses");
+        match args.command {
+            Some(Command::Mcp(McpArgs {
+                command: McpCommand::Logout { name, url },
+            })) => {
+                assert_eq!(name, "linear");
+                assert_eq!(url.as_deref(), Some("https://mcp.linear.app/mcp"));
+            }
+            other => panic!("expected mcp logout, got {other:?}"),
         }
     }
 
